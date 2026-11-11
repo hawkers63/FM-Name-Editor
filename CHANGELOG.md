@@ -6,6 +6,17 @@ Application on disk: 2.1
 
 The program on disk reports `VERSION = "2.1"`. The launcher banner says v2.1.
 
+## Unreleased — Release 2.2 in progress
+
+Not released. `VERSION` still reads 2.1. Session 1 of Release 2.2 was done on 11 November 2026; sessions 2 and 3 follow.
+
+Session 1 — correctness and write safety, part one (review findings F1, F2, F3):
+
+- **One game-write preflight.** Save, Deploy, and the licensing toggle call the same check before touching the game tree. Save into the game folder was unguarded before; now it is refused while Football Manager is running, with the same message Deploy gives, and it asks for confirmation naming the exact files. When the process list cannot be read, the dialog says so and defaults to No instead of treating the game as closed.
+- **Every field of a new line is checked.** Command, database id (ASCII digits), name, and language are validated before a line is formed, at pack import, older-file import, and entity-field insertion. A quote, a line break, or a control character in a language field is rejected and counted as a skipped row instead of becoming a second record in the file.
+- **End-of-file insertion.** Filling an empty entity field beside a last line that has no line ending now gives that line its ending first, so the two commands no longer run together. Covered for LF, CRLF, and UTF-16 files.
+- Tests: 33, up from 26. New cover for the preflight states, process-list failures, field checks, pack and older-file rejection, end-of-file insertion, and a window test of the refused Save.
+
 ## 2.1 (11 November 2026)
 
 Shipped in `fm_name_editor.py` and `FM Name Editor.bat`.

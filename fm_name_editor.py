@@ -82,16 +82,56 @@ def friendly(cmd: str) -> str:
     return FRIENDLY.get(cmd, cmd)
 
 
-def name_is_legal(new: str) -> bool:
-    """Return True when new can be stored as one quoted .lnc field.
+def field_is_legal(text: str) -> bool:
+    """Return True when text can sit inside one quoted .lnc field.
 
-    A legal name is non-empty, contains no double quote, and contains no
-    ASCII control character (including CR and LF). Tabs are allowed because
-    they sit inside the quotes and do not split the line.
+    Empty is legal: the language field usually is. A double quote would end
+    the field early, and an ASCII control character (including CR and LF)
+    would split the record on the next load. Tabs are allowed because they
+    sit inside the quotes and do not split the line.
     """
-    if not new or '"' in new:
+    if '"' in text:
         return False
-    return all(ord(ch) >= 32 or ch == "\t" for ch in new)
+    return all(ord(ch) >= 32 or ch == "\t" for ch in text)
+
+
+def name_is_legal(new: str) -> bool:
+    """Return True when new can be stored as a non-empty quoted name field."""
+    return bool(new) and field_is_legal(new)
+
+
+def id_is_legal(id_: str) -> bool:
+    """Return True for an ASCII decimal database id such as ``740``."""
+    return bool(id_) and id_.isascii() and id_.isdigit()
+
+
+def is_name_command(cmd: str) -> bool:
+    """True for a command the editor treats as a simple quoted-name change."""
+    return (
+        CMD_RE.match(cmd) is not None
+        and cmd.endswith("_NAME_CHANGE")
+        and cmd != "CHANGE_PLAYER_NAME"
+    )
+
+
+def build_name_line(cmd: str, id_: str, name: str, lang: str) -> str:
+    """Form one name line from its four fields.
+
+    Every field is checked here, so a bad value from a pack or an older
+    file cannot write a second record into the output.
+
+    Raises:
+        ValueError: a field would break the one-record-per-line format.
+    """
+    if not is_name_command(cmd):
+        raise ValueError(f"Not a name command: {cmd!r}")
+    if not id_is_legal(id_):
+        raise ValueError(f"Not a database id: {id_!r}")
+    if not name_is_legal(name):
+        raise ValueError(f"Not a legal name: {name!r}")
+    if not field_is_legal(lang):
+        raise ValueError(f"Not a legal language: {lang!r}")
+    return f'"{cmd}"\t{id_}\t"{name}"\t"{lang}"'
 
 
 def fold(text: str) -> str:
@@ -388,6 +428,12 @@ class LncDoc:
         return [e for e in self.entries if e.kind == "problem"]
 
     def append_entry(self, cmd, id_, name, lang) -> Entry:
+        """Add a name line at the end of the file.
+
+        Raises:
+            ValueError: a field is not legal. Nothing is added then.
+        """
+        raw = build_name_line(cmd, id_, name, lang)
         if self.entries and not self.entries[-1].eol:
             self.entries[-1].eol = self.default_eol
         marker = "#Imported by FM Name Editor"
@@ -396,7 +442,6 @@ class LncDoc:
             m.kind = "comment"
             m.section = "Imported by FM Name Editor"
             self.entries.append(m)
-        raw = f'"{cmd}"\t{id_}\t"{name}"\t"{lang}"'
         e = Entry(self, raw, self.default_eol, len(self.entries) + 1)
         parse_line(e)
         e.section = "Imported by FM Name Editor"
@@ -450,7 +495,8 @@ def build_proposals(target_docs, old_docs, base_docs=None):
     """Compare older files against the loaded files.
 
     Returns (changes, missing, stats). stats['skipped'] counts older name
-    lines that were blank or contained a double quote.
+    lines that could not be written as one legal line: a blank name, a
+    double quote or control character, or an illegal id or language.
 
     A proposed change is pre-ticked only when an unedited original was
     supplied and the row is a genuine personal edit. Rows noted
@@ -464,7 +510,7 @@ def build_proposals(target_docs, old_docs, base_docs=None):
     stats = {"old": len(old), "same": 0, "stock": 0, "skipped": 0}
     for key, oe in old.items():
         name = oe.name.strip()
-        if '"' in name or not name:
+        if not name_is_legal(name) or not id_is_legal(oe.id) or not field_is_legal(oe.lang):
             stats["skipped"] += 1
             continue
         if base is not None and key in base and base[key].name.strip() == name:
@@ -526,9 +572,13 @@ def apply_proposals(changes, missing, docs):
                 n += 1
     added = []
     for proposal in missing:
-        if proposal.checked and name_is_legal(proposal.new.strip()):
+        if not proposal.checked:
+            continue
+        try:
             added.append(pick_doc_for(proposal.cmd, docs).append_entry(
                 proposal.cmd, proposal.id, proposal.new, proposal.lang))
+        except ValueError:
+            continue
     return n, added
 
 
@@ -706,13 +756,23 @@ def command_for(family: str, slot: str) -> str:
 
 
 def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str) -> Entry:
-    """Insert a new name line just after a sibling, keeping its section."""
+    """Insert a new name line just after a sibling, keeping its section.
+
+    A sibling that is the last line of a file may have no line ending. It
+    gets the document's usual ending first, so the two commands do not run
+    together on one line.
+
+    Raises:
+        ValueError: a field is not legal. Nothing is inserted then.
+    """
     doc = anchor.doc
-    raw = f'"{cmd}"\t{id_}\t"{name}"\t"{lang}"'
+    raw = build_name_line(cmd, id_, name, lang)
     entry = Entry(doc, raw, doc.default_eol, anchor.lineno + 1)
     parse_line(entry)
     if entry.kind != "name":
         raise ValueError(f"Could not form a name line for {cmd}")
+    if not anchor.eol:
+        anchor.eol = doc.default_eol
     entry.section = anchor.section
     entry.imported = True
     index_at = doc.entries.index(anchor) + 1
@@ -743,11 +803,14 @@ def set_entity_field(entity: NameEntity, slot: str, new: str, docs) -> bool:
         return changed
     cmd = command_for(entity.family, slot)
     anchor = next(entity.entries(), None)
-    if anchor is not None:
-        created = insert_name_after(anchor, cmd, entity.id, cleaned, entity.lang)
-    else:
-        created = pick_doc_for(cmd, docs).append_entry(cmd, entity.id, cleaned, entity.lang)
-        created.section = entity.section
+    try:
+        if anchor is not None:
+            created = insert_name_after(anchor, cmd, entity.id, cleaned, entity.lang)
+        else:
+            created = pick_doc_for(cmd, docs).append_entry(cmd, entity.id, cleaned, entity.lang)
+            created.section = entity.section
+    except ValueError:
+        return False
     entity.slots.setdefault(slot, []).append(created)
     return True
 
@@ -1000,11 +1063,13 @@ def process_names_from_tasklist(text: str) -> list[str]:
     return found
 
 
-def football_manager_running() -> list[str]:
-    """Return matching process names. Empty when the game is not running.
+def football_manager_running() -> list[str] | None:
+    """Return matching process names, or None when the list could not be read.
 
-    This never stops a process. If the process list cannot be read, the
-    result is empty and the caller decides what to do.
+    An empty list means the game is not running. None means the process
+    list is unknown: tasklist was missing, failed, or took more than ten
+    seconds. Callers must not read None as "closed". This never stops a
+    process.
     """
     try:
         out = subprocess.run(
@@ -1015,8 +1080,68 @@ def football_manager_running() -> list[str]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        return None
+    if out.returncode != 0:
+        return None
     return process_names_from_tasklist(out.stdout)
+
+
+class Preflight:
+    """What one write into the game tree would touch, and whether it may start.
+
+    ``running`` lists the Football Manager processes found. ``check_failed``
+    is True when the process list could not be read, which is not the same
+    as the game being closed.
+    """
+
+    __slots__ = ("operation", "paths", "game_paths", "running", "check_failed")
+
+    def __init__(self, operation: str, paths, game_paths, running, check_failed: bool):
+        self.operation = operation
+        self.paths = list(paths)
+        self.game_paths = list(game_paths)
+        self.running = list(running)
+        self.check_failed = check_failed
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.running)
+
+    def blocked_message(self) -> str:
+        return (
+            "Football Manager is running: " + ", ".join(self.running)
+            + "\nClose the game before writing game files.")
+
+    def unknown_message(self) -> str:
+        return (
+            "The check for a running copy of Football Manager could not be made. "
+            "Make sure the game is closed before you continue.")
+
+
+def game_write_preflight(operation: str, paths, game_root: Path | None = None,
+                         check=None) -> Preflight:
+    """Check one write before it starts. Shared by Save, Deploy, and licensing.
+
+    ``paths`` are the files the operation would write. With a ``game_root``,
+    only paths under it count as game writes. With ``None``, every path is
+    a game write: Deploy and the licensing toggle only ever touch the game
+    tree. The process check runs only when there is a game write to make.
+    ``check`` replaces the process lookup in tests.
+    """
+    paths = [Path(path) for path in paths]
+    if game_root is None:
+        game_paths = list(paths)
+    else:
+        game_paths = [path for path in paths if under_game_tree(path, game_root)]
+    running: list[str] = []
+    check_failed = False
+    if game_paths:
+        found = (check or football_manager_running)()
+        if found is None:
+            check_failed = True
+        else:
+            running = list(found)
+    return Preflight(operation, paths, game_paths, running, check_failed)
 
 
 def licence_inventory(version_dir: Path) -> list[dict]:
@@ -1139,17 +1264,21 @@ def pack_to_csv(pack: dict) -> str:
 
 
 def _pack_row(raw: dict) -> dict | None:
-    """Return a clean pack row, or None when the row cannot be applied."""
+    """Return a clean pack row, or None when the row cannot be applied.
+
+    Every field is checked, the language included, so a pack cannot write
+    a second record into the file through a quote or a line break.
+    """
     cmd = str(raw.get("command", "")).strip()
     id_ = str(raw.get("id", "")).strip()
     lang = str(raw.get("language", "")).strip()
     name = str(raw.get("name", "")).strip()
-    legal_cmd = (
-        CMD_RE.match(cmd) is not None
-        and cmd.endswith("_NAME_CHANGE")
-        and cmd != "CHANGE_PLAYER_NAME"
-    )
-    if not legal_cmd or not id_.isdigit() or not name_is_legal(name):
+    if (
+        not is_name_command(cmd)
+        or not id_is_legal(id_)
+        or not name_is_legal(name)
+        or not field_is_legal(lang)
+    ):
         return None
     return {"command": cmd, "id": id_, "language": lang, "name": name}
 
@@ -1641,8 +1770,9 @@ def run_gui(paths):
             if bad:
                 text += f" {bad} malformed lines in the older files were ignored."
             if stats.get("skipped"):
-                text += (f" {stats['skipped']} older name(s) were skipped because they "
-                         "were blank or contained a double quote.")
+                text += (f" {stats['skipped']} older name(s) were skipped because the "
+                         "name was blank, or the name, id, or language could not be "
+                         "written as one line.")
             text += (" Entries under 'Not in current files' are added to the end of the "
                      "file if ticked; their IDs may no longer exist in the game.")
             self.summary.setText(text)
@@ -1935,6 +2065,29 @@ def run_gui(paths):
             self.applied = apply_bulk(self.edits, self.docs)
             self.accept()
 
+    def confirm_game_write(parent, preflight: Preflight, question: str, note: str = "") -> bool:
+        """Show a preflight result and ask once. True means the write may go ahead.
+
+        A running game is refused outright, with the same message for Save,
+        Deploy, and the licensing toggle. An unknown process state is stated
+        in the question, with No as the default answer. The question lists
+        the exact game files the operation would write.
+        """
+        if preflight.blocked:
+            QMessageBox.warning(parent, APP_NAME, preflight.blocked_message())
+            return False
+        listed = preflight.game_paths or preflight.paths
+        text = question + "\n\n" + "\n".join(str(path) for path in listed)
+        if note:
+            text += "\n\n" + note
+        default = QMessageBox.Yes
+        if preflight.check_failed:
+            text += "\n\n" + preflight.unknown_message()
+            default = QMessageBox.No
+        answer = QMessageBox.question(
+            parent, APP_NAME, text, QMessageBox.Yes | QMessageBox.No, default)
+        return answer == QMessageBox.Yes
+
     class LicenceDialog(QDialog):
         """Report licensing files, and set aside the name-mask set."""
 
@@ -1991,20 +2144,14 @@ def run_gui(paths):
                     self, APP_NAME,
                     "Only a present or disabled name-mask file can be toggled.")
                 return
-            running = football_manager_running()
-            if running:
-                QMessageBox.warning(
-                    self, APP_NAME,
-                    "Close Football Manager before changing licensing files.\n"
-                    + ", ".join(running))
-                return
             verb = "disable" if row["state"] == "present" else "restore"
-            answer = QMessageBox.question(
-                self, APP_NAME,
-                f"This will {verb}:\n{row['path']}\n\n"
-                "A copy is stored in the backups folder first.",
-                QMessageBox.Yes | QMessageBox.No)
-            if answer != QMessageBox.Yes:
+            target = row["path"]
+            if row["state"] == "disabled":
+                target = target.with_name(target.name + ".disabled")
+            preflight = game_write_preflight(f"{verb} a licensing file", [target])
+            if not confirm_game_write(
+                    self, preflight, f"This will {verb} the file below.",
+                    "A copy is stored in the backups folder first."):
                 return
             try:
                 result = toggle_licence(self.version, row["rel"], BACKUP_ROOT)
@@ -2540,10 +2687,20 @@ def run_gui(paths):
             self.tabs.setCurrentIndex(0)
 
         def save(self):
-            """Write every dirty document, and report encode errors without crashing."""
+            """Write every dirty document, and report encode errors without crashing.
+
+            A document that lives inside the game tree goes through the same
+            preflight as Deploy: refused while the game runs, and confirmed
+            with the exact paths first. Files elsewhere are written as before.
+            """
             dirty = [doc for doc in self.docs if doc.dirty]
             if not dirty:
                 self.statusBar().showMessage("Nothing to save.", 4000)
+                return
+            preflight = game_write_preflight("Save", [doc.path for doc in dirty], GAME_DB_ROOT)
+            if preflight.game_paths and not confirm_game_write(
+                    self, preflight, "Save these files into the game folder?",
+                    "A copy of each existing game file is stored under backups first."):
                 return
             try:
                 archive = save_documents(dirty, GAME_DB_ROOT, BACKUP_ROOT)
@@ -2933,12 +3090,6 @@ def run_gui(paths):
             if not self.docs:
                 QMessageBox.information(self, APP_NAME, "Open the name files first.")
                 return
-            running = football_manager_running()
-            if running:
-                QMessageBox.warning(
-                    self, APP_NAME,
-                    "Close Football Manager before deploying.\n" + ", ".join(running))
-                return
             version = self.selected_version()
             if version is None:
                 QMessageBox.warning(self, APP_NAME, "No database folder is selected.")
@@ -2965,17 +3116,11 @@ def run_gui(paths):
                     "None of the open files are FM27_Club_Names.lnc or FM27_Fix.lnc.")
                 return
             pairs = [(seen[name], targets[name]) for name in NAME_FILES if name in seen]
-            lines = "\n".join(str(dest) for _doc, dest in pairs)
-            extra = ""
+            note = "A copy of each existing game file is stored under backups first."
             if skipped:
-                extra = "\n\nLeft untouched:\n" + "\n".join(skipped)
-            answer = QMessageBox.question(
-                self, APP_NAME,
-                "Deploy these files into the game?\n\n" + lines
-                + "\n\nA copy of each existing game file is stored under backups first."
-                + extra,
-                QMessageBox.Yes | QMessageBox.No)
-            if answer != QMessageBox.Yes:
+                note += "\n\nLeft untouched:\n" + "\n".join(skipped)
+            preflight = game_write_preflight("Deploy", [dest for _doc, dest in pairs])
+            if not confirm_game_write(self, preflight, "Deploy these files into the game?", note):
                 return
             try:
                 archive = deploy_documents(pairs, BACKUP_ROOT)
@@ -3111,7 +3256,9 @@ def run_gui(paths):
                 f"{stats['rows']} usable name(s). {stats['same']} already match. "
                 f"{stats['duplicate']} repeated key(s) kept the last spelling.")
             if skipped:
-                summary += f" {skipped} row(s) were skipped because they are not legal names."
+                summary += (
+                    f" {skipped} row(s) were skipped because their command, id, name, "
+                    "or language could not be written as one line.")
             dialog = PackDialog(self, changes, missing, summary)
             if dialog.exec() and dialog.result_counts is not None:
                 updated, added = dialog.result_counts

@@ -531,6 +531,235 @@ class WindowSmoke(unittest.TestCase):
             win.tabs.setCurrentIndex(1)
             self.assertIn("Manchester United", win.line_model.rows[0].name)
 
+    def test_save_into_game_tree_is_refused_while_the_game_runs(self):
+        """Release 2.2, F1: Quick load, edit, Save gets the same guard as Deploy."""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+
+        def close_without_prompt():
+            for doc in win.docs:
+                doc.dirty = False
+            win.close()
+
+        self.addCleanup(close_without_prompt)
+        text = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = root / "db"
+            path = game / "2700" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            path.parent.mkdir(parents=True)
+            write_lnc(path, text)
+            original = path.read_bytes()
+            win.load([str(path)])
+            model = win.entity_model
+            row = next(index for index, entity in enumerate(model.rows) if entity.id == "1")
+            self.assertTrue(model.setData(model.index(row, 2), "Beta"))
+            self.assertTrue(win.docs[0].dirty)
+            with patch.object(editor, "GAME_DB_ROOT", game), \
+                    patch.object(editor, "BACKUP_ROOT", root / "backups"), \
+                    patch.object(editor, "football_manager_running", return_value=["fm.exe"]), \
+                    patch.object(QMessageBox, "warning", return_value=QMessageBox.Ok) as warned, \
+                    patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as asked:
+                win.save()
+                self.assertEqual(warned.call_count, 1)
+                self.assertIn("fm.exe", warned.call_args.args[2])
+                self.assertEqual(asked.call_count, 0)
+                self.assertTrue(win.docs[0].dirty)
+                self.assertEqual(path.read_bytes(), original)
+                # With the game closed, Save asks once, names the file, then writes.
+                with patch.object(editor, "football_manager_running", return_value=[]):
+                    win.save()
+                self.assertEqual(asked.call_count, 1)
+                self.assertIn(str(path), asked.call_args.args[2])
+                self.assertFalse(win.docs[0].dirty)
+                self.assertIn(b'"Beta"', path.read_bytes())
+                self.assertTrue((root / "backups").is_dir())
+
+
+class Session1Safety(unittest.TestCase):
+    """Release 2.2, session 1: game-write preflight, field checks, EOF insertion."""
+
+    def test_football_manager_running_is_tri_state(self):
+        from unittest.mock import patch
+        import subprocess
+
+        class Result:
+            def __init__(self, stdout, returncode=0):
+                self.stdout = stdout
+                self.returncode = returncode
+
+        with patch.object(editor.subprocess, "run",
+                          return_value=Result('"fm.exe","1","Console","1","1 K"\n')):
+            self.assertEqual(editor.football_manager_running(), ["fm.exe"])
+        with patch.object(editor.subprocess, "run", return_value=Result("")):
+            self.assertEqual(editor.football_manager_running(), [])
+        with patch.object(editor.subprocess, "run", side_effect=OSError("no tasklist")):
+            self.assertIsNone(editor.football_manager_running())
+        with patch.object(editor.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired("tasklist", 10)):
+            self.assertIsNone(editor.football_manager_running())
+        with patch.object(editor.subprocess, "run", return_value=Result("", returncode=1)):
+            self.assertIsNone(editor.football_manager_running())
+
+    def test_preflight_checks_only_game_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = root / "db"
+            inside = game / "2700" / "lnc" / "all" / "FM27_Fix.lnc"
+            outside = root / "mine.lnc"
+            calls = []
+
+            def running():
+                calls.append(1)
+                return ["fm.exe"]
+
+            result = editor.game_write_preflight("Save", [outside], game, check=running)
+            self.assertEqual(calls, [])
+            self.assertEqual(result.game_paths, [])
+            self.assertFalse(result.blocked)
+            self.assertFalse(result.check_failed)
+
+            result = editor.game_write_preflight("Save", [outside, inside], game, check=running)
+            self.assertEqual(calls, [1])
+            self.assertEqual(result.game_paths, [inside])
+            self.assertTrue(result.blocked)
+            self.assertIn("fm.exe", result.blocked_message())
+
+            result = editor.game_write_preflight("Deploy", [inside], check=lambda: [])
+            self.assertEqual(result.game_paths, [inside])
+            self.assertFalse(result.blocked)
+            self.assertFalse(result.check_failed)
+
+            result = editor.game_write_preflight("Deploy", [inside], check=lambda: None)
+            self.assertFalse(result.blocked)
+            self.assertTrue(result.check_failed)
+            self.assertIn("could not be made", result.unknown_message())
+
+    def test_fields_are_checked_before_a_line_is_built(self):
+        self.assertTrue(editor.field_is_legal(""))
+        self.assertTrue(editor.field_is_legal("English"))
+        self.assertFalse(editor.field_is_legal('Eng"lish'))
+        self.assertFalse(editor.field_is_legal("Eng\nlish"))
+        self.assertFalse(editor.field_is_legal("Eng\rlish"))
+        self.assertFalse(editor.field_is_legal("Eng\x01lish"))
+        self.assertTrue(editor.id_is_legal("740"))
+        self.assertFalse(editor.id_is_legal(""))
+        self.assertFalse(editor.id_is_legal("74a"))
+        self.assertFalse(editor.id_is_legal("٣"))   # Arabic-Indic three
+        self.assertTrue(editor.is_name_command("CLUB_NAME_CHANGE"))
+        self.assertFalse(editor.is_name_command("CHANGE_PLAYER_NAME"))
+        self.assertFalse(editor.is_name_command("club_name_change"))
+        self.assertEqual(
+            editor.build_name_line("CLUB_NAME_CHANGE", "1", "Alpha", ""),
+            '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""')
+        self.assertEqual(
+            editor.build_name_line("AWARD_NAME_CHANGE", "7", "Golden Boot", "English"),
+            '"AWARD_NAME_CHANGE"\t7\t"Golden Boot"\t"English"')
+        for lang in ('Eng"lish', "Eng\nlish", "Eng\x01lish"):
+            with self.assertRaises(ValueError):
+                editor.build_name_line("CLUB_NAME_CHANGE", "1", "Alpha", lang)
+        with self.assertRaises(ValueError):
+            editor.build_name_line("CLUB_NAME_CHANGE", "x1", "Alpha", "")
+        with self.assertRaises(ValueError):
+            editor.build_name_line("CHANGE_PLAYER_NAME", "1", "Alpha", "")
+        with self.assertRaises(ValueError):
+            editor.build_name_line("CLUB_NAME_CHANGE", "1", "", "")
+
+    def test_bad_language_cannot_reach_the_file(self):
+        text = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "names.lnc"
+            write_lnc(path, text)
+            doc = editor.LncDoc(path)
+            before = doc.to_bytes()
+            with self.assertRaises(ValueError):
+                doc.append_entry("CLUB_NAME_CHANGE", "2", "Beta", 'x"\t2\t"y')
+            with self.assertRaises(ValueError):
+                editor.insert_name_after(
+                    doc.names()[0], "CLUB_SHORT_NAME_CHANGE", "1", "Alph", "a\nb")
+            self.assertEqual(doc.to_bytes(), before)
+            self.assertFalse(doc.dirty)
+            self.assertEqual(len(doc.entries), 1)
+            # A pack row with a bad language or id is rejected and counted.
+            pack = (
+                '{"format":"fm-name-pack","version":1,"names":['
+                '{"command":"CLUB_NAME_CHANGE","id":"2","language":"x\\"","name":"Beta"},'
+                '{"command":"CLUB_NAME_CHANGE","id":"3","language":"a\\nb","name":"Gamma"},'
+                '{"command":"CLUB_NAME_CHANGE","id":"4x","language":"","name":"Delta"},'
+                '{"command":"CLUB_NAME_CHANGE","id":"5","language":"English","name":"Eps"}]}')
+            rows, skipped, error = editor.parse_pack(pack, "json")
+            self.assertEqual(error, "")
+            self.assertEqual(skipped, 3)
+            self.assertEqual([row["id"] for row in rows], ["5"])
+            changes, missing, _stats = editor.proposals_from_pack([doc], rows)
+            self.assertEqual(changes, [])
+            self.assertEqual(len(missing), 1)
+            missing[0].checked = True
+            _count, added = editor.apply_proposals(changes, missing, [doc])
+            self.assertEqual(len(added), 1)
+            self.assertEqual(added[0].lang, "English")
+            # A hand-made missing proposal with a bad language is left out, not raised.
+            bad = editor.Proposal("CLUB_NAME_CHANGE", "9", 'x"', "Mine", None, "", True)
+            count, added = editor.apply_proposals([], [bad], [doc])
+            self.assertEqual((count, added), (0, []))
+            reloaded = editor.LncDoc(path)
+            self.assertEqual(len(reloaded.names()), 1)
+
+    def test_older_file_with_bad_language_is_skipped_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            old_path = folder / "old.lnc"
+            write_lnc(old_path, '"CLUB_NAME_CHANGE"\t9\t"Mine"\t"Eng\x01lish"\n')
+            old = editor.LncDoc(old_path)
+            self.assertEqual(len(old.names()), 1)
+            target_path = folder / "new.lnc"
+            write_lnc(target_path, '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n')
+            target = editor.LncDoc(target_path)
+            changes, missing, stats = editor.build_proposals([target], [old], None)
+            self.assertEqual((changes, missing), ([], []))
+            self.assertEqual(stats["skipped"], 1)
+
+    def test_insert_after_last_line_without_ending(self):
+        cases = (
+            ("utf-8", b"\xef\xbb\xbf", "\n"),
+            ("utf-8", b"\xef\xbb\xbf", "\r\n"),
+            ("utf-16-le", b"\xff\xfe", "\r\n"),
+        )
+        for encoding, bom, eol in cases:
+            with self.subTest(encoding=encoding, eol=repr(eol)):
+                text = (
+                    f"#England{eol}"
+                    f'"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""{eol}'
+                    '"CLUB_SHORT_NAME_CHANGE"\t2\t"Arsenal"\t""'
+                )
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "FM27_Club_Names.lnc"
+                    path.write_bytes(bom + text.encode(encoding))
+                    doc = editor.LncDoc(path)
+                    self.assertEqual(doc.to_bytes(), path.read_bytes())
+                    entity = next(
+                        item for item in editor.build_entities([doc])
+                        if item.family == "club" and item.id == "2")
+                    self.assertTrue(
+                        editor.set_entity_field(entity, "long", "Arsenal FC", [doc]))
+                    out = Path(tmp) / "out.lnc"
+                    out.write_bytes(doc.to_bytes())
+                    again = editor.LncDoc(out)
+                    self.assertEqual(again.problems(), [])
+                    self.assertEqual(
+                        [(entry.cmd, entry.id, entry.name) for entry in again.names()],
+                        [("CLUB_NAME_CHANGE", "1", "Alpha"),
+                         ("CLUB_SHORT_NAME_CHANGE", "2", "Arsenal"),
+                         ("CLUB_NAME_CHANGE", "2", "Arsenal FC")])
+                    self.assertTrue(out.read_bytes().endswith(eol.encode(encoding)))
+                    self.assertEqual(again.encoding, encoding)
+
 
 if __name__ == "__main__":
     unittest.main()
