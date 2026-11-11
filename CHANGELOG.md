@@ -8,7 +8,7 @@ The program on disk reports `VERSION = "2.1"`. The launcher banner says v2.1.
 
 ## Unreleased — Release 2.2 in progress
 
-Not released. `VERSION` still reads 2.1. Session 1 of Release 2.2 was done on 11 November 2026; sessions 2 and 3 follow.
+Not released. `VERSION` still reads 2.1. Sessions 1 and 2 of Release 2.2 were done on 11 November 2026; session 3 follows.
 
 Session 1 — correctness and write safety, part one (review findings F1, F2, F3):
 
@@ -16,6 +16,15 @@ Session 1 — correctness and write safety, part one (review findings F1, F2, F3
 - **Every field of a new line is checked.** Command, database id (ASCII digits), name, and language are validated before a line is formed, at pack import, older-file import, and entity-field insertion. A quote, a line break, or a control character in a language field is rejected and counted as a skipped row instead of becoming a second record in the file.
 - **End-of-file insertion.** Filling an empty entity field beside a last line that has no line ending now gives that line its ending first, so the two commands no longer run together. Covered for LF, CRLF, and UTF-16 files.
 - Tests: 33, up from 26. New cover for the preflight states, process-list failures, field checks, pack and older-file rejection, end-of-file insertion, and a window test of the refused Save.
+
+Session 2 — correctness and write safety, part two (review findings F4 and F5, plus load and label items):
+
+- **Unsaved means the bytes differ.** Each open file remembers the bytes it was read as, or last written as. It counts as unsaved whenever the lines in memory would write different bytes. Before, an edit followed by a revert could clear the flag while memory still differed from the file, so closing could skip the save prompt.
+- **A restore stays pending until it is written.** Restoring a backup keeps the file on disk as the baseline. Restored rows that differ from the disk file show as Edited, rows the disk file does not have show as Added, and disk rows the backup lacks are counted as unsaved. Edited-only export after a restore lists exactly the rows that differ from disk. Reverting a restored row puts back the text on disk. Restoring a copy that matches the disk file leaves nothing unsaved.
+- **Revert restores Greek person rules in full.** Both the matched ending and the replacement come back, and the status line counts person rules separately. The All lines view no longer overwrites its revert message straight away.
+- **Opening files is all or nothing.** Every file is read first. If one cannot be read or decoded, a message names it and the files already open stay open. Before, a bad encoding could escape the error handler and a failed open emptied the workspace. The import dialog now catches decoding errors too.
+- **Plainer labels.** "Missing short name" and "Missing code" are now "No short-name override" and "No code override". "Section" is now "File section", with a hint that it is the comment heading in the file and not a reliable country. The unsaved count includes restored and removed rows, and says "file differs from disk" when only comments or layout differ.
+- Tests: 50, up from 33. New cover for restore baselines and pending state, repeated and failed restores, Greek rule revert in every order, all-or-nothing opening, the close prompt after a restore, and the new labels.
 
 ## 2.1 (11 November 2026)
 

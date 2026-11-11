@@ -71,6 +71,12 @@ FRIENDLY = {
     "PERSON_SECOND_NAME_END_CHANGE": "Person - second name ending",
 }
 
+FILE_SECTION_HINT = (
+    "The # comment heading this line sits under in the name file. It is file "
+    "structure, not a reliable country. In FM27_Fix.lnc, for instance, the Premier "
+    "League lines come before the #England heading, so they sit under the heading "
+    "above it.")
+
 PACK_FORMAT = "fm-name-pack"
 PACK_VERSION = 1
 UTF8_BOM = BOM
@@ -182,12 +188,7 @@ class Entry:
 
     def _note_edit(self) -> None:
         self._fold = None
-        if self.changed:
-            self.doc.dirty = True
-            return
-        self.doc.dirty = any(
-            entry.kind in ("name", "person") and entry.changed
-            for entry in self.doc.entries)
+        self.doc.touch()
 
     def set_name(self, new: str):
         start, end = self.span
@@ -232,6 +233,36 @@ def try_set_source(entry: Entry, new: str) -> bool:
         return False
     entry.set_source(cleaned)
     return True
+
+
+def revert_entry(entry: Entry) -> str:
+    """Put one name line or person rule back to the text on disk.
+
+    A person rule has two editable fields, the matched ending and the
+    replacement. Both are restored. Returns "added" for a row that is not
+    in the file on disk (there is nothing to put back), "name" or "rule"
+    when text was restored, and "same" when nothing differed.
+    """
+    if entry.imported:
+        return "added"
+    restored = False
+    if entry.kind == "person" and entry.source != entry.orig_source:
+        entry.set_source(entry.orig_source)
+        restored = True
+    if entry.name != entry.orig_name:
+        entry.set_name(entry.orig_name)
+        restored = True
+    if not restored:
+        return "same"
+    return "rule" if entry.kind == "person" else "name"
+
+
+def revert_entries(entries) -> dict:
+    """Revert each entry. Returns a count for every outcome of revert_entry."""
+    counts = {"name": 0, "rule": 0, "added": 0, "same": 0}
+    for entry in entries:
+        counts[revert_entry(entry)] += 1
+    return counts
 
 
 def is_person_command(cmd: str) -> bool:
@@ -331,19 +362,85 @@ def _parse_person(entry: Entry, toks, leftover: str) -> None:
     entry.span = toks[4].span()
 
 
+def parse_lnc_bytes(doc, data: bytes):
+    """Split file bytes into lines and parse each one.
+
+    Returns (entries, encoding, has_bom, default_eol). Nothing else is
+    touched, so a file that fails to decode raises before any state changes.
+    ``doc`` owns the new entries; pass None to parse a copy for comparison.
+
+    Raises:
+        UnicodeError: the bytes are not valid in the encoding they announce.
+    """
+    text, encoding, has_bom = decode_lnc_bytes(data)
+    section = ""
+    default_eol = "\r\n" if "\r\n" in text else "\n"
+    entries: list[Entry] = []
+    for n, line in enumerate(text.splitlines(keepends=True), 1):
+        body = line.rstrip("\r\n")
+        entry = Entry(doc, body, line[len(body):], n)
+        parse_line(entry)
+        if entry.kind == "comment":
+            heading = body.strip().lstrip("#").strip().rstrip(":").strip()
+            if heading and not set(heading) <= set("=-_*~ "):
+                section = heading
+        entry.section = section
+        entries.append(entry)
+    return entries, encoding, has_bom, default_eol
+
+
+def adopt_disk_originals(entries, on_disk) -> list:
+    """Compare restored lines with the lines on disk and set their originals.
+
+    Rows are matched by key, in file order among rows that share a key. A
+    matched row takes the disk text as its original, so it shows as edited
+    when it differs. A row with no match is marked added. Returns the disk
+    rows that no restored row matched.
+    """
+    def numbered(rows):
+        seen: dict = {}
+        for row in rows:
+            if row.kind not in ("name", "person"):
+                continue
+            count = seen.get(row.key, 0)
+            seen[row.key] = count + 1
+            yield (row.key, count), row
+
+    pool = dict(numbered(on_disk))
+    for slot, row in numbered(entries):
+        match = pool.pop(slot, None)
+        if match is None:
+            row.imported = True
+        else:
+            row.orig_name = match.name
+            row.orig_source = match.source
+    return list(pool.values())
+
+
 class LncDoc:
-    """A whole .lnc file, kept line-by-line so it can be written back exactly."""
+    """A whole .lnc file, kept line-by-line so it can be written back exactly.
+
+    ``baseline_bytes`` is the file as it is on disk: read at load, replaced
+    when a write succeeds. ``dirty`` compares the working lines with it.
+    """
 
     def __init__(self, path):
         self.path = Path(path)
         self.entries: list[Entry] = []
-        self.dirty = False
         self.has_bom = False
         self.encoding = "utf-8"
+        self.default_eol = "\n"
+        self.baseline_bytes = b""
+        self.removed_rows: list[Entry] = []
+        self._revision = 0
+        self._dirty_stamp = None
+        self._dirty_value = False
         self.load()
 
     def load(self):
-        self._read_into(self.path.read_bytes())
+        data = self.path.read_bytes()
+        self._read_into(data)
+        self.baseline_bytes = data
 
     def _read_into(self, data: bytes) -> None:
         """Replace the in-memory lines from already-read bytes.
@@ -351,25 +448,13 @@ class LncDoc:
         The path is left as it is. Assignment happens after a successful
         decode, so a bad file does not wipe the lines already loaded.
         """
-        text, encoding, has_bom = decode_lnc_bytes(data)
-        section = ""
-        default_eol = "\r\n" if "\r\n" in text else "\n"
-        entries: list[Entry] = []
-        for n, line in enumerate(text.splitlines(keepends=True), 1):
-            body = line.rstrip("\r\n")
-            entry = Entry(self, body, line[len(body):], n)
-            parse_line(entry)
-            if entry.kind == "comment":
-                heading = body.strip().lstrip("#").strip().rstrip(":").strip()
-                if heading and not set(heading) <= set("=-_*~ "):
-                    section = heading
-            entry.section = section
-            entries.append(entry)
+        entries, encoding, has_bom, default_eol = parse_lnc_bytes(self, data)
         self.encoding = encoding
         self.has_bom = has_bom
         self.default_eol = default_eol
         self.entries = entries
-        self.dirty = False
+        self.removed_rows = []
+        self.touch()
 
     def to_bytes(self) -> bytes:
         """Serialise every line, preserving BOM, encoding, and line endings.
@@ -386,14 +471,69 @@ class LncDoc:
             return (UTF16_BE_BOM if self.has_bom else b"") + body
         return (UTF8_BOM if self.has_bom else b"") + body
 
-    def mark_clean(self) -> None:
-        """Treat the current names as the saved original."""
+    def touch(self) -> None:
+        """Note that the working lines changed, so ``dirty`` is worked out again.
+
+        Entry.set_name and Entry.set_source call this. Anything else that
+        changes ``entries``, a line's raw text, or a line's ending must too.
+        """
+        self._revision += 1
+
+    @property
+    def dirty(self) -> bool:
+        """True when the working lines would write different bytes from the disk file.
+
+        The comparison is with ``baseline_bytes``, so no run of edits and
+        reverts can clear it while memory differs from the file. Text that
+        cannot be encoded counts as different. The answer is kept until the
+        next ``touch``.
+        """
+        stamp = (self._revision, self.encoding, self.has_bom)
+        if stamp != self._dirty_stamp:
+            try:
+                self._dirty_value = self.to_bytes() != self.baseline_bytes
+            except UnicodeError:
+                self._dirty_value = True
+            self._dirty_stamp = stamp
+        return self._dirty_value
+
+    def mark_clean(self, payload: bytes | None = None) -> None:
+        """Accept the working lines as what is on disk now.
+
+        Call it after a successful write, passing the bytes that were written.
+        The originals reset, added flags clear, and ``payload`` becomes the
+        disk baseline.
+        """
+        if payload is None:
+            payload = self.to_bytes()
         for entry in self.entries:
             if entry.kind in ("name", "person"):
                 entry.orig_name = entry.name
                 entry.orig_source = entry.source
                 entry.imported = False
-        self.dirty = False
+        self.baseline_bytes = payload
+        self.removed_rows = []
+        self.touch()
+
+    def replace_working(self, data: bytes) -> None:
+        """Make the working lines match ``data`` while the disk baseline stays put.
+
+        Restore uses this. The bytes are decoded first, so a bad backup changes
+        nothing. Restored rows are then compared with the disk file, see
+        adopt_disk_originals. Disk rows that the backup lacks are kept in
+        ``removed_rows``. The result is pending until a write succeeds.
+        """
+        entries, encoding, has_bom, default_eol = parse_lnc_bytes(self, data)
+        removed: list[Entry] = []
+        if self.baseline_bytes:
+            on_disk = parse_lnc_bytes(None, self.baseline_bytes)[0]
+            removed = adopt_disk_originals(entries, on_disk)
+        self.encoding = encoding
+        self.has_bom = has_bom
+        self.default_eol = default_eol
+        self.entries = entries
+        self.removed_rows = removed
+        self.touch()
 
     def save(self, backup: bool = True) -> None:
         """Write this document back to its path.
@@ -408,7 +548,7 @@ class LncDoc:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             shutil.copy2(self.path, self.path.with_name(f"{self.path.name}.bak-{stamp}"))
         self.path.write_bytes(payload)
-        self.mark_clean()
+        self.mark_clean(payload)
 
     def names(self):
         return [e for e in self.entries if e.kind == "name"]
@@ -447,8 +587,33 @@ class LncDoc:
         e.section = "Imported by FM Name Editor"
         e.imported = True
         self.entries.append(e)
-        self.dirty = True
+        self.touch()
         return e
+
+
+class LoadError(Exception):
+    """A file being opened could not be read or decoded."""
+
+    def __init__(self, path, reason):
+        self.path = Path(path)
+        self.reason = str(reason)
+        super().__init__(f"Could not open {self.path}:\n{self.reason}")
+
+
+def open_documents(paths) -> list[LncDoc]:
+    """Read and parse every path before returning any of them.
+
+    Raises:
+        LoadError: a file could not be read or decoded. No documents are
+            returned then, so the caller's open files stay as they were.
+    """
+    staged = []
+    for raw in paths:
+        try:
+            staged.append(LncDoc(raw))
+        except (OSError, UnicodeError) as exc:
+            raise LoadError(raw, exc) from exc
+    return staged
 
 
 def index(docs) -> dict:
@@ -779,7 +944,7 @@ def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str) -
     doc.entries.insert(index_at, entry)
     for number, item in enumerate(doc.entries, 1):
         item.lineno = number
-    doc.dirty = True
+    doc.touch()
     return entry
 
 
@@ -1014,8 +1179,8 @@ def save_documents(docs, game_root: Path | None, archive_root: Path) -> Path | N
             shutil.copy2(doc.path, doc.path.with_name(f"{doc.path.name}.bak-{stamp}"))
     for doc, payload in payloads:
         doc.path.write_bytes(payload)
-    for doc, _payload in payloads:
-        doc.mark_clean()
+    for doc, payload in payloads:
+        doc.mark_clean(payload)
     return archive
 
 
@@ -1040,9 +1205,9 @@ def deploy_documents(pairs, archive_root: Path) -> Path | None:
         archive = archive_files(existing, archive_root) if existing else None
         for (_doc, dest, _payload), tmp in zip(staged, written):
             tmp.replace(dest)
-        for doc, dest, _payload in staged:
+        for doc, dest, payload in staged:
             doc.path = dest
-            doc.mark_clean()
+            doc.mark_clean(payload)
         return archive
     except Exception:
         for tmp in written:
@@ -1450,11 +1615,13 @@ def restore_into(doc: LncDoc, archive_file: Path) -> None:
     """Replace the open document's lines with a backup. The path is kept.
 
     Nothing is written to ``doc.path``. The caller saves or deploys later.
+    The disk baseline stays as it was, so the restored lines count as
+    pending changes until they are written. A bad backup raises before
+    anything in memory changes.
     """
     if not archive_file.is_file():
         raise FileNotFoundError(archive_file)
-    doc._read_into(archive_file.read_bytes())
-    doc.dirty = True
+    doc.replace_working(archive_file.read_bytes())
 
 
 # --------------------------------------------------------------------------
@@ -1477,7 +1644,7 @@ def run_gui(paths):
 
     # ---------------- main table ----------------
     class EntryModel(QAbstractTableModel):
-        COLS = ["Section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
+        COLS = ["File section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
         NAME_COL = 3
 
         def __init__(self):
@@ -1500,6 +1667,8 @@ def run_gui(paths):
         def headerData(self, section, orientation, role=Qt.DisplayRole):
             if role == Qt.DisplayRole and orientation == Qt.Horizontal:
                 return self.COLS[section]
+            if role == Qt.ToolTipRole and orientation == Qt.Horizontal and section == 0:
+                return FILE_SECTION_HINT
             return None
 
         def flags(self, index):
@@ -1640,7 +1809,7 @@ def run_gui(paths):
                 if name == "Current name": return p.target.name if p.target else ""
                 if name == "Your older name": return p.new
                 if name == "Language": return p.lang
-                if name == "Section": return p.section
+                if name == "File section": return p.section
                 if name == "Older original": return p.base
                 if name == "Note": return p.note
             return None
@@ -1701,10 +1870,10 @@ def run_gui(paths):
 
             self.tabs = QTabWidget()
             self.change_model = ProposalModel(
-                ["Use", "Section", "Type", "ID", "Current name", "Your older name",
+                ["Use", "File section", "Type", "ID", "Current name", "Your older name",
                  "Older original", "Note", "Language"])
             self.missing_model = ProposalModel(
-                ["Use", "Section", "Type", "ID", "Your older name", "Older original", "Note",
+                ["Use", "File section", "Type", "ID", "Your older name", "Older original", "Note",
                  "Language"])
             for model, title in ((self.change_model, "Different names"),
                                  (self.missing_model, "Not in current files")):
@@ -1748,7 +1917,7 @@ def run_gui(paths):
             try:
                 old = [LncDoc(p) for p in self.old_paths]
                 base = [LncDoc(p) for p in self.base_paths] or None
-            except OSError as exc:
+            except (OSError, UnicodeError) as exc:
                 QMessageBox.critical(self, APP_NAME, f"Could not read file:\n{exc}")
                 return
             changes, missing, stats = build_proposals(self.docs, old, base)
@@ -1860,10 +2029,14 @@ def run_gui(paths):
             return 0 if parent.isValid() else len(self.columns())
 
         def headerData(self, section, orientation, role=Qt.DisplayRole):
+            if role == Qt.ToolTipRole and orientation == Qt.Horizontal:
+                if self.columns()[section] == "section":
+                    return FILE_SECTION_HINT
+                return None
             if role == Qt.DisplayRole and orientation == Qt.Horizontal:
                 key = self.columns()[section]
                 if key == "section":
-                    return "Section"
+                    return "File section"
                 if key == "id":
                     return "ID"
                 if key == "lang":
@@ -2010,7 +2183,7 @@ def run_gui(paths):
             self.preview_label.setWordWrap(True)
             lay.addWidget(self.preview_label)
             self.table = QTableWidget(0, 5)
-            self.table.setHorizontalHeaderLabels(["Section", "ID", "Field", "Before", "After"])
+            self.table.setHorizontalHeaderLabels(["File section", "ID", "Field", "Before", "After"])
             self.table.verticalHeader().setVisible(False)
             self.table.setEditTriggers(QTableWidget.NoEditTriggers)
             self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2177,7 +2350,7 @@ def run_gui(paths):
             self.applied = 0
             lay = QVBoxLayout(self)
             form = QHBoxLayout()
-            form.addWidget(QLabel("Section"))
+            form.addWidget(QLabel("File section"))
             self.section_box = QComboBox()
             self.section_box.addItem("All sections", "")
             seen = set()
@@ -2206,7 +2379,7 @@ def run_gui(paths):
             lay.addLayout(row)
             self.table = QTableWidget(0, 5)
             self.table.setHorizontalHeaderLabels(
-                ["Section", "Type", "ID", "Before", "After"])
+                ["File section", "Type", "ID", "Before", "After"])
             self.table.verticalHeader().setVisible(False)
             self.table.setEditTriggers(QTableWidget.NoEditTriggers)
             self.table.horizontalHeader().setStretchLastSection(True)
@@ -2286,10 +2459,10 @@ def run_gui(paths):
             lay.addWidget(self.summary)
             self.tabs = QTabWidget()
             self.change_model = ProposalModel(
-                ["Use", "Section", "Type", "ID", "Current name", "Your older name",
+                ["Use", "File section", "Type", "ID", "Current name", "Your older name",
                  "Note", "Language"])
             self.missing_model = ProposalModel(
-                ["Use", "Section", "Type", "ID", "Your older name", "Note", "Language"])
+                ["Use", "File section", "Type", "ID", "Your older name", "Note", "Language"])
             key = lambda proposal: (fold(proposal.section), proposal.cmd, proposal.new)
             self.change_model.set_items(sorted(changes, key=key))
             self.missing_model.set_items(sorted(missing, key=key))
@@ -2562,8 +2735,8 @@ def run_gui(paths):
             for mode, label in (
                 ("all", "All"),
                 ("edited", "Edited"),
-                ("missing_short", "Missing short name"),
-                ("missing_code", "Missing code"),
+                ("missing_short", "No short-name override"),
+                ("missing_code", "No code override"),
             ):
                 button = QPushButton(label)
                 button.setCheckable(True)
@@ -2577,7 +2750,7 @@ def run_gui(paths):
             left = QWidget()
             left_lay = QVBoxLayout(left)
             left_lay.setContentsMargins(0, 0, 0, 0)
-            left_lay.addWidget(QLabel("Sections"))
+            left_lay.addWidget(QLabel("File sections"))
             self.section_list = QListWidget()
             left_lay.addWidget(self.section_list)
             splitter.addWidget(left)
@@ -2669,13 +2842,23 @@ def run_gui(paths):
             if paths:
                 self.load(paths)
 
-        def load(self, paths):
-            docs = []
-            for path in paths:
-                try:
-                    docs.append(LncDoc(path))
-                except OSError as exc:
-                    QMessageBox.critical(self, APP_NAME, f"Could not open {path}:\n{exc}")
+        def load(self, paths) -> bool:
+            """Open the files as the new workspace.
+
+            Every file is read and decoded first. If any one fails, a message
+            names it and the files that were already open are left alone.
+            Returns True when the new files replaced the old ones.
+            """
+            paths = list(paths)
+            if not paths:
+                return False
+            try:
+                docs = open_documents(paths)
+            except LoadError as exc:
+                QMessageBox.critical(
+                    self, APP_NAME,
+                    f"{exc}\n\nNothing was opened. The current files are unchanged.")
+                return False
             self.docs.clear()
             self.docs.extend(docs)
             self.family = "club"
@@ -2685,6 +2868,7 @@ def run_gui(paths):
                 button.setChecked(button.property("mode") == "all")
             self.reload_views()
             self.tabs.setCurrentIndex(0)
+            return True
 
         def save(self):
             """Write every dirty document, and report encode errors without crashing.
@@ -2770,45 +2954,36 @@ def run_gui(paths):
         def _revert_lines(self):
             rows = {self.line_proxy.mapToSource(index).row()
                     for index in self.line_view.selectionModel().selectedIndexes()}
-            changed = 0
-            skipped_added = 0
-            for row in rows:
-                entry = self.line_model.rows[row]
-                if entry.imported:
-                    skipped_added += 1
-                    continue
-                if entry.name != entry.orig_name:
-                    entry.set_name(entry.orig_name)
+            counts = {"name": 0, "rule": 0, "added": 0, "same": 0}
+            for row in sorted(rows):
+                outcome = revert_entry(self.line_model.rows[row])
+                counts[outcome] += 1
+                if outcome in ("name", "rule"):
                     self.line_model.row_changed(row)
-                    changed += 1
-            self._revert_message(changed, skipped_added)
             self.entity_model.layoutChanged.emit()
             self.apply_entity_filter()
+            self._revert_message(counts)
 
         def _revert_entities(self):
             rows = {self.entity_proxy.mapToSource(index).row()
                     for index in self.entity_view.selectionModel().selectedIndexes()}
-            changed = 0
-            skipped_added = 0
-            for row in rows:
-                for entry in self.entity_model.rows[row].entries():
-                    if entry.imported:
-                        skipped_added += 1
-                        continue
-                    if entry.name != entry.orig_name:
-                        entry.set_name(entry.orig_name)
-                        changed += 1
+            entries = [entry for row in sorted(rows)
+                       for entry in self.entity_model.rows[row].entries()]
+            counts = revert_entries(entries)
             self.line_model.layoutChanged.emit()
             self.entity_model.layoutChanged.emit()
             self.apply_entity_filter()
-            self._revert_message(changed, skipped_added)
+            self._revert_message(counts)
             if self.inspector_entity is not None:
                 self.show_inspector(self.inspector_entity)
 
-        def _revert_message(self, changed: int, skipped_added: int) -> None:
-            message = f"Reverted {changed} name(s)."
-            if skipped_added:
-                message += f" Left {skipped_added} added row(s) unchanged."
+        def _revert_message(self, counts: dict) -> None:
+            message = f"Reverted {counts['name']} name(s)"
+            if counts["rule"]:
+                message += f" and {counts['rule']} person rule(s)"
+            message += "."
+            if counts["added"]:
+                message += f" Left {counts['added']} added row(s) unchanged."
             self.statusBar().showMessage(message, 5000)
 
         def show_problems(self):
@@ -2830,7 +3005,13 @@ def run_gui(paths):
         def refresh_status(self, *_):
             total = len(self.line_model.rows)
             changed = sum(1 for entry in self.line_model.rows if entry.changed)
+            changed += sum(len(doc.removed_rows) for doc in self.docs)
             dirty = any(doc.dirty for doc in self.docs)
+            if changed or not dirty:
+                unsaved = f"{changed:,} unsaved"
+                unsaved_long = f"{changed:,} unsaved change(s)"
+            else:
+                unsaved = unsaved_long = "file differs from disk"
             names = ", ".join(doc.path.name for doc in self.docs) or "no files open"
             self.setWindowTitle(f"{'* ' if dirty else ''}{APP_NAME} {VERSION} - {names}")
             clubs = sum(1 for entity in self.all_entities if entity.family == "club")
@@ -2839,7 +3020,7 @@ def run_gui(paths):
             version_name = version.name if version is not None else "none"
             self.metrics.setText(
                 f"Database {version_name}    {clubs:,} clubs    "
-                f"{comps:,} competitions    {changed:,} unsaved")
+                f"{comps:,} competitions    {unsaved}")
             if self.tabs.currentIndex() == 0:
                 shown = self.entity_proxy.rowCount()
                 self.statusBar().showMessage(
@@ -2848,7 +3029,7 @@ def run_gui(paths):
             else:
                 self.statusBar().showMessage(
                     f"{self.line_proxy.rowCount():,} shown of {total:,} names    |    "
-                    f"{changed:,} unsaved change(s)    |    double-click a name to edit")
+                    f"{unsaved_long}    |    double-click a name to edit")
 
         def focus_find(self):
             box = self.entity_search if self.tabs.currentIndex() == 0 else self.line_search

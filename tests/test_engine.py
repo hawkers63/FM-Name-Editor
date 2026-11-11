@@ -29,6 +29,13 @@ def write_lnc(path: Path, text: str, bom: bool = True) -> None:
     path.write_bytes((BOM if bom else b"") + data)
 
 
+def close_window(win) -> None:
+    """Close a test window without the unsaved-changes prompt."""
+    for doc in win.docs:
+        doc.mark_clean()
+    win.close()
+
+
 class LegalNames(unittest.TestCase):
     def test_rejects_empty_quote_and_controls(self):
         self.assertFalse(editor.name_is_legal(""))
@@ -475,18 +482,19 @@ class Release21(unittest.TestCase):
             archive = root / "backups" / "20261111-120000"
             archive.mkdir(parents=True)
             stored = archive / path.name
-            stored.write_bytes(path.read_bytes())
+            write_lnc(stored, '"CLUB_NAME_CHANGE"\t1\t"Alpha Old"\t""\n')   # an older copy
+            on_disk = path.read_bytes()
             editor.try_set_name(doc.names()[0], "Beta")
             self.assertEqual(editor.list_archives(root / "backups"), [archive])
             diff = editor.diff_documents(doc, editor.LncDoc(stored))
             self.assertEqual(len(diff), 1)
             self.assertEqual(diff[0]["working"], "Beta")
-            self.assertEqual(diff[0]["archived"], "Alpha")
+            self.assertEqual(diff[0]["archived"], "Alpha Old")
             editor.restore_into(doc, stored)
             self.assertEqual(doc.path, path)
             self.assertTrue(doc.dirty)
-            self.assertEqual(doc.names()[0].name, "Alpha")
-            self.assertEqual(path.read_bytes(), stored.read_bytes())
+            self.assertEqual(doc.names()[0].name, "Alpha Old")
+            self.assertEqual(path.read_bytes(), on_disk)
 
 
 class WindowSmoke(unittest.TestCase):
@@ -497,12 +505,7 @@ class WindowSmoke(unittest.TestCase):
         except Exception as exc:
             self.skipTest(f"Qt window could not be created: {exc}")
 
-        def close_without_prompt():
-            for doc in win.docs:
-                doc.dirty = False
-            win.close()
-
-        self.addCleanup(close_without_prompt)
+        self.addCleanup(close_window, win)
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             text = (
@@ -542,12 +545,7 @@ class WindowSmoke(unittest.TestCase):
         except Exception as exc:
             self.skipTest(f"Qt window could not be created: {exc}")
 
-        def close_without_prompt():
-            for doc in win.docs:
-                doc.dirty = False
-            win.close()
-
-        self.addCleanup(close_without_prompt)
+        self.addCleanup(close_window, win)
         text = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -759,6 +757,348 @@ class Session1Safety(unittest.TestCase):
                          ("CLUB_NAME_CHANGE", "2", "Arsenal FC")])
                     self.assertTrue(out.read_bytes().endswith(eol.encode(encoding)))
                     self.assertEqual(again.encoding, encoding)
+
+
+class Session2WorkingState(unittest.TestCase):
+    """Release 2.2, session 2: the disk baseline, restore, and revert (F4, F5)."""
+
+    ROWS = (
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""\n'
+    )
+
+    def _open(self, tmp, archive_text):
+        root = Path(tmp)
+        path = root / "FM27_Club_Names.lnc"
+        write_lnc(path, self.ROWS)
+        stored = root / "backups" / "20261111-120000" / path.name
+        stored.parent.mkdir(parents=True)
+        write_lnc(stored, archive_text)
+        return editor.LncDoc(path), path, stored
+
+    def test_dirty_means_the_bytes_differ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path, _stored = self._open(tmp, self.ROWS)
+            first = doc.names()[0]
+            self.assertFalse(doc.dirty)
+            editor.try_set_name(first, "Alpha United")
+            self.assertTrue(doc.dirty)
+            self.assertEqual(editor.revert_entry(first), "name")
+            self.assertFalse(doc.dirty)
+            editor.try_set_name(first, "Alpha United")
+            doc.save(backup=False)
+            self.assertFalse(doc.dirty)
+            self.assertEqual(doc.baseline_bytes, path.read_bytes())
+            self.assertEqual(first.orig_name, "Alpha United")
+            doc.encoding = "cp1252"
+            editor.try_set_name(first, "\u0100")
+            self.assertTrue(doc.dirty)      # text that cannot be written differs from disk
+
+    def test_restore_keeps_the_disk_text_as_the_original(self):
+        archive = (
+            '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Beta Old"\t""\n'
+            '"CLUB_NAME_CHANGE"\t4\t"Delta"\t""\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path, stored = self._open(tmp, archive)
+            on_disk = path.read_bytes()
+            editor.restore_into(doc, stored)
+            self.assertTrue(doc.dirty)
+            rows = {entry.id: entry for entry in doc.names()}
+            self.assertFalse(rows["1"].changed)
+            self.assertTrue(rows["2"].changed)
+            self.assertEqual(rows["2"].orig_name, "Beta")
+            self.assertTrue(rows["4"].imported)
+            self.assertEqual([row.id for row in doc.removed_rows], ["3"])
+            pack = editor.pack_document([doc], changed_only=True)
+            self.assertEqual(
+                {(item["id"], item["name"]) for item in pack["names"]},
+                {("2", "Beta Old"), ("4", "Delta")})
+            self.assertEqual(path.read_bytes(), on_disk)
+
+    def test_edit_and_revert_after_a_restore_stays_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path, stored = self._open(tmp, self.ROWS.replace("Beta", "Beta Old"))
+            editor.restore_into(doc, stored)
+            first, second = doc.names()[0], doc.names()[1]
+            editor.try_set_name(first, "Alpha United")
+            self.assertEqual(editor.revert_entry(first), "name")
+            self.assertTrue(doc.dirty)              # row 2 still differs from the disk file
+            self.assertEqual(editor.revert_entry(second), "name")
+            self.assertEqual(second.name, "Beta")   # reverting goes back to the disk text
+            self.assertFalse(doc.dirty)             # memory now equals the file
+
+    def test_restore_that_drops_a_disk_row_still_counts(self):
+        archive = self.ROWS.replace('"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""\n', "")
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path, stored = self._open(tmp, archive)
+            editor.restore_into(doc, stored)
+            self.assertTrue(doc.dirty)
+            self.assertFalse(any(entry.changed for entry in doc.names()))
+            self.assertEqual([row.id for row in doc.removed_rows], ["3"])
+            self.assertEqual(editor.pack_document([doc])["names"], [])
+
+    def test_restoring_a_copy_of_the_disk_file_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path, stored = self._open(tmp, self.ROWS)
+            editor.try_set_name(doc.names()[0], "Alpha United")
+            self.assertTrue(doc.dirty)
+            editor.restore_into(doc, stored)
+            self.assertFalse(doc.dirty)
+            self.assertEqual(doc.names()[0].name, "Alpha")
+            self.assertEqual(doc.removed_rows, [])
+
+    def test_a_second_restore_can_bring_a_removed_row_back(self):
+        short = self.ROWS.replace('"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""\n', "")
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path, stored = self._open(tmp, short)
+            full = stored.parent / "full.lnc"
+            write_lnc(full, self.ROWS)
+            editor.restore_into(doc, stored)
+            self.assertEqual([row.id for row in doc.removed_rows], ["3"])
+            editor.restore_into(doc, full)
+            self.assertEqual(doc.removed_rows, [])
+            self.assertFalse(any(entry.imported for entry in doc.names()))
+            self.assertFalse(doc.dirty)
+
+    def test_a_bad_backup_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path, stored = self._open(tmp, self.ROWS)
+            bad = stored.parent / "bad.lnc"
+            bad.write_bytes(b'"CLUB_NAME_CHANGE"\t1\t"\x81"\t""\n')
+            editor.try_set_name(doc.names()[0], "Alpha United")
+            snapshot = doc.to_bytes()
+            with self.assertRaises(UnicodeError):
+                editor.restore_into(doc, bad)
+            self.assertEqual(doc.to_bytes(), snapshot)
+            self.assertTrue(doc.dirty)
+
+    def test_save_after_a_restore_writes_and_clears_it(self):
+        archive = (
+            '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Beta Old"\t""\n'
+            '"CLUB_NAME_CHANGE"\t4\t"Delta"\t""\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path, stored = self._open(tmp, archive)
+            editor.restore_into(doc, stored)
+            doc.save(backup=False)
+            self.assertEqual(path.read_bytes(), stored.read_bytes())
+            self.assertFalse(doc.dirty)
+            self.assertEqual(doc.removed_rows, [])
+            self.assertFalse(any(entry.changed for entry in doc.names()))
+
+
+class Session2Revert(unittest.TestCase):
+    """Release 2.2, session 2: revert puts back every editable field (F5)."""
+
+    OS = "\u03bf\u03c2"          # a matched ending
+    IS = "\u03b7\u03c2"          # its replacement
+    OUS = "\u03bf\u03c5\u03c2"   # a longer ending
+    OU = "\u03bf\u03c5"          # a shorter replacement
+    AS = "\u03b1\u03c2"
+    A = "\u03b1"
+
+    def _greek(self, tmp, rules):
+        path = Path(tmp) / "person_name_changes.lnc"
+        lines = "".join(
+            f'"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"{ending}"\t{number}\t"{new}"\r\n'
+            for ending, number, new in rules)
+        path.write_bytes(b"\xff\xfe" + lines.encode("utf-16-le"))
+        return editor.LncDoc(path), path
+
+    def test_revert_restores_both_person_rule_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path = self._greek(tmp, [(self.OS, 2, self.IS), (self.AS, 3, self.A)])
+            raw = path.read_bytes()
+            first, second = doc.persons()
+            changes = {
+                "ending only": lambda r: editor.try_set_source(r, self.OUS),
+                "replacement only": lambda r: editor.try_set_name(r, self.OU),
+                "ending then replacement": lambda r: (
+                    editor.try_set_source(r, self.OUS), editor.try_set_name(r, self.OU)),
+                "replacement then ending": lambda r: (
+                    editor.try_set_name(r, self.OU), editor.try_set_source(r, self.OUS)),
+            }
+            for label, change in changes.items():
+                with self.subTest(label):
+                    change(first)
+                    self.assertTrue(doc.dirty)
+                    self.assertEqual(editor.revert_entry(first), "rule")
+                    self.assertEqual(doc.to_bytes(), raw)
+                    self.assertFalse(doc.dirty)
+                    self.assertEqual((first.source, first.name), (self.OS, self.IS))
+            self.assertFalse(second.changed)
+
+    def test_revert_entries_counts_each_outcome(self):
+        rows = (
+            '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "names.lnc"
+            write_lnc(path, rows)
+            doc = editor.LncDoc(path)
+            editor.try_set_name(doc.names()[0], "Alpha United")
+            doc.append_entry("CLUB_NAME_CHANGE", "9", "Nine", "")
+            counts = editor.revert_entries(doc.names())
+            self.assertEqual(counts, {"name": 1, "rule": 0, "added": 1, "same": 1})
+            self.assertEqual(doc.names()[0].name, "Alpha")
+            self.assertTrue(doc.dirty)      # the added row is still pending
+
+
+class Session2Load(unittest.TestCase):
+    """Release 2.2, session 2: opening several files is all or nothing."""
+
+    def test_open_documents_is_all_or_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            good = folder / "FM27_Club_Names.lnc"
+            write_lnc(good, '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n')
+            other = folder / "FM27_Fix.lnc"
+            write_lnc(other, '"COMP_LONG_NAME_CHANGE"\t9\t"Cup"\t""\n')
+            bad = folder / "broken.lnc"
+            bad.write_bytes(b'"CLUB_NAME_CHANGE"\t1\t"\x81"\t""\n')
+            truncated = folder / "truncated.lnc"
+            truncated.write_bytes(b"\xff\xfeA")
+            self.assertEqual(len(editor.open_documents([good, other])), 2)
+            for broken in (bad, truncated, folder / "missing.lnc"):
+                with self.subTest(broken.name):
+                    with self.assertRaises(editor.LoadError) as caught:
+                        editor.open_documents([good, broken])
+                    self.assertEqual(caught.exception.path, broken)
+                    self.assertIn(broken.name, str(caught.exception))
+
+
+class Session2Window(unittest.TestCase):
+    """Release 2.2, session 2: the window follows the new meanings."""
+
+    def _window(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        return win
+
+    def _restorable(self, tmp, archive_text):
+        root = Path(tmp)
+        path = root / "FM27_Club_Names.lnc"
+        write_lnc(path, Session2WorkingState.ROWS)
+        stored = root / "backups" / "20261111-120000" / path.name
+        stored.parent.mkdir(parents=True)
+        write_lnc(stored, archive_text)
+        return path, stored
+
+    def test_close_still_prompts_after_a_restore_edit_and_revert(self):
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path, stored = self._restorable(
+                tmp, Session2WorkingState.ROWS.replace("Beta", "Beta Old"))
+            self.assertTrue(win.load([str(path)]))
+            doc = win.docs[0]
+            editor.restore_into(doc, stored)
+            win.reload_views()
+            first = doc.names()[0]
+            editor.try_set_name(first, "Alpha United")
+            editor.revert_entry(first)
+            win.refresh_status()
+            self.assertIn("1 unsaved", win.metrics.text())
+            self.assertTrue(win.windowTitle().startswith("* "))
+            with patch.object(QMessageBox, "question",
+                              return_value=QMessageBox.Cancel) as asked:
+                self.assertFalse(win.confirm_discard())
+            self.assertEqual(asked.call_count, 1)
+
+    def test_a_row_the_restore_left_out_is_counted_as_unsaved(self):
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path, stored = self._restorable(
+                tmp, Session2WorkingState.ROWS.replace(
+                    '"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""\n', ""))
+            self.assertTrue(win.load([str(path)]))
+            editor.restore_into(win.docs[0], stored)
+            win.reload_views()
+            self.assertIn("1 unsaved", win.metrics.text())
+            self.assertTrue(win.windowTitle().startswith("* "))
+
+    def test_a_comment_only_restore_is_still_pending(self):
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path, stored = self._restorable(
+                tmp, Session2WorkingState.ROWS + "#Added by an older copy\n")
+            self.assertTrue(win.load([str(path)]))
+            doc = win.docs[0]
+            editor.restore_into(doc, stored)
+            win.reload_views()
+            self.assertTrue(doc.dirty)
+            self.assertFalse(any(entry.changed for entry in doc.names()))
+            self.assertEqual(doc.removed_rows, [])
+            self.assertIn("file differs from disk", win.metrics.text())
+            self.assertTrue(win.windowTitle().startswith("* "))
+
+    def test_a_bad_file_leaves_the_open_files_alone(self):
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            good = folder / "FM27_Club_Names.lnc"
+            write_lnc(good, Session2WorkingState.ROWS)
+            other = folder / "FM27_Fix.lnc"
+            write_lnc(other, '"COMP_LONG_NAME_CHANGE"\t9\t"Cup"\t""\n')
+            bad = folder / "broken.lnc"
+            bad.write_bytes(b'"CLUB_NAME_CHANGE"\t1\t"\x81"\t""\n')
+            self.assertTrue(win.load([str(good)]))
+            for broken in (bad, folder / "missing.lnc"):
+                with self.subTest(broken.name), \
+                        patch.object(QMessageBox, "critical") as shown:
+                    self.assertFalse(win.load([str(other), str(broken)]))
+                    self.assertEqual([doc.path for doc in win.docs], [good])
+                    self.assertEqual(shown.call_count, 1)
+                    self.assertIn(broken.name, shown.call_args.args[2])
+            self.assertTrue(win.load([str(other)]))
+            self.assertEqual([doc.path for doc in win.docs], [other])
+
+    def test_revert_selected_restores_a_person_ending(self):
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            line = ('"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"\u03bf\u03c2"\t2'
+                    '\t"\u03b7\u03c2"\r\n')
+            raw = b"\xff\xfe" + line.encode("utf-16-le")
+            path = Path(tmp) / "person_name_changes.lnc"
+            path.write_bytes(raw)
+            self.assertTrue(win.load([str(path)]))
+            win.tabs.setCurrentIndex(1)
+            model = win.line_model
+            self.assertTrue(model.setData(model.index(0, 0), "\u03bf\u03c5\u03c2"))
+            self.assertTrue(model.setData(model.index(0, model.NAME_COL), "\u03bf\u03c5"))
+            self.assertNotEqual(win.docs[0].to_bytes(), raw)
+            win.line_view.selectRow(0)
+            win.revert_selected()
+            self.assertEqual(win.docs[0].to_bytes(), raw)
+            self.assertFalse(win.docs[0].dirty)
+            self.assertIn("1 person rule(s)", win.statusBar().currentMessage())
+
+    def test_labels_say_what_they_mean(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+
+        win = self._window()
+        self.assertEqual(
+            [button.text() for button in win.status_buttons],
+            ["All", "Edited", "No short-name override", "No code override"])
+        for model, title in ((win.entity_model, "File section"),
+                             (win.line_model, "File section or ending")):
+            self.assertEqual(model.headerData(0, Qt.Horizontal, Qt.DisplayRole), title)
+            self.assertEqual(
+                model.headerData(0, Qt.Horizontal, Qt.ToolTipRole), editor.FILE_SECTION_HINT)
+        self.assertIn("File sections", [label.text() for label in win.findChildren(QLabel)])
 
 
 if __name__ == "__main__":
