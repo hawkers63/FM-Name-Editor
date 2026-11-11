@@ -30,6 +30,9 @@ Design rules
 * A file inside the game tree is copied into the project's backups folder
   first, with a manifest.json naming where each copy came from. A file
   outside the game tree gets a timestamped .bak beside it instead.
+* Save and Deploy show every change first, in Review changes. A change
+  left unticked is not written and stays pending in memory; a restored
+  backup is written whole.
 * UTF-16 files, including the Greek person-name file, are written back
   in the encoding they were opened with.
 """
@@ -185,12 +188,27 @@ def fold(text: str) -> str:
     return "".join(c for c in nfd if unicodedata.category(c) != "Mn").casefold()
 
 
+ROW_KINDS = ("name", "person")
+
+# Which operation last changed a line in memory, as the Changes view words it.
+CHANGE_REASONS = {
+    "manual": "Manual edit",
+    "bulk": "Bulk tool",
+    "replace": "Replace",
+    "pack": "Name pack",
+    "import": "Older files",
+    "profile": "Profile",
+    "restore": "Restore",
+}
+
+
 class Entry:
     """One line of a .lnc file."""
 
     __slots__ = ("doc", "raw", "eol", "kind", "cmd", "id", "name", "lang",
                  "span", "section", "orig_name", "imported", "lineno", "_fold",
-                 "source", "orig_source", "source_span", "profile_mark")
+                 "source", "orig_source", "source_span", "profile_mark",
+                 "orig_raw", "orig_eol", "reason", "excluded")
 
     def __init__(self, doc, raw, eol, lineno):
         self.doc = doc
@@ -208,6 +226,10 @@ class Entry:
         self.imported = False
         self._fold = None
         self.profile_mark = None    # (profile name, name it set) after a profile apply
+        self.orig_raw = None        # the line's text on disk; None for a line the file lacks
+        self.orig_eol = ""          # the line's ending on disk
+        self.reason = None          # key of CHANGE_REASONS for the last change in memory
+        self.excluded = False       # True leaves this change out of the next Save or Deploy
 
     @property
     def key(self):
@@ -230,14 +252,16 @@ class Entry:
         self._fold = None
         self.doc.touch()
 
-    def set_name(self, new: str):
+    def set_name(self, new: str, reason: str | None = "manual"):
+        """Replace the quoted name. ``reason`` records which operation did it."""
         start, end = self.span
         self.raw = self.raw[:start] + '"' + new + '"' + self.raw[end:]
         self.span = (start, start + len(new) + 2)
         self.name = new
+        self.reason = reason
         self._note_edit()
 
-    def set_source(self, new: str):
+    def set_source(self, new: str, reason: str | None = "manual"):
         """Replace the quoted ending on a person-name rule.
 
         The replacement name sits later on the line, so its span moves
@@ -252,26 +276,27 @@ class Entry:
             name_start, name_end = self.span
             self.span = (name_start + delta, name_end + delta)
         self.source = new
+        self.reason = reason
         self._note_edit()
 
 
-def try_set_name(entry: Entry, new: str) -> bool:
+def try_set_name(entry: Entry, new: str, reason: str = "manual") -> bool:
     """Rename one line when the text is a single legal field."""
     cleaned = new.strip()
     if not name_is_legal(cleaned) or cleaned == entry.name:
         return False
-    entry.set_name(cleaned)
+    entry.set_name(cleaned, reason)
     return True
 
 
-def try_set_source(entry: Entry, new: str) -> bool:
+def try_set_source(entry: Entry, new: str, reason: str = "manual") -> bool:
     """Change the matched ending on a person-name rule."""
     if entry.kind != "person" or entry.source_span is None:
         return False
     cleaned = new.strip()
     if not name_is_legal(cleaned) or cleaned == entry.source:
         return False
-    entry.set_source(cleaned)
+    entry.set_source(cleaned, reason)
     return True
 
 
@@ -281,17 +306,21 @@ def revert_entry(entry: Entry) -> str:
     A person rule has two editable fields, the matched ending and the
     replacement. Both are restored. Returns "added" for a row that is not
     in the file on disk (there is nothing to put back), "name" or "rule"
-    when text was restored, and "same" when nothing differed.
+    when text was restored, and "same" when nothing differed. A reverted
+    line forgets its reason and its include tick, so a later change to it
+    starts ticked.
     """
     if entry.imported:
         return "added"
     restored = False
     if entry.kind == "person" and entry.source != entry.orig_source:
-        entry.set_source(entry.orig_source)
+        entry.set_source(entry.orig_source, None)
         restored = True
     if entry.name != entry.orig_name:
-        entry.set_name(entry.orig_name)
+        entry.set_name(entry.orig_name, None)
         restored = True
+    entry.reason = None
+    entry.excluded = False
     if not restored:
         return "same"
     return "rule" if entry.kind == "person" else "name"
@@ -419,6 +448,7 @@ def parse_lnc_bytes(doc, data: bytes):
     for n, line in enumerate(text.splitlines(keepends=True), 1):
         body = line.rstrip("\r\n")
         entry = Entry(doc, body, line[len(body):], n)
+        entry.orig_raw, entry.orig_eol = entry.raw, entry.eol
         parse_line(entry)
         if entry.kind == "comment":
             heading = body.strip().lstrip("#").strip().rstrip(":").strip()
@@ -462,6 +492,9 @@ class LncDoc:
 
     ``baseline_bytes`` is the file as it is on disk: read at load, replaced
     when a write succeeds. ``dirty`` compares the working lines with it.
+    Each line also keeps its own text and ending on disk (``orig_raw`` and
+    ``orig_eol``), so a write can take some changes and leave others out,
+    see payload_lines.
     """
 
     def __init__(self, path):
@@ -472,9 +505,14 @@ class LncDoc:
         self.default_eol = "\n"
         self.baseline_bytes = b""
         self.removed_rows: list[Entry] = []
+        self.restore_pending = False    # the lines came from a backup and are not written yet
+        self.restored_from = None       # that backup copy, when known
+        self.whole_excluded = False     # a file written whole is left out of the next write
         self._revision = 0
         self._dirty_stamp = None
         self._dirty_value = False
+        self._separable_stamp = None
+        self._separable_value = True
         self.load()
 
     def load(self):
@@ -494,7 +532,23 @@ class LncDoc:
         self.default_eol = default_eol
         self.entries = entries
         self.removed_rows = []
+        self.restore_pending = False
+        self.restored_from = None
+        self.whole_excluded = False
         self.touch()
+
+    def encode_text(self, text: str) -> bytes:
+        """Encode file text the way this document is stored, BOM included.
+
+        Raises:
+            UnicodeEncodeError: the text does not fit self.encoding.
+        """
+        body = text.encode(self.encoding)
+        if self.encoding == "utf-16-le":
+            return (UTF16_LE_BOM if self.has_bom else b"") + body
+        if self.encoding == "utf-16-be":
+            return (UTF16_BE_BOM if self.has_bom else b"") + body
+        return (UTF8_BOM if self.has_bom else b"") + body
 
     def to_bytes(self) -> bytes:
         """Serialise every line, preserving BOM, encoding, and line endings.
@@ -503,13 +557,7 @@ class LncDoc:
             UnicodeEncodeError: the working text does not fit self.encoding.
                 Callers should catch this and leave the original file untouched.
         """
-        text = "".join(entry.raw + entry.eol for entry in self.entries)
-        body = text.encode(self.encoding)
-        if self.encoding == "utf-16-le":
-            return (UTF16_LE_BOM if self.has_bom else b"") + body
-        if self.encoding == "utf-16-be":
-            return (UTF16_BE_BOM if self.has_bom else b"") + body
-        return (UTF8_BOM if self.has_bom else b"") + body
+        return self.encode_text("".join(entry.raw + entry.eol for entry in self.entries))
 
     def touch(self) -> None:
         """Note that the working lines changed, so ``dirty`` is worked out again.
@@ -540,30 +588,67 @@ class LncDoc:
     def mark_clean(self, payload: bytes | None = None) -> None:
         """Accept the working lines as what is on disk now.
 
-        Call it after a successful write, passing the bytes that were written.
-        The originals reset, added flags clear, and ``payload`` becomes the
-        disk baseline.
+        Call it after a successful write of the whole working copy, passing
+        the bytes that were written. The originals reset, added flags clear,
+        reasons and include ticks are forgotten, a pending restore is done,
+        and ``payload`` becomes the disk baseline. A write that left some
+        changes out settles with settle_written instead.
         """
         if payload is None:
             payload = self.to_bytes()
         for entry in self.entries:
-            if entry.kind in ("name", "person"):
+            entry.orig_raw = entry.raw
+            entry.orig_eol = entry.eol
+            entry.reason = None
+            entry.excluded = False
+            if entry.kind in ROW_KINDS:
                 entry.orig_name = entry.name
                 entry.orig_source = entry.source
                 entry.imported = False
         self.baseline_bytes = payload
         self.removed_rows = []
+        self.restore_pending = False
+        self.restored_from = None
+        self.whole_excluded = False
         self.touch()
 
-    def replace_working(self, data: bytes) -> None:
+    def settle_written(self, lines, payload: bytes) -> None:
+        """Accept a write that took only some of the changes.
+
+        ``lines`` is what payload_lines returned for the bytes written. Each
+        of those lines now has that text and ending on disk. A change that
+        was written as it is in memory is a change no longer; one that was
+        left out keeps its original, so it stays pending. An added line that
+        was left out is not on disk, so it stays added.
+        """
+        for entry, text, eol, as_is in lines:
+            entry.orig_raw = text
+            entry.orig_eol = eol
+            if as_is and entry.kind in ROW_KINDS:
+                entry.orig_name = entry.name
+                entry.orig_source = entry.source
+                entry.imported = False
+                entry.reason = None
+                entry.excluded = False
+        self.baseline_bytes = payload
+        self.touch()
+
+    def replace_working(self, data: bytes, source=None) -> None:
         """Make the working lines match ``data`` while the disk baseline stays put.
 
-        Restore uses this. The bytes are decoded first, so a bad backup changes
-        nothing. Restored rows are then compared with the disk file, see
+        Restore uses this; ``source`` is the backup copy, when there is one.
+        The bytes are decoded first, so a bad backup changes nothing.
+        Restored rows are then compared with the disk file, see
         adopt_disk_originals. Disk rows that the backup lacks are kept in
-        ``removed_rows``. The result is pending until a write succeeds.
+        ``removed_rows``. The result is pending until a write succeeds, and
+        until then its changes are written together (``grouped``): the
+        backup's lines have taken the place of the file's own.
         """
         entries, encoding, has_bom, default_eol = parse_lnc_bytes(self, data)
+        for entry in entries:
+            entry.orig_raw = None       # where a backup line sits on disk is not known
+            if entry.kind in ROW_KINDS:
+                entry.reason = "restore"
         removed: list[Entry] = []
         if self.baseline_bytes:
             on_disk = parse_lnc_bytes(None, self.baseline_bytes)[0]
@@ -573,7 +658,38 @@ class LncDoc:
         self.default_eol = default_eol
         self.entries = entries
         self.removed_rows = removed
+        self.restore_pending = True
+        self.restored_from = Path(source) if source is not None else None
+        self.whole_excluded = False
         self.touch()
+
+    @property
+    def separable(self) -> bool:
+        """True when each change in this file can be written, or left out, on its own.
+
+        That holds when leaving every change out gives back the file on disk
+        exactly, and taking every change gives the working copy exactly. A
+        restored backup never qualifies. The answer is kept until the next
+        ``touch``.
+        """
+        if self.restore_pending:
+            return False
+        stamp = (self._revision, self.encoding, self.has_bom)
+        if stamp != self._separable_stamp:
+            try:
+                none = self.encode_text(lines_text(payload_lines(self, lambda _entry: False)))
+                every = self.encode_text(lines_text(payload_lines(self, lambda _entry: True)))
+                value = none == self.baseline_bytes and every == self.to_bytes()
+            except UnicodeError:
+                value = False
+            self._separable_stamp = stamp
+            self._separable_value = value
+        return self._separable_value
+
+    @property
+    def grouped(self) -> bool:
+        """True when this file's changes can only be written together, as one file."""
+        return self.restore_pending or not self.separable
 
     def save(self, backup: bool = True) -> None:
         """Write this document back to its own path.
@@ -604,8 +720,10 @@ class LncDoc:
     def problems(self):
         return [e for e in self.entries if e.kind == "problem"]
 
-    def append_entry(self, cmd, id_, name, lang) -> Entry:
-        """Add a name line at the end of the file.
+    def append_entry(self, cmd, id_, name, lang, reason: str = "manual") -> Entry:
+        """Add a name line at the end of the file, under an import heading.
+
+        The heading is written only while an added line under it is.
 
         Raises:
             ValueError: a field is not legal. Nothing is added then.
@@ -623,9 +741,58 @@ class LncDoc:
         parse_line(e)
         e.section = "Imported by FM Name Editor"
         e.imported = True
+        e.reason = reason
         self.entries.append(e)
         self.touch()
         return e
+
+
+def payload_lines(doc: LncDoc, include) -> list:
+    """The lines a write would put on disk: the file as read, plus the included changes.
+
+    ``include(entry)`` is asked about each changed name line or person
+    rule. A left-out edit is written as its text on disk, and a left-out
+    added line is not written at all. The import heading that append_entry
+    puts above added lines is written only when an included added line
+    follows it. A line keeps its ending on disk, except that a line which
+    had none, as the last line of the file, gets the file's usual ending
+    when an included line now follows it.
+
+    Returns a list of (entry, text, ending, as_is), one per line written,
+    where ``as_is`` is True when the line is written as it is in memory.
+    Use it only for a document whose changes are not grouped (see
+    LncDoc.grouped); a restored backup is written whole.
+    """
+    out: list = []
+    held: list = []                         # new lines that are not rows, waiting for a row
+    for entry in doc.entries:
+        if entry.orig_raw is None:          # a line the file on disk does not have
+            if entry.kind in ROW_KINDS:
+                if include(entry):
+                    out.extend(held)
+                    held = []
+                    out.append([entry, entry.raw, entry.eol, True])
+            else:
+                held.append([entry, entry.raw, entry.eol, True])
+            continue
+        held = []
+        if entry.kind in ROW_KINDS and entry.changed and not include(entry):
+            out.append([entry, entry.orig_raw, entry.eol, False])
+        else:
+            out.append([entry, entry.raw, entry.eol, True])
+    last = len(out) - 1
+    for position, item in enumerate(out):
+        entry = item[0]
+        if entry.orig_raw is not None and position == last:
+            item[2] = entry.orig_eol
+        elif not item[2]:
+            item[2] = doc.default_eol
+    return [tuple(item) for item in out]
+
+
+def lines_text(lines) -> str:
+    """Join what payload_lines returned into file text."""
+    return "".join(text + eol for _entry, text, eol, _as_is in lines)
 
 
 class LoadError(Exception):
@@ -757,12 +924,14 @@ def pick_doc_for(cmd, docs):
     return best
 
 
-def apply_proposals(changes, missing, docs):
+def apply_proposals(changes, missing, docs, reason: str = "import"):
     """Write ticked proposals into the loaded documents.
 
     A change updates every duplicate row, so two lines with the same
     database id cannot drift apart. A name that would break the line is
-    left untouched.
+    left untouched. ``reason`` is recorded on each line changed or added:
+    "import" for older files, "pack" for a name pack, "profile" for a
+    spelling profile.
     """
     n = 0
     for proposal in changes:
@@ -771,7 +940,7 @@ def apply_proposals(changes, missing, docs):
         rows = proposal.target_rows or (
             [proposal.target] if proposal.target is not None else [])
         for target in rows:
-            if target is not None and try_set_name(target, proposal.new):
+            if target is not None and try_set_name(target, proposal.new, reason):
                 n += 1
     added = []
     for proposal in missing:
@@ -780,7 +949,7 @@ def apply_proposals(changes, missing, docs):
         doc = proposal.doc if proposal.doc is not None else pick_doc_for(proposal.cmd, docs)
         try:
             added.append(doc.append_entry(
-                proposal.cmd, proposal.id, proposal.new, proposal.lang))
+                proposal.cmd, proposal.id, proposal.new, proposal.lang, reason))
         except ValueError:
             continue
     return n, added
@@ -959,7 +1128,8 @@ def command_for(family: str, slot: str) -> str:
     raise KeyError((family, slot))
 
 
-def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str) -> Entry:
+def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str,
+                      reason: str = "manual") -> Entry:
     """Insert a new name line just after a sibling, keeping its section.
 
     A sibling that is the last line of a file may have no line ending. It
@@ -979,6 +1149,7 @@ def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str) -
         anchor.eol = doc.default_eol
     entry.section = anchor.section
     entry.imported = True
+    entry.reason = reason
     index_at = doc.entries.index(anchor) + 1
     doc.entries.insert(index_at, entry)
     for number, item in enumerate(doc.entries, 1):
@@ -987,7 +1158,8 @@ def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str) -
     return entry
 
 
-def set_entity_field(entity: NameEntity, slot: str, new: str, docs) -> bool:
+def set_entity_field(entity: NameEntity, slot: str, new: str, docs,
+                     reason: str = "manual") -> bool:
     """Write one cell. Existing lines are all updated. An empty cell adds a line.
 
     Duplicate lines that share the command and ID are all set to the same
@@ -1002,16 +1174,17 @@ def set_entity_field(entity: NameEntity, slot: str, new: str, docs) -> bool:
             return False
         changed = False
         for entry in group:
-            if try_set_name(entry, cleaned):
+            if try_set_name(entry, cleaned, reason):
                 changed = True
         return changed
     cmd = command_for(entity.family, slot)
     anchor = next(entity.entries(), None)
     try:
         if anchor is not None:
-            created = insert_name_after(anchor, cmd, entity.id, cleaned, entity.lang)
+            created = insert_name_after(anchor, cmd, entity.id, cleaned, entity.lang, reason)
         else:
-            created = pick_doc_for(cmd, docs).append_entry(cmd, entity.id, cleaned, entity.lang)
+            created = pick_doc_for(cmd, docs).append_entry(
+                cmd, entity.id, cleaned, entity.lang, reason)
             created.section = entity.section
     except ValueError:
         return False
@@ -1126,16 +1299,17 @@ def preview_bulk(entities, kind: str, sponsors: list[str] | None = None) -> list
     return edits
 
 
-def apply_bulk(edits, docs) -> int:
+def apply_bulk(edits, docs, reason: str = "bulk") -> int:
     """Apply a preview. Returns how many lines changed.
 
     docs is unused; each edit already points at its line. It is kept so
-    callers can pass the open documents beside the preview.
+    callers can pass the open documents beside the preview. ``reason`` is
+    "bulk" for the bulk tools and "replace" for Replace.
     """
     del docs
     count = 0
     for edit in edits:
-        if try_set_name(edit.entry, edit.after):
+        if try_set_name(edit.entry, edit.after, reason):
             count += 1
     return count
 
@@ -1478,12 +1652,13 @@ class FileWrite:
     """
 
     __slots__ = ("doc", "dest", "payload", "backup_mode", "before", "stat",
-                 "backup", "staged", "state", "detail")
+                 "backup", "staged", "state", "detail", "lines")
 
-    def __init__(self, doc, dest, payload: bytes, backup_mode: str):
+    def __init__(self, doc, dest, payload: bytes, backup_mode: str, lines=None):
         self.doc = doc
         self.dest = Path(dest)
         self.payload = payload
+        self.lines = lines                # payload_lines record of a partial write, or None
         self.backup_mode = backup_mode    # "archive", "beside", or "none"
         self.before = None                # bytes on disk before the write; None if no file
         self.stat = None
@@ -1556,11 +1731,18 @@ def _write_report(operation: str, writes, leftovers) -> str:
 
 
 def _settle(writes) -> None:
-    """Mark clean every document whose destination now holds its payload."""
+    """Settle every document whose destination now holds its payload.
+
+    A whole working copy marks the document clean. A partial write keeps
+    the changes it left out pending against the bytes now on disk.
+    """
     for write in writes:
         if write.state in ("written", "left written"):
             write.doc.path = write.dest
-            write.doc.mark_clean(write.payload)
+            if write.lines is None:
+                write.doc.mark_clean(write.payload)
+            else:
+                write.doc.settle_written(write.lines, write.payload)
 
 
 def _end_result(writes) -> str:
@@ -1577,7 +1759,10 @@ def write_documents(operation: str, plan, archive_root: Path | None = None) -> P
 
     ``plan`` lists (doc, destination, backup), where backup is "archive"
     (copy the current file into a new folder under ``archive_root``, with a
-    manifest), "beside" (a ``.bak-<date>`` copy next to it), or "none".
+    manifest), "beside" (a ``.bak-<date>`` copy next to it), or "none". An
+    item may carry a fourth element, a Payload from build_payload: its bytes
+    are written instead of the whole working copy, and the changes it left
+    out stay pending in memory.
 
     1. Every payload is encoded. An encoding error stops the write here.
     2. Every destination is read. One that its document was opened from
@@ -1593,8 +1778,8 @@ def write_documents(operation: str, plan, archive_root: Path | None = None) -> P
        file stands. Several files are never described as one atomic step.
 
     Staging files are removed in ``finally``. A document whose destination
-    now holds its payload is marked clean with those bytes, and its path
-    becomes that destination. Returns the backup folder, or None.
+    now holds its payload is settled with those bytes (see _settle), and
+    its path becomes that destination. Returns the backup folder, or None.
 
     Raises:
         UnicodeEncodeError: a payload could not be encoded (step 1).
@@ -1604,7 +1789,14 @@ def write_documents(operation: str, plan, archive_root: Path | None = None) -> P
         OSError: reading, staging, or backing up failed. No file was
             replaced then.
     """
-    writes = [FileWrite(doc, dest, doc.to_bytes(), backup) for doc, dest, backup in plan]
+    writes = []
+    for item in plan:
+        doc, dest, backup = item[0], item[1], item[2]
+        prepared = item[3] if len(item) > 3 else None
+        if prepared is None:
+            writes.append(FileWrite(doc, dest, doc.to_bytes(), backup))
+        else:
+            writes.append(FileWrite(doc, dest, prepared.data, backup, prepared.lines))
     if not writes:
         return None
     seen: set = set()
@@ -1796,6 +1988,502 @@ def game_write_preflight(operation: str, paths, game_root: Path | None = None,
         else:
             running = list(found)
     return Preflight(operation, paths, game_paths, running, check_failed)
+
+
+# ---- the Changes view and the review before a write ------------------------
+
+CHANGE_STATES = {
+    "edited": "Edited",
+    "added": "Added",
+    "restored": "Restored",
+    "removed": "Removed",
+    "other": "Other lines",
+}
+OTHER_LINES_TEXT = "Comments, blank lines, or line endings differ from the file on disk"
+
+
+def _row_text(entry: Entry, name: str, source: str) -> str:
+    """How a name line or a person rule reads in the Changes view."""
+    if entry.kind == "person":
+        return f"{source} → {name}"
+    return name
+
+
+class ChangeRow:
+    """One difference between an open file and its file on disk.
+
+    ``state`` is a key of CHANGE_STATES. ``entry`` is the line in memory;
+    for a removed row it is the line on disk that a restored backup lacks;
+    for the "other" row it is None, which stands for differences outside
+    name lines and person rules. The include tick is kept on the entry, or
+    on the document when its changes are written together (LncDoc.grouped),
+    so the Changes tab and the review dialog always agree.
+    """
+
+    __slots__ = ("doc", "entry", "state")
+
+    def __init__(self, doc: LncDoc, entry, state: str):
+        self.doc = doc
+        self.entry = entry
+        self.state = state
+
+    @property
+    def included(self) -> bool:
+        if self.entry is None or self.doc.grouped:
+            return not self.doc.whole_excluded
+        return not self.entry.excluded
+
+    def set_included(self, value: bool) -> None:
+        if self.entry is None or self.doc.grouped:
+            self.doc.whole_excluded = not value
+        else:
+            self.entry.excluded = not value
+
+    @property
+    def command(self) -> str:
+        return self.entry.cmd if self.entry is not None else ""
+
+    @property
+    def id(self) -> str:
+        return self.entry.id if self.entry is not None else ""
+
+    @property
+    def language(self) -> str:
+        return self.entry.lang if self.entry is not None else ""
+
+    @property
+    def line(self) -> int | None:
+        """The line number in memory; for a removed row, its number on disk."""
+        return self.entry.lineno if self.entry is not None else None
+
+    @property
+    def on_disk(self) -> str:
+        if self.state in ("edited", "restored"):
+            return _row_text(self.entry, self.entry.orig_name, self.entry.orig_source)
+        if self.state == "removed":
+            return _row_text(self.entry, self.entry.name, self.entry.source)
+        if self.state == "added":
+            return "no line"
+        return ""
+
+    @property
+    def proposed(self) -> str:
+        if self.state in ("edited", "restored", "added"):
+            return _row_text(self.entry, self.entry.name, self.entry.source)
+        if self.state == "removed":
+            return "no line"
+        return OTHER_LINES_TEXT
+
+    @property
+    def reason(self) -> str:
+        """The operation that made this difference, in words."""
+        if self.entry is None or self.state == "removed":
+            key = "restore" if self.doc.restore_pending else ""
+        else:
+            key = self.entry.reason or ""
+        if key == "profile":
+            mark = self.entry.profile_mark
+            if mark is not None and mark[1] == self.entry.name:
+                return f"Profile {mark[0]}"
+        return CHANGE_REASONS.get(key, "")
+
+    @property
+    def detail(self) -> str:
+        """A longer note for a tooltip: where a restore came from, or why rows go together."""
+        if self.doc.restore_pending:
+            where = f" {self.doc.restored_from}" if self.doc.restored_from else " a backup"
+            return (f"Restored from{where}. A restored file is written whole: tick or "
+                    "untick it as one.")
+        if self.doc.grouped:
+            return "These changes can only be written together, as one file."
+        return ""
+
+
+def collect_changes(docs) -> list[ChangeRow]:
+    """Every difference between the open files and their files on disk, in file order.
+
+    An edited or restored line differs in text, an added line is not on
+    disk, and a removed line is on disk but a restored backup lacks it. A
+    file that differs from disk only outside name lines and person rules
+    gets one "other" row, so nothing a write would change is hidden.
+    """
+    rows: list[ChangeRow] = []
+    for doc in docs:
+        found = []
+        for entry in doc.entries:
+            if entry.kind not in ROW_KINDS or not entry.changed:
+                continue
+            if entry.imported:
+                state = "added"
+            elif entry.reason == "restore":
+                state = "restored"
+            else:
+                state = "edited"
+            found.append(ChangeRow(doc, entry, state))
+        found.extend(ChangeRow(doc, entry, "removed") for entry in doc.removed_rows)
+        if not found and doc.dirty:
+            found.append(ChangeRow(doc, None, "other"))
+        rows.extend(found)
+    return rows
+
+
+def pending_restores(docs) -> str:
+    """The footer note for restored backups not written yet, or "" when there are none."""
+    names = []
+    for doc in docs:
+        if doc.restore_pending and doc.dirty:
+            where = f" (backup {doc.restored_from.parent.name})" if doc.restored_from else ""
+            names.append(doc.path.name + where)
+    if not names:
+        return ""
+    return "Restore pending, not written yet: " + ", ".join(names)
+
+
+class Payload:
+    """What a write would put in one file: the bytes, and which changes they hold.
+
+    ``lines`` is the payload_lines record when some changes are left out,
+    or None when the bytes are the whole working copy. ``included`` and
+    ``left_out`` count the file's changes (ChangeRow) each way.
+    """
+
+    __slots__ = ("data", "lines", "included", "left_out")
+
+    def __init__(self, data: bytes, lines, included: int, left_out: int):
+        self.data = data
+        self.lines = lines
+        self.included = included
+        self.left_out = left_out
+
+
+def build_payload(doc: LncDoc, rows=None) -> Payload:
+    """The bytes a reviewed write would put in doc's file, from the include ticks.
+
+    With every change ticked, that is the whole working copy. With some
+    left out, it is the file on disk plus the ticked changes; the others
+    stay pending in memory after the write. A grouped document (a restored
+    backup, see LncDoc.grouped) is all or nothing. ``rows`` are the file's
+    changes from collect_changes, when already known.
+
+    Raises:
+        UnicodeEncodeError: a ticked change cannot be written in the file's encoding.
+    """
+    if rows is None:
+        rows = collect_changes([doc])
+    left_out = sum(1 for row in rows if not row.included)
+    included = len(rows) - left_out
+    if doc.grouped and left_out:
+        return Payload(doc.baseline_bytes, [], 0, left_out)
+    if doc.grouped or not left_out:
+        return Payload(doc.to_bytes(), None, included, 0)
+    lines = payload_lines(doc, lambda entry: not entry.excluded)
+    return Payload(doc.encode_text(lines_text(lines)), lines, included, left_out)
+
+
+class ReviewFile:
+    """One file in a reviewed write: where it goes, what is there now, and what it would get."""
+
+    __slots__ = ("doc", "dest", "game", "rows", "current", "read_error", "payload",
+                 "encode_error")
+
+    def __init__(self, doc: LncDoc, dest, game: bool):
+        self.doc = doc
+        self.dest = Path(dest)
+        self.game = game                # a game file: archived first, game check applies
+        self.rows: list[ChangeRow] = []
+        self.current = None             # bytes at dest when reviewed; None if no file
+        self.read_error = ""
+        self.payload = None             # Payload, or None when it could not be encoded
+        self.encode_error = ""
+
+    @property
+    def own(self) -> bool:
+        """True when the destination is the file the document was read from."""
+        return same_path(self.doc.path, self.dest)
+
+    @property
+    def backup(self) -> str:
+        return "archive" if self.game else "beside"
+
+    @property
+    def external(self) -> str:
+        """"changed" or "removed" when the file the document came from is not as it was read."""
+        if not self.own or self.read_error:
+            return ""
+        if self.current is None:
+            return "removed"
+        return "" if self.current == self.doc.baseline_bytes else "changed"
+
+    @property
+    def writes(self) -> bool:
+        """True when the write would change this file's bytes.
+
+        The document's own file is compared with the bytes it was read as,
+        so a file whose changes are all left out is not written at all.
+        """
+        if self.payload is None:
+            return False
+        if self.own:
+            return self.payload.data != self.doc.baseline_bytes
+        return self.read_error != "" or self.payload.data != self.current
+
+    def disk_state(self) -> str:
+        """What is at the destination now, in words."""
+        if self.read_error:
+            return f"could not be read: {self.read_error}"
+        if self.own:
+            return {
+                "": "as the editor read it",
+                "changed": "changed on disk since the editor read it",
+                "removed": "removed since the editor read it",
+            }[self.external]
+        if self.current is None:
+            return "not there yet; it will be created"
+        return "a file the editor did not open; it is replaced whole"
+
+    def write_state(self) -> str:
+        """What the write would do to this file, in words."""
+        if self.payload is None:
+            return "its text cannot be written in its encoding"
+        payload = self.payload
+        if not self.writes:
+            if payload.left_out and not payload.included:
+                return f"not written: all {payload.left_out:,} change(s) left out"
+            return "not written: it already holds these bytes"
+        text = f"{payload.included:,} change(s)"
+        if payload.left_out:
+            text += f", {payload.left_out:,} left out"
+        if self.doc.grouped and payload.included:
+            text += ", written together"
+        return text
+
+
+class WriteReview:
+    """What a Save or Deploy would write, worked out before anything is written.
+
+    The Review changes dialog shows it. ``pairs`` lists (document,
+    destination). ``game_root`` decides which destinations are game files;
+    None makes every destination one, as for Deploy. The game check runs
+    here, once, when a game file is in the review, and again with
+    ``recheck`` just before the write. Every destination is read once, so
+    the review can name a file that changed on disk since the editor read
+    it, which write_documents refuses. Each file's bytes are built from the
+    include ticks (build_payload); a change left out stays pending in
+    memory. ``left_alone`` names open documents the operation does not
+    write.
+    """
+
+    def __init__(self, operation: str, pairs, game_root: Path | None = None,
+                 check=None, left_alone=()):
+        self.operation = operation
+        self.game_root = game_root
+        self.left_alone = list(left_alone)
+        self.files: list[ReviewFile] = []
+        for doc, dest in pairs:
+            game = game_root is None or under_game_tree(Path(dest), game_root)
+            self.files.append(ReviewFile(doc, dest, game))
+        self.preflight = game_write_preflight(
+            operation, [item.dest for item in self.files if item.game], None, check)
+        self.rows = collect_changes([item.doc for item in self.files])
+        for item in self.files:
+            item.rows = [row for row in self.rows if row.doc is item.doc]
+        self.written = None             # (files, changes, left out) once write() has run
+        self.read_disk()
+        self.refresh()
+
+    def read_disk(self) -> None:
+        """Read every destination as it is now."""
+        for item in self.files:
+            item.read_error = ""
+            try:
+                item.current = item.dest.read_bytes()
+            except FileNotFoundError:
+                item.current = None
+            except OSError as exc:
+                item.current = None
+                item.read_error = str(exc)
+
+    def refresh(self) -> None:
+        """Build each file's bytes again from the include ticks."""
+        for item in self.files:
+            item.encode_error = ""
+            try:
+                item.payload = build_payload(item.doc, item.rows)
+            except UnicodeError as exc:
+                item.payload = None
+                item.encode_error = str(exc)
+
+    def recheck(self, check=None) -> None:
+        """Look for a running copy of the game again, for the game files about to be written."""
+        self.preflight = game_write_preflight(
+            self.operation, [item.dest for item in self.to_write if item.game], None, check)
+
+    @property
+    def to_write(self) -> list[ReviewFile]:
+        return [item for item in self.files if item.writes]
+
+    @property
+    def included(self) -> int:
+        """Ticked changes in the files that would be written."""
+        return sum(item.payload.included for item in self.to_write)
+
+    @property
+    def left_out(self) -> int:
+        return sum(item.payload.left_out for item in self.files if item.payload is not None)
+
+    @property
+    def title(self) -> str:
+        if self.operation == "Deploy":
+            return "Review changes: Deploy to the game folder"
+        game = [item for item in self.files if item.game]
+        if not game:
+            return "Review changes: Save"
+        if len(game) == len(self.files):
+            return "Review changes: Save into the game folder, the same as Deploy"
+        return "Review changes: Save, with the game files handled the same as Deploy"
+
+    def summary(self) -> str:
+        files = self.to_write
+        if files and self.included:
+            text = (f"{self.included:,} change(s) ticked, to be written to "
+                    f"{len(files):,} file(s).")
+        elif files:
+            text = (f"{len(files):,} file(s) to be written as they are open, each replacing "
+                    "the file at its destination whole.")
+        else:
+            text = "Nothing would be written."
+        if self.left_out:
+            text += f" {self.left_out:,} left out, still pending in memory."
+        return text
+
+    def nothing_message(self) -> str:
+        if self.rows and not any(row.included for row in self.rows):
+            return ("Nothing is ticked, so nothing would be written. Unticked changes stay "
+                    "pending in memory.")
+        return "The destination files already hold these bytes, so there is nothing to write."
+
+    def problems(self) -> list[str]:
+        """Why the write cannot go ahead as it stands; empty when it can."""
+        found = []
+        writing = self.to_write
+        if self.preflight.blocked and any(item.game for item in writing):
+            found.append(self.preflight.blocked_message())
+        unreadable = [item for item in writing if item.read_error]
+        for item in unreadable:
+            found.append(f"{item.dest} could not be read: {item.read_error}\n"
+                         "Nothing is written until it can be.")
+        changed = [item.dest for item in writing if item.external]
+        if changed:
+            found.append(str(ExternalChangeError(changed)))
+        for item in self.files:
+            if item.encode_error:
+                found.append(f"{item.doc.path.name} holds text that cannot be written as "
+                             f"{item.doc.encoding}: {item.encode_error}")
+        if not found and not writing:
+            found.append(self.nothing_message())
+        return found
+
+    def game_check(self) -> tuple[str, str]:
+        """The game check as a sentence, and its level: ok, warning, blocked, or muted."""
+        if not self.preflight.game_paths:
+            return "No game file is written, so the game is not checked.", "muted"
+        if self.preflight.blocked:
+            return self.preflight.blocked_message(), "blocked"
+        if self.preflight.check_failed:
+            return self.preflight.unknown_message(), "warning"
+        return "Football Manager is not running.", "ok"
+
+    def disk_check(self) -> tuple[str, str]:
+        """Changes on disk since the editor read each file, as a sentence and a level."""
+        writing = self.to_write
+        bad = [item for item in writing if item.external or item.read_error]
+        if bad:
+            names = ", ".join(f"{item.dest.name} ({item.disk_state()})" for item in bad)
+            return (f"{names}. Nothing can be written until the file is as the editor "
+                    "read it. Export your edits as a name pack, open the files again, "
+                    "and import the pack."), "blocked"
+        idle = [item for item in self.files if item.external and item not in writing]
+        if idle:
+            names = ", ".join(item.dest.name for item in idle)
+            return (f"{names} changed on disk since the editor read it, but nothing in it "
+                    "is written."), "warning"
+        return "No file has changed on disk since the editor read it.", "ok"
+
+    def problem_lines(self) -> list[Entry]:
+        return [entry for item in self.files for entry in item.doc.problems()]
+
+    def problem_check(self) -> tuple[str, str]:
+        found = self.problem_lines()
+        if not found:
+            return "No problem lines.", "ok"
+        names = sorted({entry.doc.path.name for entry in found})
+        return (f"{len(found):,} problem line(s) in {', '.join(names)}. They are written "
+                "back exactly as they are."), "warning"
+
+    def repeated_keys(self) -> list[list[Entry]]:
+        """Name lines that share a command, ID, and language, across the files reviewed."""
+        groups = index_all([item.doc for item in self.files])
+        return [rows for rows in groups.values() if len(rows) > 1]
+
+    def repeated_check(self) -> tuple[str, str]:
+        groups = self.repeated_keys()
+        if not groups:
+            return "No command, ID, and language is on more than one line.", "ok"
+        competing = sum(1 for rows in groups if len({row.name for row in rows}) > 1)
+        text = f"{len(groups):,} command, ID, and language key(s) are on more than one line"
+        if competing:
+            text += (f"; {competing:,} with different names. The game's order between such "
+                     "lines is not known")
+        return text + ".", "warning"
+
+    def backup_text(self, archive_root) -> str:
+        """Where copies of the files about to be replaced will go."""
+        writing = self.to_write
+        parts = []
+        if any(item.game and item.current is not None for item in writing):
+            parts.append(
+                f"Backup folder: {Path(archive_root)}{os.sep}YYYYMMDD-HHMMSS, a new folder "
+                "named for the time of the write. Each game file is copied there, with a "
+                "manifest, before it is replaced.")
+        if any(not item.game and item.current is not None for item in writing):
+            parts.append("Each file outside the game folder keeps a .bak-<date> copy beside it.")
+        if not parts:
+            parts.append("No existing file is replaced, so nothing is backed up.")
+        return " ".join(parts)
+
+    def plan(self) -> list:
+        """The write_documents plan for the files that would change."""
+        return [(item.doc, item.dest, item.backup, item.payload) for item in self.to_write]
+
+    def write(self, archive_root) -> Path | None:
+        """Write the ticked changes, see write_documents.
+
+        Raises:
+            WriteError: the review has a problem (see ``problems``), or a
+                write failed; ExternalChangeError and the errors
+                write_documents raises pass through.
+        """
+        problems = self.problems()
+        if problems:
+            raise WriteError("\n\n".join(problems))
+        writing = self.to_write
+        beside = any(not item.game and item.current is not None for item in writing)
+        self.written = (len(writing), self.included, self.left_out, beside)
+        return write_documents(self.operation, self.plan(), archive_root)
+
+    def outcome(self, archive) -> str:
+        """The status line after a successful write."""
+        files, changes, left_out, beside = self.written or (0, 0, 0, False)
+        verb = "Deployed" if self.operation == "Deploy" else "Saved"
+        text = f"{verb} {files:,} file(s)"
+        text += f" with {changes:,} change(s)." if changes else "."
+        if left_out:
+            text += f" {left_out:,} left out, still pending in memory."
+        if archive is not None:
+            text += f" Game files were copied to {archive} first."
+        if beside:
+            text += " Files outside the game folder kept a .bak-<date> copy beside them."
+        return text
 
 
 def licence_inventory(version_dir: Path) -> list[dict]:
@@ -2484,7 +3172,7 @@ def apply_profile_proposals(profile_name: str, changes, missing, docs):
     The note lets a later Apply of another profile show the competing
     spelling. Returns what apply_proposals returns.
     """
-    count, added = apply_proposals(changes, missing, docs)
+    count, added = apply_proposals(changes, missing, docs, "profile")
     for proposal in changes:
         if not proposal.checked:
             continue
@@ -2638,12 +3326,13 @@ def restore_into(doc: LncDoc, archive_file: Path) -> None:
 
     Nothing is written to ``doc.path``. The caller saves or deploys later.
     The disk baseline stays as it was, so the restored lines count as
-    pending changes until they are written. A bad backup raises before
-    anything in memory changes.
+    pending changes until they are written, and the document remembers
+    which copy they came from. A bad backup raises before anything in
+    memory changes.
     """
     if not archive_file.is_file():
         raise FileNotFoundError(archive_file)
-    doc.replace_working(archive_file.read_bytes())
+    doc.replace_working(archive_file.read_bytes(), archive_file)
 
 
 # --------------------------------------------------------------------------
@@ -2652,15 +3341,15 @@ def restore_into(doc: LncDoc, archive_file: Path) -> None:
 
 def run_gui(paths):
     from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
-                                Qt, QTimer)
+                                Qt, QTimer, Signal)
     from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
     from PySide6.QtWidgets import (
-        QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
-        QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
-        QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-        QPlainTextEdit, QPushButton, QRadioButton, QSplitter, QTableView,
-        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
-        QWidget)
+        QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
+        QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView,
+        QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
+        QPlainTextEdit, QPushButton, QRadioButton, QSplitter, QStyledItemDelegate,
+        QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolButton,
+        QVBoxLayout, QWidget)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
@@ -3006,6 +3695,9 @@ def run_gui(paths):
     QLabel#metrics { color: #8a94a6; background: transparent; padding: 2px 6px; }
     QLabel#muted { color: #8a94a6; background: transparent; }
     QLabel#warning { color: #f59e0b; background: transparent; }
+    QLabel#blocked { color: #f59e0b; background: transparent; font-weight: bold; }
+    QLabel#ok { color: #10b981; background: transparent; }
+    QLabel#heading { background: transparent; font-weight: bold; }
     QToolButton#manage {
         background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
         padding: 4px 10px; border-radius: 4px;
@@ -3501,7 +4193,7 @@ def run_gui(paths):
         def apply(self):
             if not self.edits:
                 return
-            self.applied = apply_bulk(self.edits, self.docs)
+            self.applied = apply_bulk(self.edits, self.docs, "replace")
             self.accept()
 
     class PackDialog(QDialog):
@@ -3819,7 +4511,399 @@ def run_gui(paths):
             self.summary.setText(
                 f"Restored {path.name} into the open file. Save or Deploy to write it.")
 
+    # ---------------- changes and the review before a write ----------------
+    def show_lines(parent, title: str, intro: str, lines: list[str],
+                   empty: str = "None.") -> None:
+        """A read-only list of lines in a dialog of its own."""
+        dlg = QDialog(parent)
+        dlg.setWindowTitle(title)
+        dlg.resize(900, 400)
+        lay = QVBoxLayout(dlg)
+        intro_label = QLabel(intro)
+        intro_label.setWordWrap(True)
+        lay.addWidget(intro_label)
+        box = QPlainTextEdit("\n".join(lines) or empty)
+        box.setReadOnly(True)
+        box.setLineWrapMode(QPlainTextEdit.NoWrap)
+        lay.addWidget(box)
+        dlg.exec()
+
+    def set_level(label: QLabel, text: str, level: str) -> None:
+        """Show a check's sentence in the colour of its level."""
+        label.setText(text)
+        if label.objectName() != level:
+            label.setObjectName(level)
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+    class ChangeModel(QAbstractTableModel):
+        """One row per difference from disk, with an include tick.
+
+        The ticks live on the lines and documents (see ChangeRow), so the
+        Changes tab and the review dialog always show the same choice.
+        ``destinations`` maps a document to where a write would put it; by
+        default that is the file it was read from.
+        """
+
+        COLS = ["Include", "State", "Reason", "Type", "ID", "Language", "On disk",
+                "To write", "File", "Line", "Destination"]
+        INCLUDE, STATE, REASON, TYPE, ID, LANGUAGE, ON_DISK, PROPOSED, FILE, LINE, DEST = \
+            range(11)
+        ticks_changed = Signal()
+
+        def __init__(self, destinations=None):
+            super().__init__()
+            self.rows: list[ChangeRow] = []
+            self.destinations = dict(destinations or {})
+            self.muted = QColor("#8a94a6")
+
+        def set_rows(self, rows) -> None:
+            self.beginResetModel()
+            self.rows = list(rows)
+            self.endResetModel()
+
+        def destination(self, row: ChangeRow) -> Path:
+            return self.destinations.get(row.doc, row.doc.path)
+
+        def rowCount(self, parent=QModelIndex()):
+            return 0 if parent.isValid() else len(self.rows)
+
+        def columnCount(self, parent=QModelIndex()):
+            return 0 if parent.isValid() else len(self.COLS)
+
+        def headerData(self, section, orientation, role=Qt.DisplayRole):
+            if orientation != Qt.Horizontal:
+                return None
+            if role == Qt.DisplayRole:
+                return self.COLS[section]
+            if role == Qt.ToolTipRole and section == self.INCLUDE:
+                return ("Ticked changes are written by the next Save or Deploy. Unticked "
+                        "changes are left out and stay pending in memory.")
+            if role == Qt.ToolTipRole and section == self.LINE:
+                return "The line in memory. For a removed row, the line it has on disk."
+            return None
+
+        def flags(self, index):
+            flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+            if index.isValid() and index.column() == self.INCLUDE:
+                flags |= Qt.ItemIsUserCheckable
+            return flags
+
+        def data(self, index, role=Qt.DisplayRole):
+            if not index.isValid():
+                return None
+            row = self.rows[index.row()]
+            column = index.column()
+            if role == Qt.CheckStateRole and column == self.INCLUDE:
+                return Qt.Checked if row.included else Qt.Unchecked
+            if role in (Qt.DisplayRole, Qt.EditRole):
+                if column == self.INCLUDE:
+                    return "" if role == Qt.DisplayRole else int(row.included)
+                if column == self.STATE:
+                    return CHANGE_STATES[row.state]
+                if column == self.REASON:
+                    return row.reason
+                if column == self.TYPE:
+                    return friendly(row.command) if row.command else ""
+                if column == self.ID:
+                    if role == Qt.EditRole and row.id.isdigit():
+                        return int(row.id)
+                    return row.id
+                if column == self.LANGUAGE:
+                    return row.language
+                if column == self.ON_DISK:
+                    return row.on_disk
+                if column == self.PROPOSED:
+                    return row.proposed
+                if column == self.FILE:
+                    return row.doc.path.name
+                if column == self.LINE:
+                    if role == Qt.EditRole:
+                        return row.line or 0
+                    return str(row.line) if row.line else ""
+                if column == self.DEST:
+                    return str(self.destination(row))
+            if role == Qt.ToolTipRole:
+                if column in (self.INCLUDE, self.STATE, self.REASON) and row.detail:
+                    return row.detail
+                if column == self.DEST:
+                    return str(self.destination(row))
+            if role == Qt.ForegroundRole:
+                if not row.included:
+                    return self.muted       # a left-out row reads quieter as well as unticked
+                if column == self.ON_DISK and row.state == "added":
+                    return self.muted
+                if column == self.PROPOSED and row.state in ("removed", "other"):
+                    return self.muted
+            return None
+
+        def setData(self, index, value, role=Qt.EditRole):
+            if role != Qt.CheckStateRole or index.column() != self.INCLUDE:
+                return False
+            self.rows[index.row()].set_included(Qt.CheckState(value) == Qt.Checked)
+            self._ticks_moved()
+            return True
+
+        def set_included(self, rows, value: bool) -> None:
+            for row in rows:
+                row.set_included(value)
+            self._ticks_moved()
+
+        def _ticks_moved(self) -> None:
+            # A restored file ticks as one, so every row may have moved.
+            if self.rows:
+                self.dataChanged.emit(self.index(0, self.INCLUDE),
+                                      self.index(len(self.rows) - 1, self.INCLUDE))
+            self.ticks_changed.emit()
+
+    class ChangeProxy(QSortFilterProxyModel):
+        """Filters the changes by the words typed, ignoring accents and capitals."""
+
+        def __init__(self):
+            super().__init__()
+            self.words: list[str] = []
+            self.setSortRole(Qt.EditRole)
+            self.setDynamicSortFilter(False)
+            self.setSortCaseSensitivity(Qt.CaseInsensitive)
+
+        def set_filter(self, text: str) -> None:
+            self.words = fold(text).split()
+            self.invalidate()
+
+        def filterAcceptsRow(self, source_row, parent):
+            if not self.words:
+                return True
+            row = self.sourceModel().rows[source_row]
+            hay = fold(" ".join([
+                CHANGE_STATES[row.state], row.reason, friendly(row.command) if row.command else "",
+                row.id, row.language, row.on_disk, row.proposed, row.doc.path.name]))
+            return all(word in hay for word in self.words)
+
+        def shown_rows(self) -> list[ChangeRow]:
+            model = self.sourceModel()
+            return [model.rows[self.mapToSource(self.index(number, 0)).row()]
+                    for number in range(self.rowCount())]
+
+    class MiddleElide(QStyledItemDelegate):
+        """Shortens long text in the middle, so a path keeps its folder and its file name."""
+
+        def initStyleOption(self, option, index):
+            super().initStyleOption(option, index)
+            option.textElideMode = Qt.ElideMiddle
+
+    def change_table(proxy) -> QTableView:
+        """A table for the changes: one row each, sortable, sized to its contents."""
+        view = QTableView()
+        view.setModel(proxy)
+        view.setSortingEnabled(True)
+        view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        view.setSelectionBehavior(QTableView.SelectRows)
+        view.setAlternatingRowColors(True)
+        view.setWordWrap(False)     # a path has no spaces; wrapping would cut it after "C:"
+        view.verticalHeader().setVisible(False)
+        view.verticalHeader().setDefaultSectionSize(24)
+        view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        view.setItemDelegateForColumn(ChangeModel.DEST, MiddleElide(view))
+        header = view.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setResizeContentsPrecision(200)
+        return view
+
+    def describe_ticks(rows) -> str:
+        """The line under the Changes tab's filter."""
+        if not rows:
+            return "No changes: the open files match their files on disk."
+        ticked = sum(1 for row in rows if row.included)
+        text = (f"{len(rows):,} change(s): {ticked:,} ticked for the next Save or Deploy, "
+                f"{len(rows) - ticked:,} left out. Unticked changes are not written and stay "
+                "pending in memory.")
+        if any(row.doc.grouped for row in rows):
+            text += " A restored file is written whole, so its rows tick and untick together."
+        return text
+
+    class ReviewDialog(QDialog):
+        """Review the changes a Save or Deploy would write, then write them.
+
+        Built from a WriteReview. The rows are the Changes tab's rows for
+        the files in this write, with the same ticks: unticking one here
+        unticks it there. Write looks for a running game once more first.
+        When that check cannot be made, "I have closed Football Manager"
+        must be ticked before Write is allowed.
+        """
+
+        def __init__(self, parent, review: WriteReview):
+            super().__init__(parent)
+            self.review = review
+            self.setWindowTitle(review.title)
+            screen = self.screen().availableGeometry() if self.screen() else None
+            width, height = 1180, 740
+            if screen is not None:
+                width, height = min(width, screen.width() - 40), min(height, screen.height() - 40)
+            self.resize(width, height)
+            lay = QVBoxLayout(self)
+
+            self.summary = QLabel("")
+            self.summary.setObjectName("heading")
+            self.summary.setWordWrap(True)
+            lay.addWidget(self.summary)
+
+            self.files_table = QTableWidget(len(review.files), 4)
+            self.files_table.setHorizontalHeaderLabels(
+                ["File", "Destination", "This write", "On disk now"])
+            self.files_table.verticalHeader().setVisible(False)
+            self.files_table.verticalHeader().setDefaultSectionSize(24)
+            self.files_table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.files_table.setSelectionMode(QTableWidget.NoSelection)
+            self.files_table.setWordWrap(False)
+            self.files_table.setItemDelegateForColumn(1, MiddleElide(self.files_table))
+            self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            for number, item in enumerate(review.files):
+                self.files_table.setItem(number, 0, QTableWidgetItem(item.doc.path.name))
+                dest = QTableWidgetItem(str(item.dest))
+                dest.setToolTip(str(item.dest))
+                self.files_table.setItem(number, 1, dest)
+            lay.addWidget(self.files_table)
+
+            self.backup_label = QLabel("")
+            self.backup_label.setWordWrap(True)
+            self.backup_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lay.addWidget(self.backup_label)
+
+            grid = QGridLayout()
+            grid.setColumnStretch(1, 1)
+            self.game_label, self.disk_label, self.problem_label, self.repeat_label = (
+                QLabel(""), QLabel(""), QLabel(""), QLabel(""))
+            self.problem_btn = QPushButton("Show...")
+            self.problem_btn.clicked.connect(self.show_problem_lines)
+            self.repeat_btn = QPushButton("Show...")
+            self.repeat_btn.clicked.connect(self.show_repeated_keys)
+            for number, (caption, label, button) in enumerate((
+                    ("Game", self.game_label, None),
+                    ("Files on disk", self.disk_label, None),
+                    ("Problem lines", self.problem_label, self.problem_btn),
+                    ("Repeated keys", self.repeat_label, self.repeat_btn))):
+                title = QLabel(caption)
+                title.setObjectName("muted")
+                label.setWordWrap(True)
+                grid.addWidget(title, number, 0, Qt.AlignTop)
+                grid.addWidget(label, number, 1)
+                if button is not None:
+                    grid.addWidget(button, number, 2, Qt.AlignTop)
+            lay.addLayout(grid)
+            self.closed_box = QCheckBox("I have closed Football Manager")
+            self.closed_box.setVisible(False)
+            lay.addWidget(self.closed_box)
+            if review.left_alone:
+                alone = QLabel(f"Not part of this {review.operation}, so left as they are: "
+                               + ", ".join(review.left_alone) + ".")
+                alone.setObjectName("muted")
+                alone.setWordWrap(True)
+                lay.addWidget(alone)
+
+            row = QHBoxLayout()
+            self.search = QLineEdit()
+            self.search.setPlaceholderText("Filter these changes...")
+            self.search.setClearButtonEnabled(True)
+            row.addWidget(self.search, 1)
+            for text, state in (("Tick all shown", True), ("Untick all shown", False)):
+                button = QPushButton(text)
+                button.clicked.connect(
+                    lambda _=False, s=state: self.model.set_included(self.proxy.shown_rows(), s))
+                row.addWidget(button)
+            lay.addLayout(row)
+            self.model = ChangeModel({item.doc: item.dest for item in review.files})
+            self.model.set_rows(review.rows)
+            self.proxy = ChangeProxy()
+            self.proxy.setSourceModel(self.model)
+            self.table = change_table(self.proxy)
+            self.table.setColumnHidden(ChangeModel.DEST, True)   # the files table names it
+            self.table.resizeColumnsToContents()
+            lay.addWidget(self.table, 1)
+            self.search.textChanged.connect(self.proxy.set_filter)
+
+            self.note = QLabel("")
+            self.note.setWordWrap(True)
+            lay.addWidget(self.note)
+            box = QDialogButtonBox()
+            self.write_btn = box.addButton(review.operation, QDialogButtonBox.AcceptRole)
+            box.addButton(QDialogButtonBox.Cancel)
+            box.accepted.connect(self.try_write)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.model.ticks_changed.connect(self.update_state)
+            self.closed_box.toggled.connect(lambda _state: self.update_state())
+            self.update_state()
+
+        def update_state(self) -> None:
+            """Work the files out again from the ticks and show where things stand."""
+            review = self.review
+            review.refresh()
+            self.summary.setText(review.summary())
+            for number, item in enumerate(review.files):
+                self.files_table.setItem(number, 2, QTableWidgetItem(item.write_state()))
+                self.files_table.setItem(number, 3, QTableWidgetItem(item.disk_state()))
+            self.files_table.resizeColumnToContents(0)
+            self.files_table.resizeColumnToContents(2)
+            self.files_table.resizeColumnToContents(3)
+            frame = 2 * self.files_table.frameWidth()
+            self.files_table.setFixedHeight(
+                self.files_table.horizontalHeader().height() + frame
+                + sum(self.files_table.rowHeight(n) for n in range(self.files_table.rowCount())))
+            self.backup_label.setText(review.backup_text(BACKUP_ROOT))
+            set_level(self.game_label, *review.game_check())
+            set_level(self.disk_label, *review.disk_check())
+            set_level(self.problem_label, *review.problem_check())
+            set_level(self.repeat_label, *review.repeated_check())
+            self.problem_btn.setVisible(bool(review.problem_lines()))
+            self.repeat_btn.setVisible(bool(review.repeated_keys()))
+            unknown = review.preflight.check_failed and any(
+                item.game for item in review.to_write)
+            self.closed_box.setVisible(unknown)
+            problems = review.problems()
+            notes = []
+            if problems:
+                notes.append(problems[0])
+            else:
+                if unknown and not self.closed_box.isChecked():
+                    notes.append("Tick \"I have closed Football Manager\" to write.")
+                notes.append(
+                    "Unticked rows are left out of this write and stay pending in memory.")
+            if any(item.game for item in review.to_write):
+                notes.append(GAME_WRITE_NOTE)
+            self.note.setText(" ".join(notes))
+            self.write_btn.setEnabled(
+                not problems and (not unknown or self.closed_box.isChecked()))
+
+        def try_write(self) -> None:
+            """Look for a running game once more, then close the dialog to write."""
+            self.review.recheck()
+            self.update_state()
+            if self.review.preflight.blocked:
+                QMessageBox.warning(self, APP_NAME, self.review.preflight.blocked_message())
+                return
+            if self.write_btn.isEnabled():
+                self.accept()
+
+        def show_problem_lines(self) -> None:
+            show_lines(self, "Problem lines",
+                       "These lines look malformed. They are written back exactly as they are.",
+                       [f"{entry.doc.path.name}  line {entry.lineno}:  {entry.raw}"
+                        for entry in self.review.problem_lines()])
+
+        def show_repeated_keys(self) -> None:
+            lines = []
+            for rows in self.review.repeated_keys():
+                first = rows[0]
+                where = " | ".join(f"{row.name} ({row.doc.path.name} line {row.lineno})"
+                                   for row in rows)
+                lines.append(f"{friendly(first.cmd)} {first.id} {first.lang}: {where}")
+            show_lines(self, "Repeated keys",
+                       "These name lines share a command, ID, and language. The game's order "
+                       "between them is not known.", lines)
+
     class MainWindow(QMainWindow):
+        CHANGES_TAB = 2
+
         def __init__(self):
             super().__init__()
             self.docs: list[LncDoc] = []
@@ -4026,6 +5110,40 @@ def run_gui(paths):
             line_lay.addWidget(self.line_view, 1)
             self.tabs.addTab(line_page, "All lines")
 
+            change_page = QWidget()
+            change_lay = QVBoxLayout(change_page)
+            change_lay.setContentsMargins(0, 8, 0, 0)
+            row = QHBoxLayout()
+            self.change_search = QLineEdit()
+            self.change_search.setPlaceholderText(
+                "Filter changes (name, ID, file, reason; accents ignored)")
+            self.change_search.setClearButtonEnabled(True)
+            row.addWidget(self.change_search, 1)
+            for text, state in (("Tick all shown", True), ("Untick all shown", False)):
+                button = QPushButton(text)
+                button.clicked.connect(
+                    lambda _=False, s=state: self.change_model.set_included(
+                        self.change_proxy.shown_rows(), s))
+                row.addWidget(button)
+            change_lay.addLayout(row)
+            self.change_summary = QLabel("")
+            self.change_summary.setObjectName("muted")
+            self.change_summary.setWordWrap(True)
+            change_lay.addWidget(self.change_summary)
+            self.change_model = ChangeModel()
+            self.change_proxy = ChangeProxy()
+            self.change_proxy.setSourceModel(self.change_model)
+            self.change_view = change_table(self.change_proxy)
+            change_lay.addWidget(self.change_view, 1)
+            self.tabs.addTab(change_page, "Changes")
+            self.change_search.textChanged.connect(self.change_proxy.set_filter)
+            self.change_model.ticks_changed.connect(
+                lambda: self.change_summary.setText(describe_ticks(self.change_model.rows)))
+
+            self.pending_label = QLabel("")
+            self.pending_label.setObjectName("warning")
+            self.statusBar().addPermanentWidget(self.pending_label)
+
             find = QAction(self)
             find.setShortcut(QKeySequence.Find)
             find.triggered.connect(self.focus_find)
@@ -4096,36 +5214,48 @@ def run_gui(paths):
             return True
 
         def save(self):
-            """Write every dirty document, and report encode errors without crashing.
+            """Write every document with changes back to its own file, after a review.
 
-            A document that lives inside the game tree goes through the same
-            preflight as Deploy: refused while the game runs, and confirmed
-            with the exact paths first. Files elsewhere are written as before.
+            A file inside the game tree is handled exactly as Deploy handles
+            it: refused while the game runs, reviewed with its backup folder
+            named, and copied into that folder first. Only the ticked changes
+            are written; the rest stay pending.
             """
             dirty = [doc for doc in self.docs if doc.dirty]
             if not dirty:
                 self.statusBar().showMessage("Nothing to save.", 4000)
                 return
-            preflight = game_write_preflight("Save", [doc.path for doc in dirty], GAME_DB_ROOT)
-            if preflight.game_paths and not confirm_game_write(
-                    self, preflight, "Save these files into the game folder?",
-                    GAME_WRITE_NOTE):
-                return
+            self.review_and_write("Save", [(doc, doc.path) for doc in dirty], GAME_DB_ROOT)
+
+        def review_and_write(self, operation: str, pairs, game_root, left_alone=()) -> bool:
+            """Show the Review changes dialog for a Save or Deploy, then write.
+
+            A running game refuses the write before the review opens, with
+            the same message for Save and Deploy. Returns True when files
+            were written.
+            """
+            review = WriteReview(operation, pairs, game_root, left_alone=left_alone)
+            if review.preflight.blocked:
+                QMessageBox.warning(self, APP_NAME, review.preflight.blocked_message())
+                return False
+            if not review.rows and not review.to_write:
+                QMessageBox.information(self, APP_NAME, review.nothing_message())
+                return False
+            dialog = ReviewDialog(self, review)
+            accepted = dialog.exec()
+            if not accepted:
+                self.refresh_status()       # ticks changed in the review show in Changes
+                return False
             try:
-                archive = save_documents(dirty, GAME_DB_ROOT, BACKUP_ROOT)
+                archive = review.write(BACKUP_ROOT)
             except (OSError, UnicodeError) as exc:
                 if isinstance(exc, WriteError) and exc.files:
-                    self.reload_views()     # a file left written is now clean
-                report_write_failure(self, "Save", exc)
-                return
+                    self.reload_views()     # a file left written is now settled
+                report_write_failure(self, operation, exc)
+                return False
             self.reload_views()
-            if archive is not None:
-                message = (
-                    f"Saved {len(dirty)} file(s). Game files were copied to {archive} first.")
-            else:
-                message = (
-                    f"Saved {len(dirty)} file(s). Backups written alongside as .bak-<date>.")
-            self.statusBar().showMessage(message, 8000)
+            self.statusBar().showMessage(review.outcome(archive), 10000)
+            return True
 
         def confirm_discard(self) -> bool:
             if not any(d.dirty for d in self.docs):
@@ -4175,8 +5305,26 @@ def run_gui(paths):
             """Restore orig_name on selected edits. Imported rows are left in place."""
             if self.tabs.currentIndex() == 0:
                 self._revert_entities()
+            elif self.tabs.currentIndex() == self.CHANGES_TAB:
+                self._revert_changes()
             else:
                 self._revert_lines()
+
+        def _revert_changes(self):
+            """Revert the lines selected in the Changes tab.
+
+            A removed row, or the row for other lines, belongs to a restored
+            backup as a whole and is left as it is.
+            """
+            rows = {self.change_proxy.mapToSource(index).row()
+                    for index in self.change_view.selectionModel().selectedIndexes()}
+            entries = [self.change_model.rows[row].entry for row in sorted(rows)
+                       if self.change_model.rows[row].state in ("edited", "restored", "added")]
+            counts = revert_entries(entries)
+            self.line_model.layoutChanged.emit()
+            self.entity_model.layoutChanged.emit()
+            self.apply_entity_filter()
+            self._revert_message(counts)
 
         def _revert_lines(self):
             rows = {self.line_proxy.mapToSource(index).row()
@@ -4214,20 +5362,13 @@ def run_gui(paths):
             self.statusBar().showMessage(message, 5000)
 
         def show_problems(self):
-            lines = [f"{e.doc.path.name}  line {e.lineno}:  {e.raw}"
-                     for d in self.docs for e in d.problems()]
-            dlg = QDialog(self)
-            dlg.setWindowTitle("Problem lines")
-            dlg.resize(900, 400)
-            lay = QVBoxLayout(dlg)
-            lay.addWidget(QLabel(
+            show_lines(
+                self, "Problem lines",
                 "These lines look malformed (usually a missing or doubled quote). "
-                "They are left exactly as they are when saving."))
-            box = QPlainTextEdit("\n".join(lines) or "No problem lines found.")
-            box.setReadOnly(True)
-            box.setLineWrapMode(QPlainTextEdit.NoWrap)
-            lay.addWidget(box)
-            dlg.exec()
+                "They are left exactly as they are when saving.",
+                [f"{e.doc.path.name}  line {e.lineno}:  {e.raw}"
+                 for d in self.docs for e in d.problems()],
+                "No problem lines found.")
 
         def refresh_status(self, *_):
             total = len(self.line_model.rows)
@@ -4248,18 +5389,37 @@ def run_gui(paths):
             self.metrics.setText(
                 f"Database {version_name}    {clubs:,} clubs    "
                 f"{comps:,} competitions    {unsaved}")
+            changes = collect_changes(self.docs)
+            self.tabs.setTabText(
+                self.CHANGES_TAB, f"Changes ({len(changes):,})" if changes else "Changes")
+            self.pending_label.setText(pending_restores(self.docs))
             if self.tabs.currentIndex() == 0:
                 shown = self.entity_proxy.rowCount()
                 self.statusBar().showMessage(
                     f"{shown:,} entities shown    |    {total:,} name lines    |    "
                     "double-click a cell to edit")
+            elif self.tabs.currentIndex() == self.CHANGES_TAB:
+                self.show_changes(changes)
+                self.statusBar().showMessage(
+                    f"{len(changes):,} change(s)    |    untick a row to leave it out of the "
+                    "next Save or Deploy")
             else:
                 self.statusBar().showMessage(
                     f"{self.line_proxy.rowCount():,} shown of {total:,} names    |    "
                     f"{unsaved_long}    |    double-click a name to edit")
 
+        def show_changes(self, rows=None) -> None:
+            """Fill the Changes tab from the open files."""
+            if rows is None:
+                rows = collect_changes(self.docs)
+            self.change_model.set_rows(rows)
+            self.change_proxy.set_filter(self.change_search.text())
+            self.change_view.resizeColumnsToContents()
+            self.change_summary.setText(describe_ticks(rows))
+
         def focus_find(self):
-            box = self.entity_search if self.tabs.currentIndex() == 0 else self.line_search
+            box = {0: self.entity_search, self.CHANGES_TAB: self.change_search}.get(
+                self.tabs.currentIndex(), self.line_search)
             box.setFocus()
             box.selectAll()
 
@@ -4524,23 +5684,7 @@ def run_gui(paths):
                     "None of the open files are FM27_Club_Names.lnc or FM27_Fix.lnc.")
                 return
             pairs = [(seen[name], targets[name]) for name in NAME_FILES if name in seen]
-            note = GAME_WRITE_NOTE
-            if skipped:
-                note += "\n\nLeft untouched:\n" + "\n".join(skipped)
-            preflight = game_write_preflight("Deploy", [dest for _doc, dest in pairs])
-            if not confirm_game_write(self, preflight, "Deploy these files into the game?", note):
-                return
-            try:
-                archive = deploy_documents(pairs, BACKUP_ROOT)
-            except (OSError, UnicodeError) as exc:
-                if isinstance(exc, WriteError) and exc.files:
-                    self.reload_views()     # a file left written is now clean
-                report_write_failure(self, "Deploy", exc)
-                return
-            self.reload_views()
-            where = str(archive) if archive is not None else "no previous file to copy"
-            self.statusBar().showMessage(
-                f"Deployed {len(pairs)} file(s). Backup: {where}", 10000)
+            self.review_and_write("Deploy", pairs, None, skipped)
 
         def open_licensing(self) -> None:
             version = self.selected_version()
@@ -4669,7 +5813,8 @@ def run_gui(paths):
                 summary += (
                     f" {skipped} row(s) were skipped because their command, id, name, "
                     "or language could not be written as one line.")
-            dialog = PackDialog(self, changes, missing, summary)
+            dialog = PackDialog(self, changes, missing, summary,
+                                apply_func=lambda c, m, d: apply_proposals(c, m, d, "pack"))
             if dialog.exec() and dialog.result_counts is not None:
                 updated, added = dialog.result_counts
                 self.reload_views()

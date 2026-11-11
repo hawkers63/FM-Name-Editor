@@ -1,4 +1,4 @@
-"""Release 2.2 checks for the name editor engine and headless window tests.
+"""Checks for the name editor engine, and headless window tests.
 
 The Steam database is only read, and only when it is present. Writes use
 temporary copies.
@@ -15,6 +15,10 @@ from pathlib import Path
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Without real fonts, offscreen Qt guesses text widths and the window comes up
+# far wider than it is on the desktop, so size checks would mean nothing.
+if Path(r"C:\Windows\Fonts").is_dir():
+    os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import fm_name_editor as editor
 
@@ -34,6 +38,19 @@ def setUpModule():
         patcher = mock.patch.object(editor, name, root / name.split("_")[0].lower())
         patcher.start()
         _SANDBOX.append(patcher)
+    # A dialog that opens without a stand-in would wait for a click that never
+    # comes, and the run would hang. Make it fail the test instead.
+    try:
+        from PySide6.QtWidgets import QDialog
+    except ImportError:
+        return
+
+    def unattended(dialog):
+        raise AssertionError(f"The dialog {dialog.windowTitle()!r} opened without a stand-in.")
+
+    guard = mock.patch.object(QDialog, "exec", unattended)
+    guard.start()
+    _SANDBOX.append(guard)
 
 
 def tearDownModule():
@@ -90,6 +107,19 @@ def failing_replace(*targets):
 
 def staging_files(folder: Path) -> list[str]:
     return sorted(path.name for path in folder.iterdir() if path.name.endswith(".writing"))
+
+
+def press_write(seen: list):
+    """A stand-in for QDialog.exec: note the Review changes dialog, then press its Write button.
+
+    Write is the dialog's own button (Save or Deploy). The dialog closes only
+    when it would really write; ``result()`` says whether it did.
+    """
+    def run(dialog):
+        seen.append(dialog)
+        dialog.try_write()
+        return dialog.result()
+    return run
 
 
 class LegalNames(unittest.TestCase):
@@ -593,7 +623,7 @@ class WindowSmoke(unittest.TestCase):
     def test_save_into_game_tree_is_refused_while_the_game_runs(self):
         """Release 2.2, F1: Quick load, edit, Save gets the same guard as Deploy."""
         from unittest.mock import patch
-        from PySide6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QDialog, QMessageBox
 
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
         try:
@@ -626,11 +656,16 @@ class WindowSmoke(unittest.TestCase):
                 self.assertEqual(asked.call_count, 0)
                 self.assertTrue(win.docs[0].dirty)
                 self.assertEqual(path.read_bytes(), original)
-                # With the game closed, Save asks once, names the file, then writes.
-                with patch.object(editor, "football_manager_running", return_value=[]):
+                # With the game closed, Save opens the review, which says it is the
+                # same as Deploy and names the file, then writes. (Session 5.)
+                seen = []
+                with patch.object(editor, "football_manager_running", return_value=[]), \
+                        patch.object(QDialog, "exec", press_write(seen)):
                     win.save()
-                self.assertEqual(asked.call_count, 1)
-                self.assertIn(str(path), asked.call_args.args[2])
+                self.assertEqual(asked.call_count, 0)
+                self.assertEqual(seen[0].windowTitle(),
+                                 "Review changes: Save into the game folder, the same as Deploy")
+                self.assertEqual(seen[0].files_table.item(0, 1).text(), str(path))
                 self.assertFalse(win.docs[0].dirty)
                 self.assertIn(b'"Beta"', path.read_bytes())
                 self.assertTrue((root / "backups").is_dir())
@@ -1500,7 +1535,7 @@ class Session3Window(unittest.TestCase):
 
     def test_a_failed_deploy_says_where_each_file_stands(self):
         from unittest.mock import patch
-        from PySide6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QDialog, QMessageBox
 
         win = self._window()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1518,13 +1553,13 @@ class Session3Window(unittest.TestCase):
                 self.assertTrue(win.load([str(club), str(fix)]))
                 editor.try_set_name(win.docs[0].names()[0], "Alpha United")
                 editor.try_set_name(win.docs[1].names()[0], "Cup Final")
+                seen = []
                 with patch.object(editor, "football_manager_running", return_value=[]), \
-                        patch.object(QMessageBox, "question",
-                                     return_value=QMessageBox.Yes) as asked, \
+                        patch.object(QDialog, "exec", press_write(seen)), \
                         patch.object(QMessageBox, "critical") as shown, \
                         patch.object(editor.os, "replace", side_effect=failing_replace(fix)):
                     win.deploy()
-            self.assertIn("one at a time", asked.call_args.args[2])
+            self.assertIn("one at a time", seen[0].note.text())
             self.assertEqual(shown.call_count, 1)
             text = shown.call_args.args[2]
             self.assertIn("Deploy stopped part-way", text)
@@ -1536,8 +1571,9 @@ class Session3Window(unittest.TestCase):
             self.assertEqual(staging_files(folder), [])
 
     def test_save_refuses_a_file_changed_on_disk(self):
+        """Since Session 5 the review shows the change and will not write."""
         from unittest.mock import patch
-        from PySide6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QDialog, QMessageBox
 
         win = self._window()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1547,11 +1583,18 @@ class Session3Window(unittest.TestCase):
             editor.try_set_name(win.docs[0].names()[0], "Alpha United")
             write_lnc(path, Session3Writes.CLUB.replace("Alpha", "Changed elsewhere"))
             outside = path.read_bytes()
-            with patch.object(QMessageBox, "warning") as warned:
+            seen = []
+            with patch.object(QDialog, "exec", press_write(seen)), \
+                    patch.object(QMessageBox, "warning") as warned:
                 win.save()
-            self.assertEqual(warned.call_count, 1)
-            self.assertIn("changed on disk", warned.call_args.args[2])
-            self.assertIn(str(path), warned.call_args.args[2])
+            dialog = seen[0]
+            self.assertEqual(dialog.result(), 0)            # Write did not close it
+            self.assertFalse(dialog.write_btn.isEnabled())
+            self.assertIn("changed on disk since the editor read it", dialog.disk_label.text())
+            self.assertIn("changed on disk, or were removed, after the editor read them",
+                          dialog.note.text())
+            self.assertIn(str(path), dialog.note.text())
+            self.assertEqual(warned.call_count, 0)
             self.assertEqual(path.read_bytes(), outside)
             self.assertTrue(win.docs[0].dirty)
             self.assertEqual(sorted(item.name for item in Path(tmp).iterdir()), ["mine.lnc"])
@@ -2008,7 +2051,8 @@ class Session4Window(unittest.TestCase):
                 next(e for e in win.docs[0].names() if e.id == "708").name, "Sheff Utd")
             self.assertTrue(win.docs[0].dirty)
             self.assertEqual(stock.read_bytes(), on_disk)       # memory only until Save
-            win.save()
+            with mock.patch.object(QDialog, "exec", press_write([])):
+                win.save()
             self.assertIn(b'"Sheff Utd"', stock.read_bytes())
             self.assertEqual(profile.path.read_bytes(), before)  # Save leaves the profile alone
 
@@ -2042,6 +2086,536 @@ class Session4Window(unittest.TestCase):
             self.assertEqual(len(list((root / "deleted").glob("new-name-*.json"))), 1)
             self.assertEqual(editor.load_state(Path(tmp) / "state")["active_profile_file"], "")
             self.assertTrue((root / "broken.json").exists())     # left alone
+
+
+class Session5Changes(unittest.TestCase):
+    """Release 2.3, session 5: the Changes model, include ticks, and the review before a write."""
+
+    ROWS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t1\t"Alp"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""\n'
+    )
+
+    def _club(self, folder: Path, text: str | None = None):
+        path = folder / "FM27_Club_Names.lnc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_lnc(path, self.ROWS if text is None else text)
+        return editor.LncDoc(path), path
+
+    @staticmethod
+    def _row(doc, id_: str, cmd: str = "CLUB_NAME_CHANGE"):
+        return next(entry for entry in doc.names() if entry.id == id_ and entry.cmd == cmd)
+
+    def _save(self, doc, path, tmp):
+        """A Save review of a file outside the game tree."""
+        return editor.WriteReview("Save", [(doc, path)], Path(tmp) / "no-game-here")
+
+    def test_the_changes_list_edited_added_restored_and_removed_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc, _path = self._club(root / "work")
+            editor.try_set_name(self._row(doc, "1"), "Alpha United")
+            entity = next(item for item in editor.build_entities([doc]) if item.id == "1")
+            self.assertTrue(editor.set_entity_field(entity, "code", "ALP", [doc]))
+            rows = editor.collect_changes([doc])
+            self.assertEqual(
+                [(r.state, r.reason, r.command, r.id, r.on_disk, r.proposed, r.line)
+                 for r in rows],
+                [("edited", "Manual edit", "CLUB_NAME_CHANGE", "1", "Alpha", "Alpha United", 2),
+                 ("added", "Manual edit", "CLUB_3LETTER_NAME_CHANGE", "1", "no line", "ALP", 3)])
+            self.assertTrue(all(row.included for row in rows))
+            self.assertFalse(doc.grouped)
+            # A restored backup: one name differs, one line is new, one disk line is missing.
+            restored, path = self._club(root / "game")
+            stored = root / "backups" / "20261111-120000" / path.name
+            stored.parent.mkdir(parents=True)
+            write_lnc(stored, self.ROWS.replace('"Beta"', '"Beta Old"').replace(
+                '"CLUB_NAME_CHANGE"\t3\t"Gamma"', '"CLUB_NAME_CHANGE"\t4\t"Delta"'))
+            editor.restore_into(restored, stored)
+            rows = editor.collect_changes([restored])
+            self.assertEqual(
+                [(r.state, r.reason, r.id, r.on_disk, r.proposed) for r in rows],
+                [("restored", "Restore", "2", "Beta", "Beta Old"),
+                 ("added", "Restore", "4", "no line", "Delta"),
+                 ("removed", "Restore", "3", "Gamma", "no line")])
+            self.assertTrue(restored.grouped)
+            self.assertIn(str(stored), rows[0].detail)
+            self.assertEqual(
+                editor.pending_restores([doc, restored]),
+                "Restore pending, not written yet: FM27_Club_Names.lnc (backup 20261111-120000)")
+            # A copy that differs only in a comment still shows, as one row.
+            other, path = self._club(root / "other")
+            copy = root / "backups" / "20261111-130000" / path.name
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.ROWS.replace("#England", "#England and Wales"))
+            editor.restore_into(other, copy)
+            self.assertEqual([(r.state, r.proposed) for r in editor.collect_changes([other])],
+                             [("other", editor.OTHER_LINES_TEXT)])
+
+    def test_each_operation_records_its_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "".join(f'"CLUB_NAME_CHANGE"\t{n}\t"Club {n}"\t""\n' for n in range(1, 7))
+            doc, _path = self._club(Path(tmp), text)
+            row = {entry.id: entry for entry in doc.names()}
+
+            def proposal(entry, new):
+                return editor.Proposal(entry.cmd, entry.id, "", new, entry, "", True)
+
+            editor.try_set_name(row["1"], "Club One")
+            editor.apply_bulk([editor.BulkEdit(None, "long", row["2"], "Club 2", "Club Two")],
+                              [doc])
+            edits, _skipped, _error = editor.preview_replace([doc], "^Club 3$", "Club Three")
+            editor.apply_bulk(edits, [doc], "replace")
+            editor.apply_proposals([proposal(row["4"], "Club Four")], [], [doc])
+            missing = editor.Proposal("CLUB_NAME_CHANGE", "7", "", "Club Seven", None, "", True)
+            editor.apply_proposals([proposal(row["5"], "Club Five")], [missing], [doc], "pack")
+            editor.apply_profile_proposals("Mine", [proposal(row["6"], "Club Six")], [], [doc])
+            self.assertEqual(
+                {r.id: (r.state, r.reason) for r in editor.collect_changes([doc])},
+                {"1": ("edited", "Manual edit"), "2": ("edited", "Bulk tool"),
+                 "3": ("edited", "Replace"), "4": ("edited", "Older files"),
+                 "5": ("edited", "Name pack"), "6": ("edited", "Profile Mine"),
+                 "7": ("added", "Name pack")})
+            row["1"].excluded = True
+            self.assertEqual(editor.revert_entry(row["1"]), "name")
+            self.assertIsNone(row["1"].reason)
+            self.assertFalse(row["1"].excluded)     # a later change to it starts ticked
+
+    def test_leaving_changes_out_rebuilds_the_file_on_disk(self):
+        variants = (("LF", "\n", True, "utf-8"), ("CRLF", "\r\n", True, "utf-8"),
+                    ("no final ending", "\n", False, "utf-8"),
+                    ("UTF-16", "\r\n", True, "utf-16-le"))
+        for label, eol, final, encoding in variants:
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                text = eol.join(self.ROWS.rstrip("\n").split("\n")) + (eol if final else "")
+                path = Path(tmp) / "FM27_Club_Names.lnc"
+                if encoding == "utf-16-le":
+                    path.write_bytes(b"\xff\xfe" + text.encode("utf-16-le"))
+                else:
+                    path.write_bytes(BOM + text.encode("utf-8"))
+                doc = editor.LncDoc(path)
+                editor.try_set_name(self._row(doc, "2"), "Beta Town")
+                entity = next(item for item in editor.build_entities([doc]) if item.id == "3")
+                editor.set_entity_field(entity, "short", "Gam", [doc])  # after the last line
+                doc.append_entry("CLUB_NAME_CHANGE", "9", "Iota", "")   # under an import heading
+                self.assertTrue(doc.separable)
+                none = editor.payload_lines(doc, lambda _entry: False)
+                every = editor.payload_lines(doc, lambda _entry: True)
+                self.assertEqual(doc.encode_text(editor.lines_text(none)), path.read_bytes())
+                self.assertEqual(doc.encode_text(editor.lines_text(every)), doc.to_bytes())
+                for row in editor.collect_changes([doc]):
+                    row.set_included(row.id == "3")     # only the inserted short name
+                payload = editor.build_payload(doc)
+                self.assertEqual((payload.included, payload.left_out), (1, 2))
+                written = editor.decode_lnc_bytes(payload.data)[0]
+                self.assertIn('"Gam"', written)
+                self.assertNotIn("Beta Town", written)
+                self.assertNotIn("Iota", written)
+                self.assertNotIn("Imported by FM Name Editor", written)
+
+    def test_an_unticked_row_is_not_written_and_stays_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path = self._club(Path(tmp))
+            alpha, beta = self._row(doc, "1"), self._row(doc, "2")
+            editor.try_set_name(alpha, "Alpha United")
+            editor.try_set_name(beta, "Beta Town")
+            next(r for r in editor.collect_changes([doc]) if r.id == "2").set_included(False)
+            review = self._save(doc, path, tmp)
+            self.assertEqual((review.included, review.left_out), (1, 1))
+            self.assertEqual(review.problems(), [])
+            self.assertIsNone(review.write(Path(tmp) / "backups"))
+            on_disk = path.read_bytes().decode("utf-8-sig")
+            self.assertIn('"Alpha United"', on_disk)
+            self.assertIn('"Beta"', on_disk)
+            self.assertNotIn("Beta Town", on_disk)
+            self.assertTrue(doc.dirty)                  # the unticked row is still pending
+            self.assertEqual(beta.name, "Beta Town")
+            self.assertEqual(alpha.orig_name, "Alpha United")
+            rows = editor.collect_changes([doc])
+            self.assertEqual([(r.id, r.on_disk, r.proposed, r.included) for r in rows],
+                             [("2", "Beta", "Beta Town", False)])
+            self.assertIn("1 left out, still pending", review.outcome(None))
+            self.assertEqual(len(list(Path(tmp).glob("*.bak-*"))), 1)
+            rows[0].set_included(True)
+            self._save(doc, path, tmp).write(Path(tmp) / "backups")
+            self.assertEqual(path.read_bytes(), doc.to_bytes())
+            self.assertFalse(doc.dirty)
+            self.assertEqual(editor.collect_changes([doc]), [])
+
+    def test_a_restored_file_is_written_whole(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc, path = self._club(root / "game")
+            stored = root / "backups" / "20261111-120000" / path.name
+            stored.parent.mkdir(parents=True)
+            write_lnc(stored, self.ROWS.replace('"Alpha"', '"Alpha Old"').replace(
+                '"Beta"', '"Beta Old"'))
+            on_disk = path.read_bytes()
+            editor.restore_into(doc, stored)
+            rows = editor.collect_changes([doc])
+            self.assertEqual(len(rows), 2)
+            rows[0].set_included(False)                 # one tick stands for the whole file
+            self.assertEqual([row.included for row in rows], [False, False])
+            payload = editor.build_payload(doc)
+            self.assertEqual((payload.data, payload.included, payload.left_out), (on_disk, 0, 2))
+            review = self._save(doc, path, tmp)
+            self.assertEqual(review.to_write, [])
+            self.assertIn("Nothing is ticked", review.problems()[0])
+            rows[1].set_included(True)
+            review.refresh()
+            self.assertEqual(review.files[0].write_state(), "2 change(s), written together")
+            review.write(root / "backups")
+            self.assertEqual(path.read_bytes(), stored.read_bytes())
+            self.assertFalse(doc.dirty)
+            self.assertFalse(doc.restore_pending)
+            self.assertEqual(editor.pending_restores([doc]), "")
+
+    def test_a_file_that_cannot_be_split_is_written_whole(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path = self._club(Path(tmp))
+            added = doc.append_entry("CLUB_NAME_CHANGE", "9", "Iota", "")
+            doc.entries.remove(added)                   # leaves the import heading on its own
+            doc.touch()
+            self.assertTrue(doc.dirty)
+            self.assertFalse(doc.separable)
+            rows = editor.collect_changes([doc])
+            self.assertEqual([row.state for row in rows], ["other"])
+            rows[0].set_included(False)
+            self.assertEqual(editor.build_payload(doc).data, doc.baseline_bytes)
+            rows[0].set_included(True)
+            self.assertEqual(editor.build_payload(doc).data, doc.to_bytes())
+
+    def test_an_external_change_blocks_the_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path = self._club(Path(tmp))
+            editor.try_set_name(self._row(doc, "1"), "Alpha United")
+            write_lnc(path, self.ROWS.replace("Gamma", "Gamma changed elsewhere"))
+            outside = path.read_bytes()
+            review = self._save(doc, path, tmp)
+            self.assertEqual(review.files[0].external, "changed")
+            text, level = review.disk_check()
+            self.assertEqual(level, "blocked")
+            self.assertIn("changed on disk since the editor read it", text)
+            problems = review.problems()
+            self.assertEqual(len(problems), 1)
+            self.assertIn("changed on disk, or were removed, after the editor read them",
+                          problems[0])
+            self.assertIn(str(path), problems[0])
+            with self.assertRaises(editor.WriteError):
+                review.write(Path(tmp) / "backups")
+            self.assertEqual(path.read_bytes(), outside)
+            self.assertTrue(doc.dirty)
+            # A change made after the review is still caught by the write itself.
+            fresh, second = self._club(Path(tmp) / "second")
+            editor.try_set_name(self._row(fresh, "1"), "Alpha United")
+            review = self._save(fresh, second, tmp)
+            self.assertEqual(review.problems(), [])
+            write_lnc(second, self.ROWS + '"CLUB_NAME_CHANGE"\t8\t"Theta"\t""\n')
+            with self.assertRaises(editor.ExternalChangeError):
+                review.write(Path(tmp) / "backups")
+            self.assertTrue(fresh.dirty)
+
+    def test_a_deploy_with_nothing_new_writes_nothing(self):
+        """A Deploy of unchanged files rewrote them on 11 November 2026; the review skips them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            club, club_path = self._club(root / "db" / "2700" / "lnc" / "all")
+            review = editor.WriteReview("Deploy", [(club, club_path)], check=lambda: [])
+            self.assertEqual(review.to_write, [])
+            self.assertEqual(
+                review.problems(),
+                ["The destination files already hold these bytes, so there is nothing to write."])
+            self.assertEqual(review.files[0].write_state(),
+                             "not written: it already holds these bytes")
+            # A working copy from elsewhere replaces the game file whole.
+            work, _work_path = self._club(root / "work", self.ROWS.replace("Alpha", "Alpha W"))
+            review = editor.WriteReview("Deploy", [(work, club_path)], check=lambda: [])
+            item = review.files[0]
+            self.assertTrue(item.writes)
+            self.assertEqual(item.disk_state(),
+                             "a file the editor did not open; it is replaced whole")
+            archive = review.write(root / "backups")
+            self.assertEqual(club_path.read_bytes(), work.baseline_bytes)
+            self.assertEqual(work.path, club_path)
+            self.assertTrue((archive / editor.MANIFEST_NAME).is_file())
+
+    def test_the_review_names_the_operation_and_its_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = root / "db"
+            doc, path = self._club(
+                game / "2700" / "lnc" / "all",
+                self.ROWS + '"CLUB_NAME_CHANGE"\t2\t"Beta Again"\t""\n"BROKEN\n')
+            editor.try_set_name(self._row(doc, "1"), "Alpha United")
+            calls = []
+            review = editor.WriteReview(
+                "Save", [(doc, path)], game, check=lambda: calls.append(1) or [])
+            self.assertEqual(review.title,
+                             "Review changes: Save into the game folder, the same as Deploy")
+            self.assertEqual(calls, [1])
+            self.assertEqual(review.game_check(), ("Football Manager is not running.", "ok"))
+            text, level = review.problem_check()
+            self.assertEqual(level, "warning")
+            self.assertIn("1 problem line(s) in FM27_Club_Names.lnc", text)
+            text, level = review.repeated_check()
+            self.assertIn("1 command, ID, and language key(s) are on more than one line; "
+                          "1 with different names", text)
+            self.assertIn(str(root / "backups"), review.backup_text(root / "backups"))
+            unknown = editor.WriteReview("Save", [(doc, path)], game, check=lambda: None)
+            self.assertEqual(unknown.game_check()[1], "warning")
+            running = editor.WriteReview("Save", [(doc, path)], game, check=lambda: ["fm.exe"])
+            self.assertIn("fm.exe", running.problems()[0])
+            outside = editor.WriteReview(
+                "Save", [(doc, path)], root / "elsewhere", check=lambda: calls.append(2) or [])
+            self.assertEqual(outside.title, "Review changes: Save")
+            self.assertEqual(calls, [1])                # no game file, so no process check
+            self.assertEqual(outside.game_check()[1], "muted")
+            deploy = editor.WriteReview("Deploy", [(doc, path)], check=lambda: [])
+            self.assertEqual(deploy.title, "Review changes: Deploy to the game folder")
+
+
+class Session5Window(unittest.TestCase):
+    """Release 2.3, session 5: the Changes tab, the review dialog, and the footer."""
+
+    CLUBS = "#England\n" + "".join(
+        f'"CLUB_NAME_CHANGE"\t{n}\t"Club {n}"\t""\n' for n in range(1, 7))
+    CUPS = "#England\n" + "".join(
+        f'"COMP_LONG_NAME_CHANGE"\t{n}\t"Cup {n}"\t""\n' for n in range(1, 5))
+
+    def _window(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        return win
+
+    def _game(self, tmp):
+        """Both name files in a stand-in for lnc\\all, with the game root and backups patched."""
+        root = Path(tmp)
+        folder = root / "db" / "2700" / "lnc" / "all"
+        folder.mkdir(parents=True)
+        club, fix = folder / "FM27_Club_Names.lnc", folder / "FM27_Fix.lnc"
+        write_lnc(club, self.CLUBS)
+        write_lnc(fix, self.CUPS)
+        roots = mock.patch.multiple(editor, GAME_DB_ROOT=root / "db", BACKUP_ROOT=root / "backups")
+        roots.start()
+        self.addCleanup(roots.stop)
+        return club, fix
+
+    def test_ticks_in_the_changes_tab_carry_into_the_review(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, self.CLUBS)
+            self.assertTrue(win.load([str(path)]))
+            model = win.entity_model
+            for id_, new in (("1", "Club One"), ("2", "Club Two")):
+                row = next(n for n, entity in enumerate(model.rows) if entity.id == id_)
+                self.assertTrue(model.setData(model.index(row, 2), new))
+            self.assertEqual(win.tabs.tabText(2), "Changes (2)")
+            win.tabs.setCurrentIndex(2)
+            changes = win.change_model
+            self.assertEqual([changes.data(changes.index(n, changes.PROPOSED))
+                              for n in range(changes.rowCount())], ["Club One", "Club Two"])
+            self.assertEqual(changes.data(changes.index(0, changes.REASON)), "Manual edit")
+            self.assertTrue(changes.setData(changes.index(1, changes.INCLUDE), Qt.Unchecked,
+                                            Qt.CheckStateRole))
+            self.assertIn("1 ticked for the next Save or Deploy, 1 left out",
+                          win.change_summary.text())
+            seen = []
+            with mock.patch.object(QDialog, "exec", press_write(seen)):
+                win.save()
+            dialog = seen[0]
+            self.assertEqual(dialog.windowTitle(), "Review changes: Save")
+            self.assertIn("1 change(s) ticked, to be written to 1 file(s). 1 left out",
+                          dialog.summary.text())
+            unticked = dialog.model.data(dialog.model.index(1, dialog.model.INCLUDE),
+                                         Qt.CheckStateRole)
+            self.assertEqual(unticked, Qt.Unchecked)
+            self.assertEqual(dialog.model.data(dialog.model.index(0, dialog.model.DEST)),
+                             str(path))
+            written = path.read_bytes().decode("utf-8-sig")
+            self.assertIn('"Club One"', written)
+            self.assertNotIn("Club Two", written)
+            self.assertTrue(win.docs[0].dirty)
+            self.assertEqual(win.tabs.tabText(2), "Changes (1)")
+            self.assertEqual(changes.rowCount(), 1)
+            self.assertEqual(changes.data(changes.index(0, changes.INCLUDE), Qt.CheckStateRole),
+                             Qt.Unchecked)
+            self.assertIn("1 left out, still pending", win.statusBar().currentMessage())
+
+    def test_revert_and_find_act_on_the_changes_tab(self):
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, self.CLUBS)
+            self.assertTrue(win.load([str(path)]))
+            first, second = win.docs[0].names()[:2]
+            editor.try_set_name(first, "Club One")
+            editor.try_set_name(second, "Club Two")
+            win.reload_views()
+            win.tabs.setCurrentIndex(1)
+            win.line_view.selectAll()           # not what Revert should act on from Changes
+            win.tabs.setCurrentIndex(2)
+            win.change_view.selectRow(1)
+            win.revert_selected()
+            self.assertEqual((first.name, second.name), ("Club One", "Club 2"))
+            self.assertEqual(win.tabs.tabText(2), "Changes (1)")
+            self.assertIn("Reverted 1 name(s)", win.statusBar().currentMessage())
+            with mock.patch.object(win.change_search, "setFocus") as focused:
+                win.focus_find()
+            focused.assert_called_once()
+
+    def test_the_review_fits_a_1280_by_820_window_with_ten_changes(self):
+        """Acceptance: destinations, backup folder, and ticked count show without scrolling."""
+        from PySide6.QtWidgets import QApplication, QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            club, fix = self._game(tmp)
+            win.refresh_versions()
+            self.assertTrue(win.load([str(club), str(fix)]))
+            for doc in win.docs:
+                for entry in doc.names():
+                    editor.try_set_name(entry, entry.name + " Renamed")
+            self.assertEqual((win.width(), win.height()), (1280, 820))
+            seen = []
+
+            def inspect(dialog):
+                dialog.resize(1180, 740)    # its size on this PC's 1920 x 1040 desktop
+                dialog.show()
+                QApplication.processEvents()
+                seen.append(dialog)
+                return 0
+
+            with mock.patch.object(editor, "football_manager_running", return_value=[]), \
+                    mock.patch.object(QDialog, "exec", inspect):
+                win.deploy()
+            dialog = seen[0]
+            self.addCleanup(dialog.deleteLater)
+            self.addCleanup(dialog.close)
+            self.assertLessEqual(dialog.width(), 1280)
+            self.assertLessEqual(dialog.height(), 820)
+            self.assertEqual([dialog.files_table.item(n, 1).text() for n in range(2)],
+                             [str(club), str(fix)])
+            self.assertIn(str(editor.BACKUP_ROOT), dialog.backup_label.text())
+            self.assertIn("10 change(s) ticked, to be written to 2 file(s).", dialog.summary.text())
+            self.assertEqual(dialog.proxy.rowCount(), 10)
+            self.assertEqual(dialog.table.verticalScrollBar().maximum(), 0)   # no scrolling
+            inside = dialog.rect()
+            for widget in (dialog.summary, dialog.files_table, dialog.backup_label,
+                           dialog.table, dialog.write_btn):
+                self.assertTrue(widget.isVisible())
+                corner = widget.mapTo(dialog, widget.rect().bottomRight())
+                self.assertTrue(inside.contains(corner), widget)
+            self.assertEqual(dialog.files_table.verticalScrollBar().maximum(), 0)
+            self.assertEqual(club.read_bytes().decode("utf-8-sig"), self.CLUBS)  # nothing written
+
+    def test_an_unknown_game_state_needs_the_closed_box(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            club, fix = self._game(tmp)
+            win.refresh_versions()
+            self.assertTrue(win.load([str(club), str(fix)]))
+            editor.try_set_name(win.docs[0].names()[0], "Club One")
+            seen = []
+            with mock.patch.object(editor, "football_manager_running", return_value=None), \
+                    mock.patch.object(QDialog, "exec", press_write(seen)):
+                win.deploy()
+            dialog = seen[0]
+            self.assertEqual(dialog.result(), 0)
+            self.assertIn("could not be made", dialog.game_label.text())
+            self.assertTrue(dialog.closed_box.isVisibleTo(dialog))
+            self.assertFalse(dialog.write_btn.isEnabled())
+            self.assertEqual(club.read_bytes().decode("utf-8-sig"), self.CLUBS)
+            seen = []
+
+            def tick_then_write(dialog):
+                seen.append(dialog)
+                dialog.closed_box.setChecked(True)
+                dialog.try_write()
+                return dialog.result()
+
+            with mock.patch.object(editor, "football_manager_running", return_value=None), \
+                    mock.patch.object(QDialog, "exec", tick_then_write):
+                win.deploy()
+            self.assertEqual(seen[0].result(), 1)
+            self.assertIn('"Club One"', club.read_bytes().decode("utf-8-sig"))
+            self.assertFalse(win.docs[0].dirty)
+
+    def test_a_game_started_while_reviewing_stops_the_write(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            club, fix = self._game(tmp)
+            win.refresh_versions()
+            self.assertTrue(win.load([str(club), str(fix)]))
+            editor.try_set_name(win.docs[0].names()[0], "Club One")
+            seen = []
+            with mock.patch.object(editor, "football_manager_running",
+                                   side_effect=[[], ["fm.exe"]]) as looked, \
+                    mock.patch.object(QDialog, "exec", press_write(seen)), \
+                    mock.patch.object(QMessageBox, "warning") as warned:
+                win.deploy()
+            self.assertEqual(looked.call_count, 2)          # when the review opened, and at Write
+            self.assertEqual(seen[0].result(), 0)
+            self.assertIn("fm.exe", warned.call_args.args[2])
+            self.assertIn("fm.exe", seen[0].game_label.text())
+            self.assertFalse(seen[0].write_btn.isEnabled())
+            self.assertEqual(club.read_bytes().decode("utf-8-sig"), self.CLUBS)
+            self.assertTrue(win.docs[0].dirty)
+
+    def test_a_restore_shows_in_the_footer_until_it_is_written(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, self.CLUBS)
+            copy = Path(tmp) / "backups" / "20261111-120000" / "mine.lnc"
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.CLUBS.replace("Club 3", "Club Three"))
+            self.assertTrue(win.load([str(path)]))
+            self.assertEqual(win.pending_label.text(), "")
+            editor.restore_into(win.docs[0], copy)
+            win.reload_views()
+            self.assertEqual(win.pending_label.text(),
+                             "Restore pending, not written yet: mine.lnc (backup 20261111-120000)")
+            win.tabs.setCurrentIndex(2)
+            self.assertEqual(win.change_model.data(win.change_model.index(0, 1)), "Restored")
+            self.assertIn("written whole", win.change_summary.text())
+            with mock.patch.object(QDialog, "exec", press_write([])):
+                win.save()
+            self.assertEqual(path.read_bytes(), copy.read_bytes())
+            self.assertEqual(win.pending_label.text(), "")
+            self.assertEqual(win.tabs.tabText(2), "Changes")
+
+    def test_a_deploy_with_nothing_new_says_so_and_writes_nothing(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            club, fix = self._game(tmp)
+            win.refresh_versions()
+            self.assertTrue(win.load([str(club), str(fix)]))
+            before = club.stat().st_mtime_ns
+            with mock.patch.object(editor, "football_manager_running", return_value=[]), \
+                    mock.patch.object(QMessageBox, "information") as told:
+                win.deploy()
+            self.assertIn("already hold these bytes", told.call_args.args[2])
+            self.assertEqual(club.stat().st_mtime_ns, before)
+            self.assertFalse((Path(tmp) / "backups").exists())
 
 
 if __name__ == "__main__":
