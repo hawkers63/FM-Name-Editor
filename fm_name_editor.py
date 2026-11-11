@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.2
+FM Name Editor v2.3
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -14,7 +14,9 @@ by database ID, deployed into the FM27 database, and transformed in bulk.
 Release 2.1 added name packs, a backup browser, section-scoped replace,
 and the UTF-16 Greek person-name file. Release 2.2 makes every write
 safe: one game-write check, checked fields, a disk baseline for unsaved
-state, and files replaced one at a time with a way back.
+state, and files replaced one at a time with a way back. Release 2.3
+adds spelling profiles that outlive Save and Deploy, a Changes view with
+one review before every write, and undo and redo for whole operations.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -38,6 +40,7 @@ Design rules
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import io
@@ -52,7 +55,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.2"
+VERSION = "2.3"
 
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
@@ -130,6 +133,11 @@ def friendly(cmd: str) -> str:
     return FRIENDLY.get(cmd, cmd)
 
 
+def count_of(number: int, word: str) -> str:
+    """"1 name", "14 names": a count for a menu or a message."""
+    return f"{number:,} {word}" + ("" if number == 1 else "s")
+
+
 def field_is_legal(text: str) -> bool:
     """Return True when text can sit inside one quoted .lnc field.
 
@@ -199,6 +207,7 @@ CHANGE_REASONS = {
     "import": "Older files",
     "profile": "Profile",
     "restore": "Restore",
+    "undo": "Undo or redo",
 }
 
 
@@ -254,6 +263,7 @@ class Entry:
 
     def set_name(self, new: str, reason: str | None = "manual"):
         """Replace the quoted name. ``reason`` records which operation did it."""
+        _note_line(self)
         start, end = self.span
         self.raw = self.raw[:start] + '"' + new + '"' + self.raw[end:]
         self.span = (start, start + len(new) + 2)
@@ -267,6 +277,7 @@ class Entry:
         The replacement name sits later on the line, so its span moves
         when the ending changes length.
         """
+        _note_line(self)
         start, end = self.source_span
         self.raw = self.raw[:start] + '"' + new + '"' + self.raw[end:]
         new_end = start + len(new) + 2
@@ -463,9 +474,10 @@ def adopt_disk_originals(entries, on_disk) -> list:
     """Compare restored lines with the lines on disk and set their originals.
 
     Rows are matched by key, in file order among rows that share a key. A
-    matched row takes the disk text as its original, so it shows as edited
-    when it differs. A row with no match is marked added. Returns the disk
-    rows that no restored row matched.
+    matched row takes the disk text as its original (the name and ending,
+    and the whole line with its line ending), so it shows as edited when it
+    differs. A row with no match is marked added. Returns the disk rows
+    that no restored row matched.
     """
     def numbered(rows):
         seen: dict = {}
@@ -484,6 +496,8 @@ def adopt_disk_originals(entries, on_disk) -> list:
         else:
             row.orig_name = match.name
             row.orig_source = match.source
+            row.orig_raw = match.raw
+            row.orig_eol = match.eol
     return list(pool.values())
 
 
@@ -508,6 +522,7 @@ class LncDoc:
         self.restore_pending = False    # the lines came from a backup and are not written yet
         self.restored_from = None       # that backup copy, when known
         self.whole_excluded = False     # a file written whole is left out of the next write
+        self.disk_version = 0           # moves on every write, so an undo can tell it crossed one
         self._revision = 0
         self._dirty_stamp = None
         self._dirty_value = False
@@ -610,6 +625,7 @@ class LncDoc:
         self.restore_pending = False
         self.restored_from = None
         self.whole_excluded = False
+        self.disk_version += 1
         self.touch()
 
     def settle_written(self, lines, payload: bytes) -> None:
@@ -631,6 +647,34 @@ class LncDoc:
                 entry.reason = None
                 entry.excluded = False
         self.baseline_bytes = payload
+        self.disk_version += 1
+        self.touch()
+
+    def rebase(self) -> None:
+        """Work out again which working lines are on disk, after an undo or redo crossed a write.
+
+        Name lines and person rules are matched to the disk file the way a
+        restore matches them (adopt_disk_originals): by key, in file order.
+        A matched line takes the disk text as its original, an unmatched one
+        is added, and a disk row that nothing matched is removed. Other lines
+        count as on disk when they read the same, in the same order, as the
+        disk file's. When anything does not line up, the file's changes are
+        written together (see ``separable``).
+        """
+        on_disk = parse_lnc_bytes(None, self.baseline_bytes)[0] if self.baseline_bytes else []
+        for entry in self.entries:
+            entry.orig_raw = None
+            if entry.kind in ROW_KINDS:
+                entry.imported = False
+        self.removed_rows = adopt_disk_originals(self.entries, on_disk)
+        for entry in self.entries:
+            if entry.kind in ROW_KINDS and entry.changed and entry.reason is None:
+                entry.reason = "undo"
+        mine = [entry for entry in self.entries if entry.kind not in ROW_KINDS]
+        theirs = [(entry.raw, entry.eol) for entry in on_disk if entry.kind not in ROW_KINDS]
+        if [(entry.raw, entry.eol) for entry in mine] == theirs:
+            for entry in mine:
+                entry.orig_raw, entry.orig_eol = entry.raw, entry.eol
         self.touch()
 
     def replace_working(self, data: bytes, source=None) -> None:
@@ -645,6 +689,7 @@ class LncDoc:
         backup's lines have taken the place of the file's own.
         """
         entries, encoding, has_bom, default_eol = parse_lnc_bytes(self, data)
+        _note_lines_of(self)
         for entry in entries:
             entry.orig_raw = None       # where a backup line sits on disk is not known
             if entry.kind in ROW_KINDS:
@@ -729,7 +774,9 @@ class LncDoc:
             ValueError: a field is not legal. Nothing is added then.
         """
         raw = build_name_line(cmd, id_, name, lang)
+        _note_lines_of(self)
         if self.entries and not self.entries[-1].eol:
+            _note_ending(self.entries[-1])
             self.entries[-1].eol = self.default_eol
         marker = "#Imported by FM Name Editor"
         if not any(e.raw.strip() == marker for e in self.entries):
@@ -793,6 +840,171 @@ def payload_lines(doc: LncDoc, include) -> list:
 def lines_text(lines) -> str:
     """Join what payload_lines returned into file text."""
     return "".join(text + eol for _entry, text, eol, _as_is in lines)
+
+
+# ---- undo and redo -----------------------------------------------------------
+
+_RECORDING: list = []           # operations being recorded; normally none or one
+
+
+def _note_line(entry) -> None:
+    """Tell any operation being recorded that this line's text is about to change."""
+    for operation in _RECORDING:
+        operation.note_line(entry)
+
+
+def _note_lines_of(doc) -> None:
+    """Tell any operation being recorded that doc's list of lines is about to change."""
+    for operation in _RECORDING:
+        operation.note_doc(doc)
+
+
+def _note_ending(entry) -> None:
+    """Tell any operation being recorded that this line's ending is about to change."""
+    for operation in _RECORDING:
+        operation.note_ending(entry)
+
+
+def _line_state(entry) -> tuple:
+    return (entry.name, entry.source, entry.reason, entry.profile_mark)
+
+
+def _doc_state(doc) -> tuple:
+    return (list(doc.entries), doc.encoding, doc.has_bom, doc.default_eol,
+            list(doc.removed_rows), doc.restore_pending, doc.restored_from, doc.whole_excluded)
+
+
+def _put_line(entry, state) -> None:
+    """Give a line the name, ending, reason, and profile mark it had in ``state``.
+
+    A line that is back to its text on disk forgets its include tick, as
+    after a revert, so a later change to it starts ticked.
+    """
+    name, source, reason, mark = state
+    if entry.kind == "person" and entry.source != source:
+        entry.set_source(source, reason)
+    if entry.name != name:
+        entry.set_name(name, reason)
+    entry.reason = reason
+    entry.profile_mark = mark
+    if not entry.changed:
+        entry.excluded = False
+    elif entry.reason is None:
+        entry.reason = "undo"       # it differs from disk only because a write came between
+
+
+def _put_doc(doc, state) -> None:
+    """Give a document the list of lines and the restore state it had in ``state``."""
+    (entries, doc.encoding, doc.has_bom, doc.default_eol, removed,
+     doc.restore_pending, doc.restored_from, doc.whole_excluded) = state
+    doc.entries = list(entries)
+    doc.removed_rows = list(removed)
+    for number, entry in enumerate(doc.entries, 1):
+        entry.lineno = number
+    doc.touch()
+
+
+class Operation:
+    """One change to the open files that can be undone and redone as a whole.
+
+    Record it by using it as a context manager around the code that makes
+    the change. A line whose name or ending is about to change, a line
+    ending about to change, and a document whose list of lines is about to
+    change are each noted on first touch, and their after-state is taken
+    when the block ends; undo() and redo() then move between the two
+    exactly. The disk baseline is never part of it: a write in between
+    stays written. When an undo or redo swaps the lines of a document that
+    was written since, LncDoc.rebase works out again which of them are on
+    disk. ``label`` is how the Edit menu names it.
+    """
+
+    def __init__(self, label: str):
+        self.label = label
+        self._lines: dict = {}      # entry -> [before, after]
+        self._endings: dict = {}    # entry -> [before, after]
+        self._docs: dict = {}       # doc -> [before, after]
+        self._versions: dict = {}   # doc -> its disk_version when last applied, undone, or redone
+
+    def __enter__(self) -> "Operation":
+        _RECORDING.append(self)
+        return self
+
+    def __exit__(self, kind, value, trace) -> bool:
+        _RECORDING.remove(self)
+        for entry, pair in self._lines.items():
+            pair[1] = _line_state(entry)
+        for entry, pair in self._endings.items():
+            pair[1] = entry.eol
+        for doc, pair in self._docs.items():
+            pair[1] = _doc_state(doc)
+        return False
+
+    def _seen(self, doc) -> None:
+        if doc is not None:
+            self._versions.setdefault(doc, doc.disk_version)
+
+    def note_line(self, entry) -> None:
+        if entry not in self._lines:
+            self._lines[entry] = [_line_state(entry), None]
+            self._seen(entry.doc)
+
+    def note_ending(self, entry) -> None:
+        if entry not in self._endings:
+            self._endings[entry] = [entry.eol, None]
+            self._seen(entry.doc)
+
+    def note_doc(self, doc) -> None:
+        if doc not in self._docs:
+            self._docs[doc] = [_doc_state(doc), None]
+            self._seen(doc)
+
+    @property
+    def changed(self) -> bool:
+        """True when undoing it would change some text: a name, an ending, or a list of lines.
+
+        A reason or a profile mark on its own does not count; a line that
+        was renamed and named back again is not a change.
+        """
+        return (any(before[:2] != after[:2] for before, after in self._lines.values())
+                or any(before != after for before, after in self._endings.values())
+                or self.structural)
+
+    @property
+    def structural(self) -> bool:
+        """True when lines were added, removed, or swapped, not only renamed."""
+        return any(before != after for before, after in self._docs.values())
+
+    @property
+    def docs(self) -> list:
+        """The documents it touched."""
+        return list(self._versions)
+
+    def undo(self) -> None:
+        """Put back every line and document as it was before the change."""
+        for entry, (before, _after) in reversed(list(self._lines.items())):
+            _put_line(entry, before)
+        for entry, (before, _after) in self._endings.items():
+            entry.eol = before
+        for doc, (before, _after) in self._docs.items():
+            _put_doc(doc, before)
+        self._settle()
+
+    def redo(self) -> None:
+        """Make the change again, exactly as it was made."""
+        for doc, (_before, after) in self._docs.items():
+            _put_doc(doc, after)
+        for entry, (_before, after) in self._endings.items():
+            entry.eol = after
+        for entry, (_before, after) in self._lines.items():
+            _put_line(entry, after)
+        self._settle()
+
+    def _settle(self) -> None:
+        for doc in self._versions:
+            if doc in self._docs and doc.disk_version != self._versions[doc]:
+                doc.rebase()
+            self._versions[doc] = doc.disk_version
+            doc.touch()
 
 
 class LoadError(Exception):
@@ -1145,7 +1357,9 @@ def insert_name_after(anchor: Entry, cmd: str, id_: str, name: str, lang: str,
     parse_line(entry)
     if entry.kind != "name":
         raise ValueError(f"Could not form a name line for {cmd}")
+    _note_lines_of(doc)
     if not anchor.eol:
+        _note_ending(anchor)
         anchor.eol = doc.default_eol
     entry.section = anchor.section
     entry.imported = True
@@ -2077,8 +2291,12 @@ class ChangeRow:
     @property
     def reason(self) -> str:
         """The operation that made this difference, in words."""
-        if self.entry is None or self.state == "removed":
+        if self.entry is None:
             key = "restore" if self.doc.restore_pending else ""
+        elif self.state == "removed":
+            # A disk line missing from memory comes from a restore, or from an
+            # undo that took out a line a write had already put on disk.
+            key = "restore" if self.doc.restore_pending else "undo"
         else:
             key = self.entry.reason or ""
         if key == "profile":
@@ -3342,7 +3560,7 @@ def restore_into(doc: LncDoc, archive_file: Path) -> None:
 def run_gui(paths):
     from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
                                 Qt, QTimer, Signal)
-    from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
+    from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QUndoCommand, QUndoStack
     from PySide6.QtWidgets import (
         QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
         QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView,
@@ -3356,6 +3574,31 @@ def run_gui(paths):
         "A copy of each existing game file is stored under backups first. Files are "
         "replaced one at a time; if one fails, the files already replaced are put back "
         "from that copy.")
+
+    class EditCommand(QUndoCommand):
+        """A recorded Operation on the undo stack.
+
+        The change is already made when the command is pushed, so the redo()
+        that QUndoStack.push runs straight away does nothing; later redos and
+        every undo go to the Operation, and the window is refreshed.
+        """
+
+        def __init__(self, window, operation: Operation):
+            super().__init__(operation.label)
+            self.window = window
+            self.operation = operation
+            self.pushed = False
+
+        def redo(self):
+            if not self.pushed:
+                self.pushed = True
+                return
+            self.operation.redo()
+            self.window.after_undo(self.operation, "Redone")
+
+        def undo(self):
+            self.operation.undo()
+            self.window.after_undo(self.operation, "Undone")
 
     def report_write_failure(parent, operation: str, exc: Exception) -> None:
         """Tell the user why a write stopped and where each file stands."""
@@ -3372,6 +3615,7 @@ def run_gui(paths):
     class EntryModel(QAbstractTableModel):
         COLS = ["File section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
         NAME_COL = 3
+        operation_done = Signal(object)     # an edit made here, for the undo stack
 
         def __init__(self):
             super().__init__()
@@ -3433,15 +3677,20 @@ def run_gui(paths):
             if role != Qt.EditRole:
                 return False
             entry = self.rows[index.row()]
+            text = str(value).strip()
             if index.column() == 0:
-                if not try_set_source(entry, str(value)):
-                    return False
+                with Operation(f"edit ending: {text}") as operation:
+                    changed = try_set_source(entry, text)
             elif index.column() == self.NAME_COL:
-                if not try_set_name(entry, str(value)):
-                    return False
+                field = "replacement" if entry.kind == "person" else "name"
+                with Operation(f"edit {field}: {text}") as operation:
+                    changed = try_set_name(entry, text)
             else:
                 return False
+            if not changed:
+                return False
             self.row_changed(index.row())
+            self.operation_done.emit(operation)
             return True
 
         def row_changed(self, row):
@@ -3736,8 +3985,22 @@ def run_gui(paths):
     QCheckBox, QRadioButton { background: transparent; spacing: 6px; }
     """
 
+    def field_label(family: str, slot: str) -> str:
+        """"long name", "3-letter code": a field as an undo label names it."""
+        for key, label, _cmd in FAMILY_FIELDS[family]:
+            if key == slot:
+                return label[:1].lower() + label[1:]
+        return slot
+
+    def cell_operation(entity: NameEntity, slot: str, text: str) -> str:
+        """The undo label for writing one cell: an edit, or an added line when it was empty."""
+        verb = "edit" if entity.slots.get(slot) else "add"
+        return f"{verb} {field_label(entity.family, slot)}: {text.strip()}"
+
     class EntityModel(QAbstractTableModel):
         """Side-by-side rows. Column set follows the selected family."""
+
+        operation_done = Signal(object)     # an edit made here, for the undo stack
 
         def __init__(self, docs):
             super().__init__()
@@ -3835,10 +4098,13 @@ def run_gui(paths):
                 return False
             entity = self.rows[index.row()]
             was_empty = not entity.slots.get(key)
-            if not set_entity_field(entity, key, str(value), self.docs):
+            with Operation(cell_operation(entity, key, str(value))) as operation:
+                changed = set_entity_field(entity, key, str(value), self.docs)
+            if not changed:
                 return False
             self._structure = was_empty
             self.row_changed(index.row())
+            self.operation_done.emit(operation)
             return True
 
         def row_changed(self, row):
@@ -4498,13 +4764,16 @@ def run_gui(paths):
                 QMessageBox.Yes | QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
+            operation = Operation(f"restore {doc.path.name} from {path.parent.name}")
             try:
-                restore_into(doc, path)
+                with operation:
+                    restore_into(doc, path)
             except (OSError, UnicodeError) as exc:
                 QMessageBox.critical(self, APP_NAME, f"Could not restore:\n{exc}")
                 return
             parent = self.parent()
             if parent is not None:
+                parent.push_operation(operation)
                 parent.reload_views()
             self.docs = parent.docs if parent is not None else self.docs
             self.show_diff()
@@ -4920,17 +5189,29 @@ def run_gui(paths):
             self.profiles: list[Profile] = []
             self.resize(1280, 820)
 
+            self.undo_stack = QUndoStack(self)
+            edit_menu = self.menuBar().addMenu("&Edit")
+            self.undo_act = self.undo_stack.createUndoAction(self, "Undo")
+            self.undo_act.setShortcut(QKeySequence.Undo)
+            self.redo_act = self.undo_stack.createRedoAction(self, "Redo")
+            self.redo_act.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+            edit_menu.addAction(self.undo_act)
+            edit_menu.addAction(self.redo_act)
+            self.edit_menu = edit_menu
+
             self.line_model = EntryModel()
             self.model = self.line_model
             self.line_proxy = EntryProxy()
             self.proxy = self.line_proxy
             self.line_proxy.setSourceModel(self.line_model)
             self.line_model.dataChanged.connect(self.on_line_data)
+            self.line_model.operation_done.connect(self.push_operation)
 
             self.entity_model = EntityModel(self.docs)
             self.entity_proxy = EntityProxy()
             self.entity_proxy.setSourceModel(self.entity_model)
             self.entity_model.dataChanged.connect(self.on_entity_data)
+            self.entity_model.operation_done.connect(self.push_operation)
 
             tb = self.addToolBar("Main")
             tb.setMovable(False)
@@ -5204,6 +5485,7 @@ def run_gui(paths):
                 return False
             self.docs.clear()
             self.docs.extend(docs)
+            self.undo_stack.clear()     # its steps belong to the files that were open
             self.family = "club"
             self.section_filter = ""
             self.status_mode = "all"
@@ -5253,9 +5535,39 @@ def run_gui(paths):
                     self.reload_views()     # a file left written is now settled
                 report_write_failure(self, operation, exc)
                 return False
+            self.undo_stack.setClean()      # a label for the state just written; dirty stays the bytes
             self.reload_views()
             self.statusBar().showMessage(review.outcome(archive), 10000)
             return True
+
+        # ----- undo and redo -----
+        @contextlib.contextmanager
+        def recording(self, label: str):
+            """Record the changes made in the block as one step on the undo stack.
+
+            Set ``label`` on the yielded Operation inside the block when it
+            depends on what happened. Nothing is pushed when nothing changed.
+            """
+            operation = Operation(label)
+            with operation:
+                yield operation
+            self.push_operation(operation)
+
+        def push_operation(self, operation: Operation) -> None:
+            if operation.changed:
+                self.undo_stack.push(EditCommand(self, operation))
+
+        def after_undo(self, operation: Operation, verb: str) -> None:
+            """Show the files as an undo or redo left them."""
+            if operation.structural:
+                self.reload_views()
+            else:
+                # As after a cell edit: re-filtering the grid repaints it too.
+                self.line_model.layoutChanged.emit()
+                self.apply_entity_filter()
+                if self.inspector_entity is not None:
+                    self.show_inspector(self.inspector_entity)
+            self.statusBar().showMessage(f"{verb}: {operation.label}.", 8000)
 
         def confirm_discard(self) -> bool:
             if not any(d.dirty for d in self.docs):
@@ -5294,7 +5606,12 @@ def run_gui(paths):
                                         "Open the current version's .lnc files first.")
                 return
             dlg = ImportDialog(self, self.docs)
-            if dlg.exec() and dlg.result_counts:
+            with self.recording("import older edits") as operation:
+                accepted = dlg.exec()
+                if dlg.result_counts:
+                    operation.label = (f"import older edits: {dlg.result_counts[0]:,} changed, "
+                                       f"{dlg.result_counts[1]:,} added")
+            if accepted and dlg.result_counts:
                 self.reload_views()
                 changed, added = dlg.result_counts
                 self.statusBar().showMessage(
@@ -5302,13 +5619,20 @@ def run_gui(paths):
                     "Nothing is written until you press Save.", 10000)
 
         def revert_selected(self):
-            """Restore orig_name on selected edits. Imported rows are left in place."""
-            if self.tabs.currentIndex() == 0:
-                self._revert_entities()
-            elif self.tabs.currentIndex() == self.CHANGES_TAB:
-                self._revert_changes()
-            else:
-                self._revert_lines()
+            """Restore orig_name on selected edits, as one step Undo can take back.
+
+            Imported rows are left in place.
+            """
+            with self.recording("revert") as operation:
+                if self.tabs.currentIndex() == 0:
+                    counts = self._revert_entities()
+                elif self.tabs.currentIndex() == self.CHANGES_TAB:
+                    counts = self._revert_changes()
+                else:
+                    counts = self._revert_lines()
+                operation.label = "revert: " + count_of(counts["name"], "name")
+                if counts["rule"]:
+                    operation.label += " and " + count_of(counts["rule"], "person rule")
 
         def _revert_changes(self):
             """Revert the lines selected in the Changes tab.
@@ -5325,6 +5649,7 @@ def run_gui(paths):
             self.entity_model.layoutChanged.emit()
             self.apply_entity_filter()
             self._revert_message(counts)
+            return counts
 
         def _revert_lines(self):
             rows = {self.line_proxy.mapToSource(index).row()
@@ -5338,6 +5663,7 @@ def run_gui(paths):
             self.entity_model.layoutChanged.emit()
             self.apply_entity_filter()
             self._revert_message(counts)
+            return counts
 
         def _revert_entities(self):
             rows = {self.entity_proxy.mapToSource(index).row()
@@ -5351,6 +5677,7 @@ def run_gui(paths):
             self._revert_message(counts)
             if self.inspector_entity is not None:
                 self.show_inspector(self.inspector_entity)
+            return counts
 
         def _revert_message(self, counts: dict) -> None:
             message = f"Reverted {counts['name']} name(s)"
@@ -5629,7 +5956,9 @@ def run_gui(paths):
             if entity is None:
                 return
             was_empty = not entity.slots.get(slot)
-            if not set_entity_field(entity, slot, edit.text(), self.docs):
+            with self.recording(cell_operation(entity, slot, edit.text())):
+                changed = set_entity_field(entity, slot, edit.text(), self.docs)
+            if not changed:
                 edit.blockSignals(True)
                 edit.setText(entity.name_in(slot))
                 edit.blockSignals(False)
@@ -5709,7 +6038,12 @@ def run_gui(paths):
                     self, APP_NAME, "Nothing in the current entity filter.")
                 return
             dialog = BulkDialog(self, entities, self.docs)
-            if dialog.exec():
+            with self.recording("bulk") as operation:
+                accepted = dialog.exec()
+                kind = {"affix": "strip affix", "sponsor": "remove sponsors",
+                        "title": "title case"}.get(dialog.kind(), dialog.kind())
+                operation.label = f"bulk: {kind} ({count_of(dialog.applied, 'name')})"
+            if accepted:
                 self.reload_views()
                 self.statusBar().showMessage(
                     f"Bulk edit updated {dialog.applied} line(s). "
@@ -5721,7 +6055,10 @@ def run_gui(paths):
                 QMessageBox.information(self, APP_NAME, "Open a name file first.")
                 return
             dialog = ReplaceDialog(self, self.docs)
-            if dialog.exec() and dialog.applied:
+            with self.recording("replace") as operation:
+                accepted = dialog.exec()
+                operation.label = f"replace: {count_of(dialog.applied, 'name')}"
+            if accepted and dialog.applied:
                 self.reload_views()
                 self.statusBar().showMessage(
                     f"Replace updated {dialog.applied} line(s). "
@@ -5815,7 +6152,12 @@ def run_gui(paths):
                     "or language could not be written as one line.")
             dialog = PackDialog(self, changes, missing, summary,
                                 apply_func=lambda c, m, d: apply_proposals(c, m, d, "pack"))
-            if dialog.exec() and dialog.result_counts is not None:
+            with self.recording("name pack") as operation:
+                accepted = dialog.exec()
+                if dialog.result_counts is not None:
+                    operation.label = (f"name pack: {dialog.result_counts[0]:,} changed, "
+                                       f"{len(dialog.result_counts[1]):,} added")
+            if accepted and dialog.result_counts is not None:
                 updated, added = dialog.result_counts
                 self.reload_views()
                 self.statusBar().showMessage(
@@ -6039,7 +6381,12 @@ def run_gui(paths):
                 title=f"Apply profile: {fresh.name}", new_label="Profile spelling",
                 base_label="Baseline when recorded",
                 apply_func=lambda c, m, d: apply_profile_proposals(fresh.name, c, m, d))
-            if dialog.exec() and dialog.result_counts is not None:
+            with self.recording(f"profile {fresh.name}") as operation:
+                accepted = dialog.exec()
+                if dialog.result_counts is not None:
+                    operation.label = (f"profile {fresh.name}: {dialog.result_counts[0]:,} "
+                                       f"changed, {len(dialog.result_counts[1]):,} added")
+            if accepted and dialog.result_counts is not None:
                 updated, added = dialog.result_counts
                 self.reload_views()
                 self.statusBar().showMessage(

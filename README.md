@@ -1,14 +1,14 @@
 # FM Name Editor
 
-Release: 2.2
+Release: 2.3
 Status: released
-Application on disk: 2.2
+Application on disk: 2.3
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. It lets you change club, competition, stadium, and related spellings, carry edits across from an older game's files by database ID, and write the file back without disturbing lines you did not touch.
 
 This project is a personal tool. It is not affiliated with Sports Interactive or Sega.
 
-The program you can run today is **2.2**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
+The program you can run today is **2.3**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
 
 ## Run it
 
@@ -26,6 +26,13 @@ python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 ```
 
 Requires Python 3.11 or later and PySide6. No other packages.
+
+## What 2.3 adds
+
+- **Spelling profiles.** A profile keeps your preferred spellings in the local `profiles` folder, each with the name the game file had when you recorded it. Save and Deploy never change a profile. When the game's files change, **Apply...** offers your spellings again and ticks only those whose name the game has not changed since. The profile selector, **Record edits**, **Apply...**, and **Manage** sit in the row under the toolbar.
+- **The Changes tab** lists every difference between the open files and the files on disk: the text on disk, the text to write, whether the line is edited, added, restored, or removed, which tool changed it, and the file and line. Each change has a tick.
+- **Review changes before every write.** Save and Deploy both show the changes, where each file goes, the backup folder, whether the game is running, and any file that changed on disk since the editor read it. An unticked change is left out of the write and stays pending. A file whose bytes would not change is not written. Save into the game folder is the same operation as Deploy, and the review says so.
+- **Undo and Redo** for whole operations: Ctrl+Z and Ctrl+Y, or the **Edit** menu, which names the step. A bulk tool, a name pack, a profile, a restore, or a Revert undoes as one step, and undo goes back past a Save or Deploy. Undo changes memory only; the next Save or Deploy writes the result.
 
 ## What 2.2 changes
 
@@ -70,7 +77,7 @@ Use **Quick load FM27**, Open, or drop `.lnc` files onto the launcher. Quick loa
 
 ## Publish
 
-The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, and 2.2 are published there. Game data and backups do not belong in that repository.
+The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, and 2.3 are published there. Game data and backups do not belong in that repository.
 
 ## Licence
 

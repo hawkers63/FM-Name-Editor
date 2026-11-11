@@ -1,14 +1,23 @@
 # Changelog
 
-Release: 2.2
+Release: 2.3
 Status: released
-Application on disk: 2.2
+Application on disk: 2.3
 
-The program on disk reports `VERSION = "2.2"`. The launcher banner says v2.2.
+The program on disk reports `VERSION = "2.3"`. The launcher banner says v2.3.
 
-## Unreleased — Release 2.3 in progress
+## 2.3 (11 November 2026)
 
-Not released. `VERSION` still reads 2.2. Sessions 4 and 5 of Release 2.3 were done on 11 November 2026; session 6 follows.
+Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. Your spellings now outlive a write, every write is reviewed in one place, and whole operations can be undone. This is Stage 2 of the review of 2.1 (items A, B, and D), built in sessions 4, 5, and 6.
+
+Session 4 — spelling profiles:
+
+- **Profiles keep your spellings after Save and Deploy.** A profile is a named file of preferred spellings in the local `profiles` folder, with a note. Each spelling keeps the name the file on disk had when you recorded it (its baseline), the file it came from, and that file's SHA-256. Name packs stay as they are, for moving spellings between machines or people.
+- **Record edits.** The new Profile controls sit in the row under the toolbar: a profile selector, **Record edits**, **Apply...**, and **Manage** (New, Rename, Delete). Record edits copies the unsaved name edits into the chosen profile, after a confirmation that counts new and replaced spellings. An edit that has already been saved is part of the file on disk, so record before you Save or Deploy; the message says so when there is nothing to record. With no profile chosen, Record edits offers to make one. Person rules are not names and are not recorded.
+- **Apply.** Apply shows the profile against the open files in the same preview as a name pack, with the profile's spelling, the baseline it was recorded against, and a note for each row. A row is ticked only when the open file still has that baseline. It is left unticked, with a note, when the game has changed that name since, when the line has an unsaved edit of its own, or when another profile set it earlier in this session. A recorded added line is offered again for the file it came from. Apply changes memory only; Save or Deploy writes it.
+- **Profiles are files you can trust.** They are written in one step through the same route as every other file. A damaged or hand-edited profile that cannot be read is named in the status bar and left alone. Delete moves the file into `profiles\deleted`, so it can be recovered by hand. The chosen profile is remembered between runs in `state\settings.json`. Save and Deploy never change a profile.
+- **Previews fit their contents.** The pack and profile previews size their columns to the names in them.
+- Tests: 80, up from 64. New cover for the profile file round trip, recording with baselines and counts, saved edits not being recorded, Apply with an unchanged, changed, or removed baseline, rows for files that are not open, unsaved edits and competing profiles, Save and Deploy leaving the profile file alone, record–Deploy–update–reopen–Apply, names, file names, rename, delete, unreadable profiles, the local settings file, and window tests for the profile controls. Every test now runs with the backups, profiles, and state folders pointed at a temporary folder, and window tests delete their windows, which brought the suite from 38 to about 4 seconds.
 
 Session 5 — the Changes view and one review before every write:
 
@@ -21,14 +30,13 @@ Session 5 — the Changes view and one review before every write:
 - **Revert works from the Changes tab** on the rows selected there, and Ctrl+F goes to the Changes filter.
 - Tests: 96, up from 80. New cover for the four kinds of change row and the "other lines" row, the reason each operation records, rebuilding the disk file from left-out changes in LF, CRLF, UTF-16, and a file without a final line ending, an unticked row staying pending after a write and then being written, a restored file written whole, a file that cannot be split, an external change before and after the review, a Deploy with nothing new, the review's title and checks, ticks shared between the Changes tab and the review, the review at 1280 by 820 with ten changes and no scrolling, an unknown game state, a game started during the review, the footer, and Revert from the Changes tab. A dialog that opens in a test without a stand-in now fails that test instead of hanging the run, and the tests run with the Windows fonts so window sizes match the desktop. Four window tests were changed to go through the review dialog. Fourteen single-line breaks of the new rules each fail at least one test.
 
-Session 4 — spelling profiles:
+Session 6 — undo and redo for whole operations:
 
-- **Profiles keep your spellings after Save and Deploy.** A profile is a named file of preferred spellings in the local `profiles` folder, with a note. Each spelling keeps the name the file on disk had when you recorded it (its baseline), the file it came from, and that file's SHA-256. Name packs stay as they are, for moving spellings between machines or people.
-- **Record edits.** The new Profile controls sit in the row under the toolbar: a profile selector, **Record edits**, **Apply...**, and **Manage** (New, Rename, Delete). Record edits copies the unsaved name edits into the chosen profile, after a confirmation that counts new and replaced spellings. An edit that has already been saved is part of the file on disk, so record before you Save or Deploy; the message says so when there is nothing to record. With no profile chosen, Record edits offers to make one. Person rules are not names and are not recorded.
-- **Apply.** Apply shows the profile against the open files in the same preview as a name pack, with the profile's spelling, the baseline it was recorded against, and a note for each row. A row is ticked only when the open file still has that baseline. It is left unticked, with a note, when the game has changed that name since, when the line has an unsaved edit of its own, or when another profile set it earlier in this session. A recorded added line is offered again for the file it came from. Apply changes memory only; Save or Deploy writes it.
-- **Profiles are files you can trust.** They are written in one step through the same route as every other file. A damaged or hand-edited profile that cannot be read is named in the status bar and left alone. Delete moves the file into `profiles\deleted`, so it can be recovered by hand. The chosen profile is remembered between runs in `state\settings.json`. Save and Deploy never change a profile.
-- **Previews fit their contents.** The pack and profile previews size their columns to the names in them.
-- Tests: 80, up from 64. New cover for the profile file round trip, recording with baselines and counts, saved edits not being recorded, Apply with an unchanged, changed, or removed baseline, rows for files that are not open, unsaved edits and competing profiles, Save and Deploy leaving the profile file alone, record–Deploy–update–reopen–Apply, names, file names, rename, delete, unreadable profiles, the local settings file, and window tests for the profile controls. Every test now runs with the backups, profiles, and state folders pointed at a temporary folder, and window tests delete their windows, which brought the suite from 38 to about 4 seconds.
+- **Undo and Redo.** Ctrl+Z undoes and Ctrl+Y redoes (Ctrl+Shift+Z too). A new Edit menu names the step, for example "Undo bulk: strip affix (14 names)" or "Undo add 3-letter code: ARS".
+- **Whole operations, one step each.** A cell edit in the grid, the All lines table, or the inspector; a short name or code added beside its sibling; a bulk tool; Replace; a name pack; older edits; a profile; a backup restored into an open file; and Revert. Each undoes as one step, back to exactly the text in memory before it: an added line goes, along with the import heading it brought and the line ending it gave its neighbour, and a person rule gets both its ending and its replacement back. The reason each line shows in the Changes tab comes back too.
+- **Undo goes past Save and Deploy.** A write does not clear the history; it marks the point that was written. Undoing past it makes the files differ from disk again, and the Changes tab says so with the reason "Undo or redo": a line the write added and the undo took out shows as Removed, and the next Save or Deploy takes it out of the file. Opening other files starts a new history.
+- **Undo is memory only.** Like every edit, it changes the open files in memory. The files on disk change only when you Save or Deploy, after the review.
+- Tests: 106, up from 96. New cover for each kind of operation undone and redone to identical memory (the bytes, every line's text and disk record, reasons, profile marks, the restore state, and the unsaved flag), a person rule's two fields, an insertion after a last line with no ending, the import heading, undo and redo across a write, a restore undone after it was written, operations that change nothing, and window tests for the Edit menu, the shortcuts, an added field, bulk, Revert, a restore, and the clean point after a Save. Fourteen single-line breaks of the undo rules each fail at least one test.
 
 ## 2.2 (11 November 2026)
 

@@ -2377,6 +2377,386 @@ class Session5Changes(unittest.TestCase):
             self.assertEqual(deploy.title, "Review changes: Deploy to the game folder")
 
 
+class Session6Undo(unittest.TestCase):
+    """Release 2.3, session 6: whole operations undo and redo exactly."""
+
+    ROWS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha FC"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""'           # the last line has no ending
+    )
+
+    @staticmethod
+    def _state(doc):
+        """Everything about a document that an undo must put back."""
+        return (doc.to_bytes(), doc.dirty, doc.restore_pending, doc.restored_from,
+                doc.encoding, [row.raw for row in doc.removed_rows],
+                [(e.raw, e.eol, e.lineno, e.name, e.source, e.reason, e.profile_mark,
+                  e.imported, e.orig_name, e.orig_source, e.orig_raw, e.orig_eol)
+                 for e in doc.entries])
+
+    def _club(self, folder: Path, text: str | None = None):
+        path = folder / "FM27_Club_Names.lnc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_lnc(path, self.ROWS if text is None else text)
+        return editor.LncDoc(path), path
+
+    @staticmethod
+    def _row(doc, id_, cmd="CLUB_NAME_CHANGE"):
+        return next(e for e in doc.names() if e.id == id_ and e.cmd == cmd)
+
+    def _operations(self, tmp):
+        """Each kind of change the window records, as (label, document, change)."""
+        root = Path(tmp)
+
+        def proposal(entry, new):
+            return editor.Proposal(entry.cmd, entry.id, "", new, entry, "", True)
+
+        def cell(doc):
+            editor.try_set_name(self._row(doc, "2"), "Beta Town")
+
+        def insertion(doc):
+            entity = next(e for e in editor.build_entities([doc]) if e.id == "3")
+            self.assertTrue(editor.set_entity_field(entity, "short", "Gam", [doc]))
+
+        def bulk(doc):
+            edits = editor.preview_bulk(editor.build_entities([doc]), "affix")
+            self.assertEqual(editor.apply_bulk(edits, [doc]), 1)
+
+        def replace(doc):
+            edits, _skipped, _error = editor.preview_replace([doc], "a$", "a Town")
+            editor.apply_bulk(edits, [doc], "replace")
+
+        def pack(doc):
+            missing = editor.Proposal("CLUB_NAME_CHANGE", "9", "", "Iota", None, "", True)
+            editor.apply_proposals([proposal(self._row(doc, "2"), "Beta B")], [missing],
+                                   [doc], "pack")
+
+        def older(doc):
+            editor.apply_proposals([proposal(self._row(doc, "3"), "Gamma G")], [], [doc])
+
+        def profile(doc):
+            editor.apply_profile_proposals("Mine", [proposal(self._row(doc, "1"), "Alpha")],
+                                           [], [doc])
+
+        def restore(doc):
+            copy = root / "backups" / "20261111-120000" / doc.path.name
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            write_lnc(copy, self.ROWS.replace("Beta", "Beta Old").replace(
+                '"CLUB_NAME_CHANGE"\t3\t"Gamma"\t""', '"CLUB_NAME_CHANGE"\t4\t"Delta"\t""\n'))
+            editor.restore_into(doc, copy)
+
+        def revert(doc):
+            editor.revert_entries(doc.names())
+
+        return (("cell edit", cell), ("insertion after a last line with no ending", insertion),
+                ("bulk tool", bulk), ("replace", replace), ("name pack with an added line", pack),
+                ("older files", older), ("profile", profile), ("restore", restore),
+                ("revert", revert))
+
+    def test_each_operation_undoes_and_redoes_exactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, change in self._operations(tmp):
+                with self.subTest(label):
+                    doc, _path = self._club(Path(tmp) / label.replace(" ", "-"))
+                    if label == "revert":       # something to revert, made beforehand
+                        editor.try_set_name(self._row(doc, "1"), "Alpha United")
+                        editor.try_set_name(self._row(doc, "2"), "Beta United")
+                    before = self._state(doc)
+                    with editor.Operation(label) as operation:
+                        change(doc)
+                    after = self._state(doc)
+                    self.assertTrue(operation.changed)
+                    self.assertNotEqual(before, after)
+                    operation.undo()
+                    self.assertEqual(self._state(doc), before)
+                    operation.redo()
+                    self.assertEqual(self._state(doc), after)
+                    operation.undo()
+                    self.assertEqual(self._state(doc), before)
+
+    def test_a_person_rule_undoes_both_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "person_name_changes.lnc"
+            rules = "".join(
+                f'"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"{ending}"\t{n}\t"{new}"\r\n'
+                for ending, n, new in (("ος", 1, "ης"),
+                                       ("ας", 2, "α")))
+            path.write_bytes(b"\xff\xfe" + rules.encode("utf-16-le"))
+            doc = editor.LncDoc(path)
+            before = self._state(doc)
+            rule = doc.persons()[0]
+            with editor.Operation("edit rule") as operation:
+                editor.try_set_source(rule, "ους")
+                editor.try_set_name(rule, "ου")
+            operation.undo()
+            self.assertEqual(self._state(doc), before)
+            self.assertEqual((rule.source, rule.name), ("ος", "ης"))
+            self.assertEqual(doc.to_bytes(), path.read_bytes())
+            operation.redo()
+            self.assertEqual((rule.source, rule.name), ("ους", "ου"))
+
+    def test_undoing_an_insertion_removes_the_line_and_its_heading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path = self._club(Path(tmp))
+            gamma = self._row(doc, "3")
+            entity = next(e for e in editor.build_entities([doc]) if e.id == "3")
+            with editor.Operation("add short name") as insertion:
+                editor.set_entity_field(entity, "short", "Gam", [doc])
+            self.assertEqual(gamma.eol, "\n")           # the sibling got an ending
+            insertion.undo()
+            self.assertEqual(gamma.eol, "")             # and has none again
+            self.assertNotIn("Gam", [e.name for e in doc.entries])
+            self.assertFalse(doc.dirty)                 # memory equals the disk file again
+            self.assertEqual(doc.to_bytes(), path.read_bytes())
+            # With another unsaved edit open, the file stays unsaved after the undo.
+            editor.try_set_name(self._row(doc, "2"), "Beta Town")
+            with editor.Operation("pack") as append:
+                doc.append_entry("CLUB_NAME_CHANGE", "9", "Iota", "", "pack")
+            self.assertTrue(any("Imported by" in e.raw for e in doc.entries))
+            append.undo()
+            self.assertFalse(any("Imported by" in e.raw for e in doc.entries))
+            self.assertTrue(doc.dirty)
+            self.assertTrue(doc.separable)              # no heading left on its own
+            # An append under a heading that is already in the file leaves the heading.
+            write_lnc(path, self.ROWS + "\n#Imported by FM Name Editor\n")
+            doc = editor.LncDoc(path)
+            with editor.Operation("pack") as append:
+                doc.append_entry("CLUB_NAME_CHANGE", "9", "Iota", "", "pack")
+            append.undo()
+            self.assertEqual(doc.to_bytes(), path.read_bytes())
+
+    def test_undo_and_redo_across_a_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path = self._club(Path(tmp))
+            original = path.read_bytes()
+            entity = next(e for e in editor.build_entities([doc]) if e.id == "3")
+            with editor.Operation("add short name") as insertion:
+                editor.set_entity_field(entity, "short", "Gam", [doc])
+            with editor.Operation("edit") as rename:
+                editor.try_set_name(self._row(doc, "2"), "Beta Town")
+
+            def save():
+                editor.WriteReview("Save", [(doc, path)], Path(tmp) / "no-game").write(
+                    Path(tmp) / "backups")
+
+            save()
+            self.assertFalse(doc.dirty)
+            rename.undo()
+            insertion.undo()
+            rows = editor.collect_changes([doc])
+            self.assertEqual(
+                [(r.state, r.reason, r.id, r.on_disk, r.proposed) for r in rows],
+                [("edited", "Undo or redo", "2", "Beta Town", "Beta"),
+                 ("removed", "Undo or redo", "3", "Gam", "no line")])
+            self.assertTrue(doc.grouped)                # a line to take out: written whole
+            self.assertEqual(editor.build_payload(doc).data, original)
+            save()
+            self.assertEqual(path.read_bytes(), original)
+            insertion.redo()
+            rows = editor.collect_changes([doc])
+            self.assertEqual([(r.state, r.reason, r.proposed) for r in rows],
+                             [("added", "Undo or redo", "Gam")])
+            self.assertTrue(doc.separable)
+            save()
+            rename.redo()
+            self.assertEqual([(r.state, r.proposed) for r in editor.collect_changes([doc])],
+                             [("edited", "Beta Town")])
+
+    def test_a_restore_undone_after_it_was_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, path = self._club(Path(tmp))
+            original = path.read_bytes()
+            copy = Path(tmp) / "backups" / "20261111-120000" / path.name
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.ROWS.replace("Beta", "Beta Old"))
+            with editor.Operation("restore") as restore:
+                editor.restore_into(doc, copy)
+            editor.WriteReview("Save", [(doc, path)], Path(tmp) / "no-game").write(
+                Path(tmp) / "backups")
+            self.assertEqual(path.read_bytes(), copy.read_bytes())
+            restore.undo()
+            self.assertEqual(doc.to_bytes(), original)
+            self.assertFalse(doc.restore_pending)
+            rows = editor.collect_changes([doc])
+            self.assertEqual([(r.state, r.on_disk, r.proposed) for r in rows],
+                             [("edited", "Beta Old", "Beta")])
+            self.assertTrue(doc.separable)              # the lines line up with the disk file
+
+    def test_an_operation_that_changes_nothing_is_not_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _path = self._club(Path(tmp))
+            with editor.Operation("edit") as operation:
+                editor.try_set_name(self._row(doc, "2"), "Beta")     # the same name
+            self.assertFalse(operation.changed)
+            with editor.Operation("edit and back") as operation:
+                editor.try_set_name(self._row(doc, "2"), "Beta Town")
+                editor.try_set_name(self._row(doc, "2"), "Beta")
+            self.assertFalse(operation.changed)
+            # Kept for another line, it still puts the named-back line exactly as it was.
+            before = self._state(doc)
+            with editor.Operation("edit, and edit and back") as operation:
+                editor.try_set_name(self._row(doc, "1"), "Alpha Town")     # untouched so far
+                editor.try_set_name(self._row(doc, "1"), "Alpha FC")
+                editor.try_set_name(self._row(doc, "3"), "Gamma Town")
+            self.assertTrue(operation.changed)
+            operation.undo()
+            self.assertEqual(self._state(doc), before)
+
+
+class Session6Window(unittest.TestCase):
+    """Release 2.3, session 6: the undo stack, Ctrl+Z and Ctrl+Y, and the Edit menu."""
+
+    CLUBS = "#England\n" + "".join(
+        f'"CLUB_NAME_CHANGE"\t{n}\t"Club {n} FC"\t""\n' for n in range(1, 4))
+
+    def _window(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        return win
+
+    def _open(self, win, tmp) -> Path:
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, self.CLUBS)
+        self.assertTrue(win.load([str(path)]))
+        return path
+
+    @staticmethod
+    def _names(win):
+        return [entry.name for entry in win.docs[0].names()]
+
+    def test_ctrl_z_and_ctrl_y_undo_and_redo_a_cell_edit(self):
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self.assertEqual([action.text() for action in win.edit_menu.actions()],
+                             ["Undo", "Redo"])
+            self.assertFalse(win.undo_act.isEnabled())
+            self.assertEqual(win.undo_act.shortcut().toString(), "Ctrl+Z")
+            self.assertIn("Ctrl+Y", [key.toString() for key in win.redo_act.shortcuts()])
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "1")
+            self.assertTrue(model.setData(model.index(row, 2), "Club One"))
+            self.assertEqual(win.undo_act.text(), "Undo edit long name: Club One")
+            self.assertNotIn("Redone", win.statusBar().currentMessage())  # pushed, not re-run
+            win.undo_act.trigger()
+            self.assertEqual(model.rows[row].name_in("long"), "Club 1 FC")
+            self.assertFalse(win.docs[0].dirty)
+            self.assertIn("Undone: edit long name: Club One", win.statusBar().currentMessage())
+            self.assertEqual(win.redo_act.text(), "Redo edit long name: Club One")
+            win.redo_act.trigger()
+            self.assertEqual(model.rows[row].name_in("long"), "Club One")
+            self.assertTrue(win.docs[0].dirty)
+
+    def test_an_added_field_is_one_step(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "1")
+            column = model.columns().index("code")
+            self.assertTrue(model.setData(model.index(row, column), "CLU"))
+            QApplication.processEvents()                # the views reload for the new line
+            self.assertEqual(win.undo_act.text(), "Undo add 3-letter code: CLU")
+            self.assertEqual(win.tabs.tabText(2), "Changes (1)")
+            win.undo_act.trigger()
+            self.assertNotIn("CLU", [entry.name for entry in win.docs[0].entries])
+            self.assertFalse(win.docs[0].dirty)
+            self.assertEqual(win.tabs.tabText(2), "Changes")
+            shown = next(e for e in win.entity_model.rows if e.id == "1")
+            self.assertEqual(shown.name_in("code"), "")         # the grid no longer shows it
+            win.redo_act.trigger()
+            self.assertIn("CLU", [entry.name for entry in win.docs[0].entries])
+            entity = next(e for e in win.entity_model.rows if e.id == "1")
+            self.assertEqual(entity.name_in("code"), "CLU")
+
+    def test_bulk_revert_and_restore_are_one_step_each(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+
+            def strip(dialog):
+                dialog.preview()                        # the affix stripper is the default
+                dialog.apply_edits()
+                return dialog.result()
+
+            with mock.patch.object(QDialog, "exec", strip):
+                win.open_bulk()
+            self.assertEqual(win.undo_act.text(), "Undo bulk: strip affix (3 names)")
+            self.assertEqual(self._names(win), ["Club 1", "Club 2", "Club 3"])
+            win.undo_act.trigger()
+            self.assertEqual(self._names(win), ["Club 1 FC", "Club 2 FC", "Club 3 FC"])
+            self.assertFalse(win.docs[0].dirty)
+            win.redo_act.trigger()
+            win.tabs.setCurrentIndex(1)
+            win.line_view.selectAll()
+            win.revert_selected()
+            self.assertEqual(win.undo_act.text(), "Undo revert: 3 names")
+            self.assertEqual(self._names(win), ["Club 1 FC", "Club 2 FC", "Club 3 FC"])
+            win.undo_act.trigger()
+            self.assertEqual(self._names(win), ["Club 1", "Club 2", "Club 3"])
+            backups = Path(tmp) / "backups"
+            copy = backups / "20261111-120000" / "mine.lnc"
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.CLUBS.replace("Club 2 FC", "Club Two"))
+
+            def restore(dialog):
+                with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                    dialog.restore()
+                return 0
+
+            with mock.patch.object(editor, "BACKUP_ROOT", backups), \
+                    mock.patch.object(QDialog, "exec", restore):
+                win.open_backups()
+            self.assertEqual(win.undo_act.text(), "Undo restore mine.lnc from 20261111-120000")
+            self.assertTrue(win.docs[0].restore_pending)
+            self.assertIn("Restore pending", win.pending_label.text())
+            win.undo_act.trigger()
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertEqual(win.pending_label.text(), "")
+            self.assertEqual(self._names(win), ["Club 1", "Club 2", "Club 3"])
+            self.assertEqual([win.undo_stack.text(n) for n in range(win.undo_stack.count())],
+                             ["bulk: strip affix (3 names)",
+                              "restore mine.lnc from 20261111-120000"])
+
+    def test_a_save_marks_the_clean_point_and_keeps_the_history(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._open(win, tmp)
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "1")
+            model.setData(model.index(row, 2), "Club One")
+            with mock.patch.object(QDialog, "exec", press_write([])):
+                win.save()
+            self.assertIn(b'"Club One"', path.read_bytes())
+            self.assertTrue(win.undo_stack.isClean())
+            self.assertEqual(win.undo_stack.count(), 1)
+            win.undo_act.trigger()                      # back past the write
+            self.assertFalse(win.undo_stack.isClean())
+            self.assertTrue(win.docs[0].dirty)          # memory differs from the file written
+            self.assertEqual(win.tabs.tabText(2), "Changes (1)")
+            change = editor.collect_changes(win.docs)[0]
+            self.assertEqual((change.on_disk, change.proposed, change.reason),
+                             ("Club One", "Club 1 FC", "Undo or redo"))
+            win.redo_act.trigger()
+            self.assertTrue(win.undo_stack.isClean())
+            self.assertFalse(win.docs[0].dirty)
+            self.assertTrue(win.load([str(path)]))       # new files, new history
+            self.assertEqual(win.undo_stack.count(), 0)
+
+
 class Session5Window(unittest.TestCase):
     """Release 2.3, session 5: the Changes tab, the review dialog, and the footer."""
 
