@@ -1,8 +1,8 @@
 # FM Name Editor — project memory
 
-Release: 2.0
+Release: 2.1
 Status: released
-Application on disk: 2.0
+Application on disk: 2.1
 
 Facts worth keeping. Measured on 11 November 2026 unless a line says otherwise. If a later patch of Football Manager 27 disagrees with a path or a count, trust the disk and update this file.
 
@@ -27,13 +27,21 @@ It is not a player database, not a shared service, and not affiliated with Sport
 
 Version folders seen under `db`: `2300`, `2330`, `2340`, `2400`, `2430`, `2600`, `2620`, `2700`. Name editing for FM27 uses `2700`. Later patch folders, if they gain an `lnc\all` pair, should be selectable. Do not assume `2700` is permanent.
 
-There is no `GROK_ACCESS.txt` and no `.grok\role.md` in the project. There is no git repository yet.
+There is no `GROK_ACCESS.txt` and no `.grok\role.md` in the project. The folder is a git checkout of https://github.com/hawkers63/FM-Name-Editor. Releases 2.0 and 2.1 are published there.
+
+## What 2.1 does
+
+`VERSION = "2.1"`. The launcher banner says v2.1. On top of 2.0 it adds name packs (JSON and CSV), a backup browser that restores into memory, section-scoped replace with a preview, and UTF-16 load/save for the Greek person-name file.
+
+`lnc\greek\person_name_changes.lnc` is UTF-16 LE (BOM `FF FE`), CRLF, 120 lines, 80 rules: 42 `PERSON_FIRST_NAME_END_CHANGE` and 38 `PERSON_SECOND_NAME_END_CHANGE`. The shape is command, `"GREEK"`, matched ending, a number, replacement. Those rows are editable on All lines. They are not entities and they are not written into name packs.
+
+Player statistics and accounts remain out of scope.
 
 ## What 2.0 does
 
-`VERSION = "2.0"`. The launcher banner says v2.0. The entity tab is the default. Quick load, Deploy, the licensing inspector, and the bulk transformer are in the window. Defects B1–B7 from the 1.1 review are fixed.
+`VERSION` was `"2.0"`. The entity tab is the default. Quick load, Deploy, the licensing inspector, and the bulk transformer are in the window. Defects B1–B7 from the 1.1 review are fixed.
 
-Design rules already in the script, and still in force for 2.0:
+Design rules already in the script, and still in force:
 
 - A line that is not edited is written back byte for byte.
 - A name edit replaces only the quoted name span.
@@ -49,7 +57,7 @@ Dependency: PySide6 only. Do not add packages unless Mark asks.
 
 Both FM27 name files start with a UTF-8 BOM (`EF BB BF`) and use LF only. The club file has 8,935 LF bytes and no CR. Note 03's claim that the files are CRLF is wrong for this install. The editor already keeps the ending it found. Keep doing that.
 
-`lnc\greek\person_name_changes.lnc` starts with `FF FE` (UTF-16 LE). Release 2.0 does not load it. A UTF-8 decode of that file fails.
+`lnc\greek\person_name_changes.lnc` starts with `FF FE` (UTF-16 LE). Release 2.1 loads and writes it as UTF-16. A UTF-8 decode of that file fails, which is why 2.0 refused it.
 
 A name line is a quoted command, a numeric ID, a quoted name, and an optional quoted language. Spacing is a mix of tabs and spaces. Parse quoted strings. Do not split on tabs alone.
 
@@ -122,7 +130,7 @@ From `notes\note_02.txt`. Fixed in the 2.0 program. The notes below record what 
 2. Auto-detect, quick-load, and deploy into `2700\lnc\all`, with backups under `C:\FM Name Editor\backups\`. Licensing Health Inspector as listed above.
 3. Bulk tools in 2.0: affix stripper (`FC`, `CF`, `FK`, `SK`, `AC`, `AS`, `AFC`, `SC`, `Calcio`, whole token, start or end only), competition sponsor cleanser (editable starter list, leading or trailing phrase, preview required), title casing (all-capitals names only; small words `of`, `the`, `and`, `de`, `da`, `di`, `van`, `von`, `y`).
 
-Not in 2.0: CSV/JSON name packs, a visual backup browser, regex replace, player statistics, user accounts, the Greek UTF-16 file. Those are Release 2.1 in `roadmap.md`.
+Name packs, the backup browser, section-scoped replace, and the Greek UTF-16 file shipped in 2.1. Player statistics and user accounts stay out of scope.
 
 Theme colours reserved for the 2.0 window: canvas `#13151b`, panel `#1a1e28`, border `#2a3040`, text `#e2e8f0`, muted `#8a94a6`, accent `#8b5cf6`, clean `#10b981`, filter `#06b6d4`, warning `#f59e0b`.
 

@@ -1,10 +1,21 @@
 # Changelog
 
-Release: 2.0
+Release: 2.1
 Status: released
-Application on disk: 2.0
+Application on disk: 2.1
 
-The program on disk reports `VERSION = "2.0"`. The launcher banner says v2.0. This folder has no older copy and no git history, so the gap between the Version 1.0 description in `notes\note_01.txt` and the 1.1 script is not recorded here as a list of invented changes.
+The program on disk reports `VERSION = "2.1"`. The launcher banner says v2.1.
+
+## 2.1 (11 November 2026)
+
+Shipped in `fm_name_editor.py` and `FM Name Editor.bat`.
+
+- CSV and JSON name packs. Export edited names or every database-id name. Import previews the pack and applies the ticked rows in memory.
+- Backup browser: list the archive, diff a backed-up `.lnc` against the open file, restore into memory. Save or Deploy writes the result. The window does not delete backups or write the game tree.
+- Find and replace with a regular expression, scoped by section, with a preview.
+- The UTF-16 Greek person-name file opens, edits, and saves as UTF-16. Person-name rules stay on the All lines tab.
+
+Player statistics and accounts are not in this release. There is no player database and no account store.
 
 ## 2.0 (11 November 2026)
 

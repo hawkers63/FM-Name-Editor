@@ -1,4 +1,4 @@
-"""Release 2.0 checks for the name editor engine and a headless window smoke test.
+"""Release 2.1 checks for the name editor engine and a headless window smoke test.
 
 The Steam database is only read, and only when it is present. Writes use
 temporary copies.
@@ -18,6 +18,9 @@ BOM = b"\xef\xbb\xbf"
 LIVE_DIR = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db"
     r"\2700\lnc\all")
+GREEK_FILE = Path(
+    r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db"
+    r"\2700\lnc\greek\person_name_changes.lnc")
 
 
 def write_lnc(path: Path, text: str, bom: bool = True) -> None:
@@ -356,6 +359,134 @@ class LiveFiles(unittest.TestCase):
         self.assertTrue(all(entity.missing("code") or entity.name_in("code") for entity in comps))
         self.assertTrue(all(not entity.slots.get("code") for entity in comps))
         self.assertEqual(path.read_bytes(), original)
+
+    @unittest.skipUnless(GREEK_FILE.is_file(), "Greek person-name file is not on this machine")
+    def test_greek_file_round_trip(self):
+        original = GREEK_FILE.read_bytes()
+        doc = editor.LncDoc(GREEK_FILE)
+        self.assertEqual(doc.encoding, "utf-16-le")
+        self.assertTrue(doc.has_bom)
+        self.assertEqual(doc.to_bytes(), original)
+        self.assertEqual(len(doc.persons()), 80)
+        self.assertEqual(len(doc.names()), 0)
+        self.assertEqual(GREEK_FILE.read_bytes(), original)
+
+
+class Release21(unittest.TestCase):
+    def _club(self, path: Path, text: str) -> editor.LncDoc:
+        write_lnc(path, text)
+        return editor.LncDoc(path)
+
+    def test_utf16_person_edit_keeps_the_other_fields(self):
+        line = '"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"ος"\t2\t"ης"\r\n'
+        raw = b"\xff\xfe" + line.encode("utf-16-le")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "person_name_changes.lnc"
+            path.write_bytes(raw)
+            doc = editor.LncDoc(path)
+            self.assertEqual(doc.to_bytes(), raw)
+            person = doc.persons()[0]
+            self.assertEqual(person.source, "ος")
+            self.assertEqual(person.name, "ης")
+            self.assertEqual(person.id, "2")
+            self.assertTrue(editor.try_set_name(person, "ου"))
+            self.assertFalse(editor.try_set_name(person, "bad\nname"))
+            self.assertTrue(editor.try_set_source(person, "ας"))
+            text = doc.to_bytes()[2:].decode("utf-16-le")
+            self.assertIn('"ας"', text)
+            self.assertIn('"ου"', text)
+            self.assertIn('"GREEK"', text)
+            self.assertIn("\t2\t", text)
+            self.assertNotIn('"ος"', text)
+            self.assertNotIn('"ης"', text)
+            self.assertTrue(doc.to_bytes().startswith(b"\xff\xfe"))
+            self.assertEqual(path.read_bytes(), raw)
+
+    def test_replace_is_scoped_and_does_not_write(self):
+        text = (
+            "#England\n"
+            '"CLUB_NAME_CHANGE"\t1\t"Manchester United FC"\t""\n'
+            "#Spain\n"
+            '"CLUB_NAME_CHANGE"\t2\t"Real Madrid FC"\t""\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "names.lnc"
+            doc = self._club(path, text)
+            original = path.read_bytes()
+            edits, skipped, error = editor.preview_replace(docs=[doc], pattern=" FC$", replacement="", section="England")
+            self.assertEqual(error, "")
+            self.assertEqual(skipped, 0)
+            self.assertEqual(len(edits), 1)
+            self.assertEqual(edits[0].after, "Manchester United")
+            self.assertEqual(doc.names()[0].name, "Manchester United FC")
+            self.assertEqual(path.read_bytes(), original)
+            bad, _skipped, error = editor.preview_replace([doc], "(", "", "")
+            self.assertTrue(error)
+            self.assertEqual(bad, [])
+            editor.apply_bulk(edits, [doc])
+            self.assertEqual(doc.names()[0].name, "Manchester United")
+            self.assertEqual(doc.names()[1].name, "Real Madrid FC")
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_pack_round_trip_updates_only_matching_ids(self):
+        text = (
+            '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "names.lnc"
+            doc = self._club(path, text)
+            editor.try_set_name(doc.names()[0], "Alpha United")
+            pack = editor.pack_document([doc], changed_only=True)
+            self.assertEqual(len(pack["names"]), 1)
+            parsed, skipped, error = editor.parse_pack(editor.pack_to_json(pack), "json")
+            self.assertEqual(error, "")
+            self.assertEqual(skipped, 0)
+            self.assertEqual(parsed[0]["name"], "Alpha United")
+            csv_rows, csv_skipped, csv_error = editor.parse_pack(editor.pack_to_csv(pack), "csv")
+            self.assertEqual(csv_error, "")
+            self.assertEqual(csv_skipped, 0)
+            self.assertEqual(csv_rows, parsed)
+            fresh = self._club(Path(tmp) / "current.lnc", text)
+            changes, missing, stats = editor.proposals_from_pack([fresh], parsed)
+            self.assertEqual(stats["same"], 0)
+            self.assertEqual(len(missing), 0)
+            self.assertEqual(len(changes), 1)
+            self.assertTrue(changes[0].checked)
+            updated, added = editor.apply_proposals(changes, missing, [fresh])
+            self.assertEqual(updated, 1)
+            self.assertEqual(added, [])
+            self.assertEqual(fresh.names()[0].name, "Alpha United")
+            self.assertEqual(fresh.names()[1].name, "Beta")
+            illegal, skipped, error = editor.parse_pack(
+                '{"format":"fm-name-pack","version":1,"names":['
+                '{"command":"CLUB_NAME_CHANGE","id":"1","language":"","name":"Bad\\nName"}]}',
+                "json")
+            self.assertEqual(error, "")
+            self.assertEqual(illegal, [])
+            self.assertEqual(skipped, 1)
+
+    def test_restore_changes_memory_only(self):
+        text = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "FM27_Club_Names.lnc"
+            doc = self._club(path, text)
+            archive = root / "backups" / "20261111-120000"
+            archive.mkdir(parents=True)
+            stored = archive / path.name
+            stored.write_bytes(path.read_bytes())
+            editor.try_set_name(doc.names()[0], "Beta")
+            self.assertEqual(editor.list_archives(root / "backups"), [archive])
+            diff = editor.diff_documents(doc, editor.LncDoc(stored))
+            self.assertEqual(len(diff), 1)
+            self.assertEqual(diff[0]["working"], "Beta")
+            self.assertEqual(diff[0]["archived"], "Alpha")
+            editor.restore_into(doc, stored)
+            self.assertEqual(doc.path, path)
+            self.assertTrue(doc.dirty)
+            self.assertEqual(doc.names()[0].name, "Alpha")
+            self.assertEqual(path.read_bytes(), stored.read_bytes())
 
 
 class WindowSmoke(unittest.TestCase):

@@ -1,14 +1,14 @@
 # FM Name Editor
 
-Release: 2.0
+Release: 2.1
 Status: released
-Application on disk: 2.0
+Application on disk: 2.1
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. It lets you change club, competition, stadium, and related spellings, carry edits across from an older game's files by database ID, and write the file back without disturbing lines you did not touch.
 
 This project is a personal tool. It is not affiliated with Sports Interactive or Sega.
 
-The program you can run today is **2.0**. How that release was shaped is in [roadmap.md](roadmap.md). Facts about the FM27 files on this PC are in [memory.md](memory.md). Version notes are in [CHANGELOG.md](CHANGELOG.md).
+The program you can run today is **2.1**. How the releases were shaped is in [roadmap.md](roadmap.md). Facts about the FM27 files on this PC are in [memory.md](memory.md). Version notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Run it
 
@@ -26,6 +26,13 @@ python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 ```
 
 Requires Python 3.11 or later and PySide6. No other packages.
+
+## What 2.1 adds
+
+- **Export pack** and **Import pack** move spellings as JSON or CSV, matched on command, database ID, and language. A preview comes first.
+- **Replace** finds a regular expression in one section, or in all sections, and shows the before and after list before it changes anything.
+- **Backups** lists the archive, compares a backed-up name file with the open one, and can put that copy back into the editor. Save or Deploy writes it.
+- The Greek person-name file (`lnc\greek\person_name_changes.lnc`) opens as UTF-16. Its ending rules are on **All lines**, not on the entity grid.
 
 ## What 2.0 does
 
@@ -48,8 +55,8 @@ On this PC the FM27 name files are:
 
 `D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db\2700\lnc\all\`
 
-Use **Quick load FM27**, Open, or drop the two `.lnc` files onto the launcher. Do not point the program at `lnc\greek\person_name_changes.lnc`. That file is UTF-16.
+Use **Quick load FM27**, Open, or drop `.lnc` files onto the launcher. Quick load still opens the two UTF-8 name files in `lnc\all`. Open `lnc\greek\person_name_changes.lnc` yourself when you want the Greek ending rules. That file is UTF-16 and the editor keeps it that way.
 
 ## Publish
 
-The public repository is https://github.com/hawkers63/FM-Name-Editor. Release 2.0 is the first commit published from this folder. Game data and backups do not belong in that repository.
+The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0 and 2.1 are published there. Game data and backups do not belong in that repository.

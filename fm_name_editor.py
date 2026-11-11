@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.0
+FM Name Editor v2.1
 ===================
 Browse and edit Football Manager .lnc name files. Clubs and competitions
 are shown side by side (long name, short name, code). The line-by-line
 table is still there. Edits can be carried across from an older version
 by database ID, deployed into the FM27 database, and transformed in bulk.
+Release 2.1 adds name packs, a backup browser, section-scoped replace,
+and the UTF-16 Greek person-name file.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -17,9 +19,14 @@ Design rules
 * Bytes are built before any backup. A file outside the game tree still
   gets a timestamped .bak beside it. A file inside the game tree is copied
   into the project's backups folder instead.
+* UTF-16 files, including the Greek person-name file, are written back
+  in the encoding they were opened with.
 """
 from __future__ import annotations
 
+import csv
+import io
+import json
 import re
 import shutil
 import subprocess
@@ -29,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.0"
+VERSION = "2.1"
 
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
@@ -60,7 +67,15 @@ FRIENDLY = {
     "NATION_SHORT_NAME_CHANGE": "Nation - short name",
     "NATION_3LETTER_NAME_CHANGE": "Nation - 3-letter code",
     "NATIONALITY_NAME_CHANGE": "Nationality",
+    "PERSON_FIRST_NAME_END_CHANGE": "Person - first name ending",
+    "PERSON_SECOND_NAME_END_CHANGE": "Person - second name ending",
 }
+
+PACK_FORMAT = "fm-name-pack"
+PACK_VERSION = 1
+UTF8_BOM = BOM
+UTF16_LE_BOM = b"\xff\xfe"
+UTF16_BE_BOM = b"\xfe\xff"
 
 
 def friendly(cmd: str) -> str:
@@ -89,18 +104,22 @@ class Entry:
     """One line of a .lnc file."""
 
     __slots__ = ("doc", "raw", "eol", "kind", "cmd", "id", "name", "lang",
-                 "span", "section", "orig_name", "imported", "lineno", "_fold")
+                 "span", "section", "orig_name", "imported", "lineno", "_fold",
+                 "source", "orig_source", "source_span")
 
     def __init__(self, doc, raw, eol, lineno):
         self.doc = doc
         self.raw = raw          # line text without the line ending
         self.eol = eol          # original line ending, kept as-is
         self.lineno = lineno
-        self.kind = "other"     # name | comment | blank | other | problem
+        self.kind = "other"     # name | person | comment | blank | other | problem
         self.cmd = self.id = self.name = self.lang = ""
         self.span = None        # (start, end) of the quoted name inside raw
         self.section = ""
         self.orig_name = ""
+        self.source = ""        # person-rule ending that is being replaced
+        self.orig_source = ""
+        self.source_span = None
         self.imported = False
         self._fold = None
 
@@ -110,24 +129,49 @@ class Entry:
 
     @property
     def changed(self) -> bool:
-        return self.imported or self.name != self.orig_name
+        return (
+            self.imported
+            or self.name != self.orig_name
+            or self.source != self.orig_source
+        )
 
     def search_text(self) -> str:
         if self._fold is None:
-            self._fold = fold(f"{self.name} {self.id} {self.section}")
+            self._fold = fold(f"{self.name} {self.source} {self.id} {self.section}")
         return self._fold
+
+    def _note_edit(self) -> None:
+        self._fold = None
+        if self.changed:
+            self.doc.dirty = True
+            return
+        self.doc.dirty = any(
+            entry.kind in ("name", "person") and entry.changed
+            for entry in self.doc.entries)
 
     def set_name(self, new: str):
         start, end = self.span
         self.raw = self.raw[:start] + '"' + new + '"' + self.raw[end:]
         self.span = (start, start + len(new) + 2)
         self.name = new
-        self._fold = None
-        if new == self.orig_name and not self.imported:
-            self.doc.dirty = any(
-                e.kind == "name" and e.changed for e in self.doc.entries)
-        else:
-            self.doc.dirty = True
+        self._note_edit()
+
+    def set_source(self, new: str):
+        """Replace the quoted ending on a person-name rule.
+
+        The replacement name sits later on the line, so its span moves
+        when the ending changes length.
+        """
+        start, end = self.source_span
+        self.raw = self.raw[:start] + '"' + new + '"' + self.raw[end:]
+        new_end = start + len(new) + 2
+        delta = new_end - end
+        self.source_span = (start, new_end)
+        if self.span is not None and self.span[0] >= end:
+            name_start, name_end = self.span
+            self.span = (name_start + delta, name_end + delta)
+        self.source = new
+        self._note_edit()
 
 
 def try_set_name(entry: Entry, new: str) -> bool:
@@ -137,6 +181,39 @@ def try_set_name(entry: Entry, new: str) -> bool:
         return False
     entry.set_name(cleaned)
     return True
+
+
+def try_set_source(entry: Entry, new: str) -> bool:
+    """Change the matched ending on a person-name rule."""
+    if entry.kind != "person" or entry.source_span is None:
+        return False
+    cleaned = new.strip()
+    if not name_is_legal(cleaned) or cleaned == entry.source:
+        return False
+    entry.set_source(cleaned)
+    return True
+
+
+def is_person_command(cmd: str) -> bool:
+    return cmd.startswith("PERSON_") and cmd.endswith("_CHANGE")
+
+
+def decode_lnc_bytes(data: bytes) -> tuple[str, str, bool]:
+    """Return text, encoding name, and whether a BOM was present.
+
+    UTF-16 is recognised only from its BOM. Other files are UTF-8, or
+    Windows-1252 when the bytes are not UTF-8.
+    """
+    if data.startswith(UTF16_LE_BOM):
+        return data[2:].decode("utf-16-le"), "utf-16-le", True
+    if data.startswith(UTF16_BE_BOM):
+        return data[2:].decode("utf-16-be"), "utf-16-be", True
+    if data.startswith(UTF8_BOM):
+        return data[len(UTF8_BOM):].decode("utf-8"), "utf-8", True
+    try:
+        return data.decode("utf-8"), "utf-8", False
+    except UnicodeDecodeError:
+        return data.decode("cp1252"), "cp1252", False
 
 
 def parse_line(entry: Entry):
@@ -158,6 +235,9 @@ def parse_line(entry: Entry):
         return
     cmd = toks[0].group(1)
     entry.cmd = cmd
+    if is_person_command(cmd):
+        _parse_person(entry, toks, leftover)
+        return
     is_name_cmd = cmd.endswith("_NAME_CHANGE") and cmd != "CHANGE_PLAYER_NAME"
     if not is_name_cmd:
         entry.kind = "other"          # player names, FAKE_NATIONAL_TEAM etc.
@@ -185,6 +265,32 @@ def parse_line(entry: Entry):
     entry.lang = toks[3].group(1) if len(toks) > 3 else ""
 
 
+def _parse_person(entry: Entry, toks, leftover: str) -> None:
+    """Parse ``"CMD" "LANG" "ending" number "replacement"``.
+
+    The number stays in ``id`` so the line table can show it. It is not a
+    database id, and these rows are kept out of the entity grid.
+    """
+    ok = (
+        not leftover
+        and len(toks) == 5
+        and toks[1].group(1) is not None
+        and toks[2].group(1) is not None and toks[2].group(1).strip() != ""
+        and toks[3].group(2) is not None and toks[3].group(2).isdigit()
+        and toks[4].group(1) is not None and toks[4].group(1).strip() != ""
+    )
+    if not ok:
+        entry.kind = "problem"
+        return
+    entry.kind = "person"
+    entry.lang = toks[1].group(1)
+    entry.source = entry.orig_source = toks[2].group(1)
+    entry.source_span = toks[2].span()
+    entry.id = toks[3].group(2)
+    entry.name = entry.orig_name = toks[4].group(1)
+    entry.span = toks[4].span()
+
+
 class LncDoc:
     """A whole .lnc file, kept line-by-line so it can be written back exactly."""
 
@@ -197,28 +303,33 @@ class LncDoc:
         self.load()
 
     def load(self):
-        data = self.path.read_bytes()
-        self.has_bom = data.startswith(BOM)
-        if self.has_bom:
-            data = data[len(BOM):]
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            self.encoding = "cp1252"
-            text = data.decode("cp1252")
+        self._read_into(self.path.read_bytes())
+
+    def _read_into(self, data: bytes) -> None:
+        """Replace the in-memory lines from already-read bytes.
+
+        The path is left as it is. Assignment happens after a successful
+        decode, so a bad file does not wipe the lines already loaded.
+        """
+        text, encoding, has_bom = decode_lnc_bytes(data)
         section = ""
         default_eol = "\r\n" if "\r\n" in text else "\n"
-        self.default_eol = default_eol
+        entries: list[Entry] = []
         for n, line in enumerate(text.splitlines(keepends=True), 1):
             body = line.rstrip("\r\n")
-            e = Entry(self, body, line[len(body):], n)
-            parse_line(e)
-            if e.kind == "comment":
+            entry = Entry(self, body, line[len(body):], n)
+            parse_line(entry)
+            if entry.kind == "comment":
                 heading = body.strip().lstrip("#").strip().rstrip(":").strip()
                 if heading and not set(heading) <= set("=-_*~ "):
                     section = heading
-            e.section = section
-            self.entries.append(e)
+            entry.section = section
+            entries.append(entry)
+        self.encoding = encoding
+        self.has_bom = has_bom
+        self.default_eol = default_eol
+        self.entries = entries
+        self.dirty = False
 
     def to_bytes(self) -> bytes:
         """Serialise every line, preserving BOM, encoding, and line endings.
@@ -227,15 +338,20 @@ class LncDoc:
             UnicodeEncodeError: the working text does not fit self.encoding.
                 Callers should catch this and leave the original file untouched.
         """
-        text = "".join(e.raw + e.eol for e in self.entries)
+        text = "".join(entry.raw + entry.eol for entry in self.entries)
         body = text.encode(self.encoding)
-        return (BOM if self.has_bom else b"") + body
+        if self.encoding == "utf-16-le":
+            return (UTF16_LE_BOM if self.has_bom else b"") + body
+        if self.encoding == "utf-16-be":
+            return (UTF16_BE_BOM if self.has_bom else b"") + body
+        return (UTF8_BOM if self.has_bom else b"") + body
 
     def mark_clean(self) -> None:
         """Treat the current names as the saved original."""
         for entry in self.entries:
-            if entry.kind == "name":
+            if entry.kind in ("name", "person"):
                 entry.orig_name = entry.name
+                entry.orig_source = entry.source
                 entry.imported = False
         self.dirty = False
 
@@ -256,6 +372,17 @@ class LncDoc:
 
     def names(self):
         return [e for e in self.entries if e.kind == "name"]
+
+    def persons(self):
+        return [e for e in self.entries if e.kind == "person"]
+
+    def editable(self):
+        """Name lines and person-name rules, in file order.
+
+        Person rules stay out of ``names()`` so a pack or an entity view
+        cannot treat their number field as a database id.
+        """
+        return [e for e in self.entries if e.kind in ("name", "person")]
 
     def problems(self):
         return [e for e in self.entries if e.kind == "problem"]
@@ -937,6 +1064,270 @@ def toggle_licence(version_dir: Path, rel: Path, archive_root: Path) -> str:
     raise FileNotFoundError(src)
 
 
+def preview_replace(docs, pattern: str, replacement: str, section: str = "",
+                    ignore_case: bool = False):
+    """Preview a regular-expression replace on name lines.
+
+    Returns ``(edits, skipped, error)``. ``error`` is set when the pattern
+    is empty or illegal, and ``edits`` is then empty. ``skipped`` counts
+    substitutions that would not be a legal name. An empty ``section``
+    covers every section. A section matches the whole heading, ignoring
+    accents and capitals. Nothing is written.
+    """
+    if not pattern:
+        return [], 0, "Enter a pattern."
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        return [], 0, f"That pattern is not a valid regular expression: {exc}"
+    wanted = fold(section)
+    edits = []
+    skipped = 0
+    for doc in docs:
+        for entry in doc.names():
+            if wanted and fold(entry.section) != wanted:
+                continue
+            try:
+                after = compiled.sub(replacement, entry.name)
+            except re.error as exc:
+                return [], 0, f"That replacement is not valid: {exc}"
+            if after == entry.name:
+                continue
+            if not name_is_legal(after):
+                skipped += 1
+                continue
+            edits.append(BulkEdit(None, "", entry, entry.name, after))
+    return edits, skipped, ""
+
+
+def pack_document(docs, changed_only: bool = True) -> dict:
+    """Build a name pack from database-id name lines.
+
+    Person-name rules are not included. They are not keyed by database id.
+    """
+    names = []
+    for doc in docs:
+        for entry in doc.names():
+            if changed_only and not entry.changed:
+                continue
+            names.append({
+                "command": entry.cmd,
+                "id": entry.id,
+                "language": entry.lang,
+                "name": entry.name,
+            })
+    return {"format": PACK_FORMAT, "version": PACK_VERSION, "names": names}
+
+
+def pack_to_json(pack: dict) -> str:
+    return json.dumps(pack, ensure_ascii=False, indent=2) + "\n"
+
+
+def pack_to_csv(pack: dict) -> str:
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=["command", "id", "language", "name"],
+        lineterminator="\n",
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    for row in pack["names"]:
+        writer.writerow({key: row[key] for key in writer.fieldnames})
+    return buffer.getvalue()
+
+
+def _pack_row(raw: dict) -> dict | None:
+    """Return a clean pack row, or None when the row cannot be applied."""
+    cmd = str(raw.get("command", "")).strip()
+    id_ = str(raw.get("id", "")).strip()
+    lang = str(raw.get("language", "")).strip()
+    name = str(raw.get("name", "")).strip()
+    legal_cmd = (
+        CMD_RE.match(cmd) is not None
+        and cmd.endswith("_NAME_CHANGE")
+        and cmd != "CHANGE_PLAYER_NAME"
+    )
+    if not legal_cmd or not id_.isdigit() or not name_is_legal(name):
+        return None
+    return {"command": cmd, "id": id_, "language": lang, "name": name}
+
+
+def parse_pack(text: str, kind: str) -> tuple[list[dict], int, str]:
+    """Read a JSON or CSV name pack.
+
+    Returns ``(rows, skipped, error)``. ``skipped`` counts rows that are
+    not legal name lines. ``error`` is set when the file is not a pack.
+    """
+    if kind == "json":
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return [], 0, f"That JSON pack could not be read: {exc}"
+        if not isinstance(payload, dict):
+            return [], 0, "A JSON name pack must be an object with a names list."
+        if payload.get("format") != PACK_FORMAT:
+            return [], 0, f"This file is not an {PACK_FORMAT} pack."
+        version = payload.get("version")
+        if version != PACK_VERSION:
+            return [], 0, (
+                f"This pack is version {version}. This editor reads version {PACK_VERSION}.")
+        raw_rows = payload.get("names")
+        if not isinstance(raw_rows, list):
+            return [], 0, "The pack has no names list."
+    elif kind == "csv":
+        try:
+            reader = csv.DictReader(io.StringIO(text))
+        except csv.Error as exc:
+            return [], 0, f"That CSV pack could not be read: {exc}"
+        fieldnames = reader.fieldnames or []
+        mapped = {}
+        for field in fieldnames:
+            if field is None:
+                continue
+            mapped[field.strip().lstrip("\ufeff").casefold()] = field
+        required = {"command", "id", "language", "name"}
+        if not required <= set(mapped):
+            return [], 0, "A CSV pack needs the columns command, id, language, and name."
+        raw_rows = []
+        try:
+            for record in reader:
+                raw_rows.append({
+                    "command": record.get(mapped["command"], ""),
+                    "id": record.get(mapped["id"], ""),
+                    "language": record.get(mapped["language"], ""),
+                    "name": record.get(mapped["name"], ""),
+                })
+        except csv.Error as exc:
+            return [], 0, f"That CSV pack could not be read: {exc}"
+    else:
+        return [], 0, "Choose a JSON or CSV name pack."
+    rows = []
+    skipped = 0
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        cleaned = _pack_row(raw)
+        if cleaned is None:
+            skipped += 1
+            continue
+        rows.append(cleaned)
+    return rows, skipped, ""
+
+
+def proposals_from_pack(docs, rows: list[dict]):
+    """Turn pack rows into the same proposals the older-file import uses.
+
+    Differing names are pre-ticked. Rows that are not in the open files
+    stay unticked. A repeated key keeps the last spelling.
+    """
+    targets = index_all(docs)
+    changes, missing = [], []
+    stats = {"rows": len(rows), "same": 0, "skipped": 0, "duplicate": 0}
+    seen: dict = {}
+    order: list = []
+    for raw in rows:
+        cleaned = raw if "command" in raw else None
+        if cleaned is None:
+            stats["skipped"] += 1
+            continue
+        key = (cleaned["command"], cleaned["id"], cleaned["language"].casefold())
+        if key in seen:
+            stats["duplicate"] += 1
+        else:
+            order.append(key)
+        seen[key] = cleaned
+    for key in order:
+        row = seen[key]
+        found = targets.get(key, [])
+        current = found[-1] if found else None
+        note = "From name pack"
+        if current is None:
+            missing.append(Proposal(
+                row["command"], row["id"], row["language"], row["name"],
+                None, "", False, "", note))
+            continue
+        if all(entry.name == row["name"] for entry in found):
+            stats["same"] += 1
+            continue
+        if len(found) > 1:
+            note = f"{note}; Duplicate id ({len(found)} rows)"
+        changes.append(Proposal(
+            row["command"], row["id"], row["language"], row["name"],
+            current, current.section, True, "", note, found))
+    return changes, missing, stats
+
+
+def list_archives(archive_root: Path) -> list[Path]:
+    """Timestamped backup folders, newest name first."""
+    if not archive_root.is_dir():
+        return []
+    folders = [path for path in archive_root.iterdir() if path.is_dir()]
+    return sorted(folders, key=lambda path: path.name.casefold(), reverse=True)
+
+
+def _diff_key(entry: Entry):
+    if entry.kind == "person":
+        return ("person", entry.cmd, entry.source, entry.id, entry.lang.casefold())
+    return ("name", entry.cmd, entry.id, entry.lang.casefold())
+
+
+def diff_documents(working: LncDoc, archived: LncDoc) -> list[dict]:
+    """Name and person-rule differences between two loaded files.
+
+    Each row has command, id, language, source, working, archived, and note.
+    Matching rows are omitted.
+    """
+    def grouped(doc: LncDoc) -> dict:
+        found: dict = {}
+        for entry in doc.editable():
+            found.setdefault(_diff_key(entry), []).append(entry)
+        return found
+
+    current = grouped(working)
+    previous = grouped(archived)
+    rows = []
+    for key in sorted(set(current) | set(previous)):
+        now = current.get(key, [])
+        then = previous.get(key, [])
+        now_names = [entry.name for entry in now]
+        then_names = [entry.name for entry in then]
+        if now_names == then_names:
+            continue
+        sample = (now or then)[0]
+        if not then:
+            note = "Only in the open file"
+        elif not now:
+            note = "Only in the backup"
+        elif len(now) != len(then):
+            note = "Different (duplicate count)"
+        else:
+            note = "Different"
+        rows.append({
+            "command": sample.cmd,
+            "id": sample.id,
+            "language": sample.lang,
+            "source": sample.source,
+            "working": " | ".join(now_names),
+            "archived": " | ".join(then_names),
+            "note": note,
+        })
+    return rows
+
+
+def restore_into(doc: LncDoc, archive_file: Path) -> None:
+    """Replace the open document's lines with a backup. The path is kept.
+
+    Nothing is written to ``doc.path``. The caller saves or deploys later.
+    """
+    if not archive_file.is_file():
+        raise FileNotFoundError(archive_file)
+    doc._read_into(archive_file.read_bytes())
+    doc.dirty = True
+
+
 # --------------------------------------------------------------------------
 # GUI
 # --------------------------------------------------------------------------
@@ -957,7 +1348,7 @@ def run_gui(paths):
 
     # ---------------- main table ----------------
     class EntryModel(QAbstractTableModel):
-        COLS = ["Section", "Type", "ID", "Name", "Language", "File", "Status"]
+        COLS = ["Section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
         NAME_COL = 3
 
         def __init__(self):
@@ -968,7 +1359,7 @@ def run_gui(paths):
 
         def set_docs(self, docs):
             self.beginResetModel()
-            self.rows = [e for d in docs for e in d.names()]
+            self.rows = [e for d in docs for e in d.editable()]
             self.endResetModel()
 
         def rowCount(self, parent=QModelIndex()):
@@ -984,7 +1375,12 @@ def run_gui(paths):
 
         def flags(self, index):
             f = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+            if not index.isValid():
+                return f
+            entry = self.rows[index.row()]
             if index.column() == self.NAME_COL:
+                f |= Qt.ItemIsEditable
+            elif index.column() == 0 and entry.kind == "person":
                 f |= Qt.ItemIsEditable
             return f
 
@@ -992,7 +1388,8 @@ def run_gui(paths):
             e = self.rows[index.row()]
             c = index.column()
             if role in (Qt.DisplayRole, Qt.EditRole):
-                if c == 0: return e.section
+                if c == 0:
+                    return e.source if e.kind == "person" else e.section
                 if c == 1: return friendly(e.cmd)
                 if c == 2: return int(e.id) if role == Qt.EditRole else e.id
                 if c == 3: return e.name
@@ -1002,15 +1399,23 @@ def run_gui(paths):
                     return "Added" if e.imported else ("Edited" if e.changed else "")
             if role == Qt.FontRole and e.changed:
                 return self.bold
+            if role == Qt.ToolTipRole and e.kind == "person":
+                return f"Ending was: {e.orig_source}. Replacement was: {e.orig_name}."
             if role == Qt.ToolTipRole and e.changed and not e.imported:
                 return f"Was: {e.orig_name}"
             return None
 
         def setData(self, index, value, role=Qt.EditRole):
-            if role != Qt.EditRole or index.column() != self.NAME_COL:
+            if role != Qt.EditRole:
                 return False
             entry = self.rows[index.row()]
-            if not try_set_name(entry, str(value)):
+            if index.column() == 0:
+                if not try_set_source(entry, str(value)):
+                    return False
+            elif index.column() == self.NAME_COL:
+                if not try_set_name(entry, str(value)):
+                    return False
+            else:
                 return False
             self.row_changed(index.row())
             return True
@@ -1613,6 +2018,303 @@ def run_gui(paths):
                     f"Licensing file {result}: {row['name']}", 8000)
 
     # ---------------- main window ----------------
+    class ReplaceDialog(QDialog):
+        """Preview a section-scoped regular-expression replace, then apply it."""
+
+        def __init__(self, parent, docs):
+            super().__init__(parent)
+            self.setWindowTitle("Replace")
+            self.resize(860, 560)
+            self.docs = docs
+            self.edits: list[BulkEdit] = []
+            self.applied = 0
+            lay = QVBoxLayout(self)
+            form = QHBoxLayout()
+            form.addWidget(QLabel("Section"))
+            self.section_box = QComboBox()
+            self.section_box.addItem("All sections", "")
+            seen = set()
+            for doc in docs:
+                for entry in doc.names():
+                    if entry.section and entry.section not in seen:
+                        seen.add(entry.section)
+                        self.section_box.addItem(entry.section, entry.section)
+            form.addWidget(self.section_box, 1)
+            self.ignore_case = QCheckBox("Ignore capitals")
+            form.addWidget(self.ignore_case)
+            lay.addLayout(form)
+            self.pattern = QLineEdit()
+            self.pattern.setPlaceholderText("Find (regular expression)")
+            self.replacement = QLineEdit()
+            self.replacement.setPlaceholderText("Replacement. \\1 keeps a bracketed part.")
+            lay.addWidget(self.pattern)
+            lay.addWidget(self.replacement)
+            row = QHBoxLayout()
+            preview = QPushButton("Preview")
+            preview.clicked.connect(self.preview)
+            row.addWidget(preview)
+            self.summary = QLabel("Preview before anything changes.")
+            self.summary.setWordWrap(True)
+            row.addWidget(self.summary, 1)
+            lay.addLayout(row)
+            self.table = QTableWidget(0, 5)
+            self.table.setHorizontalHeaderLabels(
+                ["Section", "Type", "ID", "Before", "After"])
+            self.table.verticalHeader().setVisible(False)
+            self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.table.horizontalHeader().setStretchLastSection(True)
+            lay.addWidget(self.table, 1)
+            box = QDialogButtonBox()
+            self.apply_btn = box.addButton("Apply preview", QDialogButtonBox.AcceptRole)
+            box.addButton(QDialogButtonBox.Cancel)
+            self.apply_btn.setEnabled(False)
+            box.accepted.connect(self.apply)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.pattern.textChanged.connect(self._stale)
+            self.replacement.textChanged.connect(self._stale)
+            self.section_box.currentIndexChanged.connect(lambda _index: self._stale())
+            self.ignore_case.toggled.connect(lambda _state: self._stale())
+
+        def _stale(self, *_args):
+            self.edits = []
+            self.apply_btn.setEnabled(False)
+
+        def preview(self):
+            edits, skipped, error = preview_replace(
+                self.docs,
+                self.pattern.text(),
+                self.replacement.text(),
+                self.section_box.currentData() or "",
+                self.ignore_case.isChecked(),
+            )
+            self.table.setRowCount(0)
+            if error:
+                self.edits = []
+                self.apply_btn.setEnabled(False)
+                self.summary.setText(error)
+                return
+            self.edits = edits
+            self.table.setRowCount(len(edits))
+            for row, edit in enumerate(edits):
+                values = [
+                    edit.entry.section,
+                    friendly(edit.entry.cmd),
+                    edit.entry.id,
+                    edit.before,
+                    edit.after,
+                ]
+                for column, value in enumerate(values):
+                    self.table.setItem(row, column, QTableWidgetItem(value))
+            self.table.resizeColumnsToContents()
+            text = f"{len(edits)} name(s) would change."
+            if skipped:
+                text += f" {skipped} result(s) were not legal names and were left out."
+            if not edits:
+                text = "Nothing would change."
+                if skipped:
+                    text += f" {skipped} result(s) were not legal names and were left out."
+            self.summary.setText(text)
+            self.apply_btn.setEnabled(bool(edits))
+
+        def apply(self):
+            if not self.edits:
+                return
+            self.applied = apply_bulk(self.edits, self.docs)
+            self.accept()
+
+    class PackDialog(QDialog):
+        """Tick pack rows, then apply them to the open files."""
+
+        def __init__(self, parent, changes, missing, summary: str):
+            super().__init__(parent)
+            self.setWindowTitle("Import name pack")
+            self.resize(980, 620)
+            self.changes = changes
+            self.missing = missing
+            self.result_counts = None
+            lay = QVBoxLayout(self)
+            self.summary = QLabel(summary)
+            self.summary.setWordWrap(True)
+            lay.addWidget(self.summary)
+            self.tabs = QTabWidget()
+            self.change_model = ProposalModel(
+                ["Use", "Section", "Type", "ID", "Current name", "Your older name",
+                 "Note", "Language"])
+            self.missing_model = ProposalModel(
+                ["Use", "Section", "Type", "ID", "Your older name", "Note", "Language"])
+            key = lambda proposal: (fold(proposal.section), proposal.cmd, proposal.new)
+            self.change_model.set_items(sorted(changes, key=key))
+            self.missing_model.set_items(sorted(missing, key=key))
+            for model, title in (
+                (self.change_model, f"Different names ({len(changes)})"),
+                (self.missing_model, f"Not in current files ({len(missing)})"),
+            ):
+                view = QTableView()
+                view.setModel(model)
+                view.setSelectionBehavior(QTableView.SelectRows)
+                view.setAlternatingRowColors(True)
+                view.verticalHeader().setVisible(False)
+                view.horizontalHeader().setStretchLastSection(True)
+                self.tabs.addTab(view, title)
+            lay.addWidget(self.tabs, 1)
+            box = QDialogButtonBox()
+            apply_btn = box.addButton("Apply ticked", QDialogButtonBox.AcceptRole)
+            box.addButton(QDialogButtonBox.Cancel)
+            apply_btn.setEnabled(bool(changes or missing))
+            box.accepted.connect(self.apply)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+
+        def apply(self):
+            self.result_counts = apply_proposals(self.changes, self.missing, self.parent().docs)
+            self.accept()
+
+    class BackupDialog(QDialog):
+        """List backup folders, diff a name file, and restore it into memory."""
+
+        def __init__(self, parent, docs):
+            super().__init__(parent)
+            self.setWindowTitle("Backups")
+            self.resize(980, 640)
+            self.docs = docs
+            lay = QVBoxLayout(self)
+            lay.addWidget(QLabel(
+                "Restore replaces the open file in memory only. "
+                "Save or Deploy writes it. Nothing in the backup folder is deleted."))
+            lists = QHBoxLayout()
+            self.archive_list = QListWidget()
+            self.file_list = QListWidget()
+            lists.addWidget(self.archive_list, 1)
+            lists.addWidget(self.file_list, 1)
+            lay.addLayout(lists)
+            self.summary = QLabel("")
+            self.summary.setWordWrap(True)
+            lay.addWidget(self.summary)
+            self.table = QTableWidget(0, 6)
+            self.table.setHorizontalHeaderLabels(
+                ["Type", "ID", "Language", "Open file", "Backup", "Note"])
+            self.table.verticalHeader().setVisible(False)
+            self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.table.horizontalHeader().setStretchLastSection(True)
+            lay.addWidget(self.table, 1)
+            box = QDialogButtonBox(QDialogButtonBox.Close)
+            self.restore_btn = QPushButton("Restore into open file")
+            self.restore_btn.setEnabled(False)
+            box.addButton(self.restore_btn, QDialogButtonBox.ActionRole)
+            self.restore_btn.clicked.connect(self.restore)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.archive_list.currentRowChanged.connect(self.show_archive)
+            self.file_list.currentRowChanged.connect(lambda _row: self.show_diff())
+            self.archives = list_archives(BACKUP_ROOT)
+            if not self.archives:
+                self.summary.setText("No backups yet. Save or Deploy a game file to create one.")
+            for folder in self.archives:
+                self.archive_list.addItem(folder.name)
+            if self.archives:
+                self.archive_list.setCurrentRow(0)
+
+        def show_archive(self, row: int):
+            self.file_list.clear()
+            self.table.setRowCount(0)
+            self.restore_btn.setEnabled(False)
+            if row < 0 or row >= len(self.archives):
+                return
+            folder = self.archives[row]
+            files = sorted(
+                (path for path in folder.iterdir() if path.is_file()),
+                key=lambda path: path.name.casefold())
+            for path in files:
+                item = QListWidgetItem(f"{path.name}  ({path.stat().st_size} bytes)")
+                item.setData(Qt.UserRole, str(path))
+                self.file_list.addItem(item)
+            if files:
+                self.file_list.setCurrentRow(0)
+            else:
+                self.summary.setText("That backup folder is empty.")
+
+        def selected_file(self) -> Path | None:
+            item = self.file_list.currentItem()
+            if item is None:
+                return None
+            return Path(item.data(Qt.UserRole))
+
+        def matching_doc(self, path: Path):
+            found = [
+                doc for doc in self.docs
+                if doc.path.name.casefold() == path.name.casefold()
+            ]
+            if len(found) == 1:
+                return found[0]
+            return None
+
+        def show_diff(self):
+            self.table.setRowCount(0)
+            self.restore_btn.setEnabled(False)
+            path = self.selected_file()
+            if path is None:
+                return
+            if path.suffix.casefold() != ".lnc":
+                self.summary.setText(
+                    "That backup is not a name file. It is listed so you can see it "
+                    "was archived. Restore it from Licensing, not from here.")
+                return
+            doc = self.matching_doc(path)
+            if doc is None:
+                self.summary.setText(
+                    f"Open a file named {path.name} before comparing or restoring it.")
+                return
+            try:
+                archived = LncDoc(path)
+            except (OSError, UnicodeError) as exc:
+                self.summary.setText(f"Could not read the backup:\n{exc}")
+                return
+            rows = diff_documents(doc, archived)
+            self.table.setRowCount(len(rows))
+            for index, row in enumerate(rows):
+                values = [
+                    friendly(row["command"]),
+                    row["id"],
+                    row["language"],
+                    row["working"],
+                    row["archived"],
+                    row["note"],
+                ]
+                for column, value in enumerate(values):
+                    self.table.setItem(index, column, QTableWidgetItem(value))
+            self.table.resizeColumnsToContents()
+            if rows:
+                self.summary.setText(f"{len(rows)} difference(s) against the open file.")
+            else:
+                self.summary.setText("The open file matches this backup.")
+            self.restore_btn.setEnabled(True)
+
+        def restore(self):
+            path = self.selected_file()
+            doc = None if path is None else self.matching_doc(path)
+            if path is None or doc is None:
+                return
+            answer = QMessageBox.question(
+                self, APP_NAME,
+                f"Replace the open {doc.path.name} with the copy from "
+                f"{path.parent.name}?\n\nNothing is written until you Save or Deploy.",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            try:
+                restore_into(doc, path)
+            except (OSError, UnicodeError) as exc:
+                QMessageBox.critical(self, APP_NAME, f"Could not restore:\n{exc}")
+                return
+            parent = self.parent()
+            if parent is not None:
+                parent.reload_views()
+            self.docs = parent.docs if parent is not None else self.docs
+            self.show_diff()
+            self.summary.setText(
+                f"Restored {path.name} into the open file. Save or Deploy to write it.")
+
     class MainWindow(QMainWindow):
         def __init__(self):
             super().__init__()
@@ -1664,6 +2366,10 @@ def run_gui(paths):
             self.problem_act = act("Problem lines...", self.show_problems)
             act("Licensing...", self.open_licensing)
             act("Bulk tools...", self.open_bulk)
+            act("Replace...", self.open_replace, tip="Find and replace with a regular expression")
+            act("Export pack...", self.export_pack, tip="Save edited names as JSON or CSV")
+            act("Import pack...", self.import_pack, tip="Apply a JSON or CSV name pack")
+            act("Backups...", self.open_backups, tip="Compare a backup with the open file and restore it")
             tb.addSeparator()
             tb.addWidget(QLabel(" Database "))
             self.version_box = QComboBox()
@@ -2310,6 +3016,113 @@ def run_gui(paths):
                     f"Bulk edit updated {dialog.applied} line(s). "
                     "Nothing is written until you press Save or Deploy.",
                     10000)
+
+        def open_replace(self) -> None:
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open a name file first.")
+                return
+            dialog = ReplaceDialog(self, self.docs)
+            if dialog.exec() and dialog.applied:
+                self.reload_views()
+                self.statusBar().showMessage(
+                    f"Replace updated {dialog.applied} line(s). "
+                    "Nothing is written until you press Save or Deploy.",
+                    10000)
+
+        def export_pack(self) -> None:
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open a name file first.")
+                return
+            choice = QDialog(self)
+            choice.setWindowTitle("Export name pack")
+            lay = QVBoxLayout(choice)
+            edited = QRadioButton("Edited names only")
+            every = QRadioButton("Every name line")
+            edited.setChecked(True)
+            lay.addWidget(edited)
+            lay.addWidget(every)
+            lay.addWidget(QLabel(
+                "A pack stores command, database ID, language, and name. "
+                "Person-name rules are not included."))
+            box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            box.accepted.connect(choice.accept)
+            box.rejected.connect(choice.reject)
+            lay.addWidget(box)
+            if not choice.exec():
+                return
+            pack = pack_document(self.docs, edited.isChecked())
+            if not pack["names"]:
+                if edited.isChecked():
+                    message = "There are no edited names to export."
+                else:
+                    message = "The open files have no database-id name lines to export."
+                QMessageBox.information(self, APP_NAME, message)
+                return
+            path, selected = QFileDialog.getSaveFileName(
+                self, "Export name pack", "fm-name-pack.json",
+                "JSON name pack (*.json);;CSV name pack (*.csv)")
+            if not path:
+                return
+            as_csv = path.casefold().endswith(".csv") or (
+                selected.startswith("CSV") and not path.casefold().endswith(".json"))
+            if as_csv and not path.casefold().endswith(".csv"):
+                path += ".csv"
+            elif not as_csv and not path.casefold().endswith(".json"):
+                path += ".json"
+            text = pack_to_csv(pack) if as_csv else pack_to_json(pack)
+            data = text.encode("utf-8-sig" if as_csv else "utf-8")
+            try:
+                Path(path).write_bytes(data)
+            except OSError as exc:
+                QMessageBox.critical(self, APP_NAME, f"Could not write the pack:\n{exc}")
+                return
+            self.statusBar().showMessage(
+                f"Exported {len(pack['names'])} name(s) to {path}.", 8000)
+
+        def import_pack(self) -> None:
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open a name file first.")
+                return
+            path, _selected = QFileDialog.getOpenFileName(
+                self, "Import name pack", "",
+                "Name packs (*.json *.csv);;JSON (*.json);;CSV (*.csv);;All files (*)")
+            if not path:
+                return
+            try:
+                raw = Path(path).read_bytes()
+            except OSError as exc:
+                QMessageBox.critical(self, APP_NAME, f"Could not read the pack:\n{exc}")
+                return
+            if raw.startswith(UTF8_BOM):
+                raw = raw[len(UTF8_BOM):]
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                QMessageBox.critical(
+                    self, APP_NAME, "Name packs must be UTF-8 text.")
+                return
+            kind = "csv" if path.casefold().endswith(".csv") else "json"
+            rows, skipped, error = parse_pack(text, kind)
+            if error:
+                QMessageBox.critical(self, APP_NAME, error)
+                return
+            changes, missing, stats = proposals_from_pack(self.docs, rows)
+            summary = (
+                f"{stats['rows']} usable name(s). {stats['same']} already match. "
+                f"{stats['duplicate']} repeated key(s) kept the last spelling.")
+            if skipped:
+                summary += f" {skipped} row(s) were skipped because they are not legal names."
+            dialog = PackDialog(self, changes, missing, summary)
+            if dialog.exec() and dialog.result_counts is not None:
+                updated, added = dialog.result_counts
+                self.reload_views()
+                self.statusBar().showMessage(
+                    f"Name pack updated {updated} line(s) and added {len(added)}. "
+                    "Nothing is written until you press Save or Deploy.",
+                    10000)
+
+        def open_backups(self) -> None:
+            BackupDialog(self, self.docs).exec()
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)

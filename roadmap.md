@@ -1,10 +1,10 @@
 # FM Name Editor — roadmap
 
-Release: 2.0
+Release: 2.1
 Status: released
-Application on disk: 2.0
+Application on disk: 2.1
 
-This roadmap records the work agreed on 11 November 2026. Release 2.0 is now in `fm_name_editor.py` and `FM Name Editor.bat`. The sections below are the specification that was built.
+This roadmap records the work agreed on 11 November 2026. Release 2.0 is in the history below. Release 2.1 is now in `fm_name_editor.py` and `FM Name Editor.bat`.
 
 The program on disk is a single PySide6 script. It opens Football Manager `.lnc` name files, lets you edit the quoted name, imports older edits by database ID, and writes the file back with untouched lines preserved byte for byte. Release 2.0 keeps that engine and adds the three decisions below.
 
@@ -22,7 +22,7 @@ The program on disk is a single PySide6 script. It opens Football Manager `.lnc`
 - `notes\note_02.txt` — review of 1.1. Defects B1–B7 are still unfixed.
 - `notes\note_03.txt` — enhancement blueprint. A few paths and line-ending claims in that note are corrected in `memory.md`.
 
-Publishing to https://github.com/hawkers63/FM-Name-Editor waits until Release 2.0 code is finished and you ask for it. This folder is not a git repository yet.
+Releases 2.0 and 2.1 are published at https://github.com/hawkers63/FM-Name-Editor.
 
 ## Release 2.0 — work order
 
@@ -74,7 +74,7 @@ The line-view tab is not restyled into a different product. It receives the same
 - Quick Load opens only:
   - `2700\lnc\all\FM27_Club_Names.lnc`
   - `2700\lnc\all\FM27_Fix.lnc`
-- Do not open `lnc\greek\person_name_changes.lnc`. That file is UTF-16 and this editor's parser is UTF-8 / Windows-1252.
+- The Greek person-name file is UTF-16. Release 2.0 did not open it. Release 2.1 does, and writes it back as UTF-16.
 - Deploy builds the full byte string first. If encoding fails, the game files are not opened for writing and no backup is taken.
 - On success, copy the current game files into `C:\FM Name Editor\backups\<YYYYMMDD-HHMMSS>\`, then write the new bytes to `lnc\all`.
 - Do not leave `.bak-*` files inside the game `lnc\all` folder. A save of a file that is **outside** the game tree still uses today's beside-file `.bak`.
@@ -126,14 +126,16 @@ Standard-library `unittest` only, on temporary copies. The Steam tree is not a t
 
 There is no browser surface. Verification is the tests plus one desktop pass.
 
-## Release 2.1 — recorded, not started
+## Release 2.1 — released
 
-- CSV and JSON name packs, so a spelling set can move between FM versions without merging whole `.lnc` files.
-- A window onto the backup archive: list, diff, restore. The archive folder itself arrives in 2.0.
-- Find and replace with a regular expression, scoped by section.
-- Anything that needs the player database (statistics, form charts). This program only rewrites name lines.
-- Accounts or roles.
-- The UTF-16 Greek person-name file.
+Shipped in `fm_name_editor.py` and `FM Name Editor.bat`.
+
+- **Name packs.** Export edited names, or every database-id name, as JSON or CSV (`command`, `id`, `language`, `name`). Import shows a preview. Differing rows are pre-ticked. Rows missing from the open files stay unticked. Person-name rules are not part of a pack.
+- **Backups.** The Backups window lists `C:\FM Name Editor\backups`, diffs a backed-up `.lnc` against the open file of the same name, and can restore that copy into memory. Save or Deploy writes it. The backup folder is not modified, and game files are not written from this window. Licensing files in an archive are listed and left alone.
+- **Replace.** A regular expression, optional "ignore capitals", scoped to one section heading or to all sections. Preview is required. An illegal result is left out. The replace applies to database-id name lines only.
+- **Greek person-name file.** `lnc\greek\person_name_changes.lnc` is UTF-16 LE with CRLF. Open, edit, and save keep that encoding. Each rule is `"COMMAND"`, `"GREEK"`, a matched ending, a number, and a replacement. The All lines tab shows the ending and the replacement. These rows are not clubs and do not appear on the entity grid.
+
+Still out of scope: player statistics, form charts, and accounts. This program does not read a player database and it has no user accounts.
 
 ## Safety
 
