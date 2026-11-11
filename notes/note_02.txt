@@ -1,0 +1,330 @@
+FM Name Editor — review note 02
+Date: 11 November 2026
+Scope: read-only review of v1.1. No application source was modified.
+
+1. Executive Summary
+--------------------
+Files analysed
+- fm_name_editor.py (835 lines, application v1.1, PySide6). Engine: parse, edit, import-by-database-id, byte-preserving save. GUI: table, filter, import dialog, problem-line viewer.
+- FM Name Editor.bat (launcher v1.0). Checks a hard-coded Python 3.11 path and PySide6, then starts the script.
+- notes/note_01.txt (original requirements). Used only as the intended contract, not as executable code.
+
+Overall logical integrity
+The design holds together. Lines that are not name commands are passed through. A name edit replaces only the quoted name span. Save writes a timestamped .bak before replacing the file, keeps the original BOM and encoding, and keeps original line endings. Search is accent-insensitive. Import matches on (command, id, language) and can be limited to names that differ from an unedited older original.
+
+No defect was found that corrupts a normal UTF-8 .lnc on the happy path (open, edit a legal name, save). The problems below are confined to error handling, a few edit/import edge cases, and one launcher assumption.
+
+The three features proposed alongside this review do not fit the current program, and they are not treated as defects:
+
+- Dynamic data visualisation of player statistics and team form needs a player database. This program only rewrites name-change lines. Matplotlib or Plotly would add a heavy dependency and a second product.
+- User role management assumes a shared multi-user service. This is a single-user desktop tool with no accounts and no sensitive store beyond the .lnc files themselves.
+- Automated CSV/JSON import and export is the only proposal that belongs here. It is not implemented. A small exporter can sit on LncDoc.names() later; it is not required to fix the defects below.
+
+2. Identified Bugs & Severity
+-----------------------------
+B1 — Moderate. Save can raise an exception the window does not catch.
+Failure point: LncDoc.to_bytes() encodes with the encoding chosen at load. If UTF-8 decoding failed, that encoding is cp1252. A later name that cp1252 cannot encode (for example a character only available in Unicode) makes text.encode raise UnicodeEncodeError. MainWindow.save and ImportDialog.compare catch only OSError. UnicodeEncodeError is a ValueError, so it escapes the handler. The backup may already have been copied, and the window can die before the user is told. File: fm_name_editor.py, method LncDoc.to_bytes (called from LncDoc.save, about line 191) and MainWindow.save (about line 732).
+
+B2 — Moderate. A name edit accepts characters that split the line.
+Failure point: EntryModel.setData rejects an empty name and a name containing a double quote, then calls Entry.set_name. It does not reject CR, LF, or the C0 control characters. Those characters are written inside the quotes. On the next load, splitlines() cuts the record in two, the tail becomes a problem line or a different record, and the byte-preserving rule then keeps the damage. File: fm_name_editor.py, class EntryModel, method setData (about line 382).
+
+B3 — Moderate. Import silently drops older names that contain a quote, and pre-ticks every difference once an “original” file is supplied.
+Failure point: build_proposals continues past any older name that is empty or contains a double quote, and it does not add those rows to the summary counts. The user is not told that an older edit was skipped. In the same function, a difference is stored with checked=True whenever base files were provided, including rows whose note is “Renamed since”. One “Apply ticked” therefore writes stale FM24 spellings over FM27 stock names that merely changed between versions. The dialog text mentions the note, but the default tick does not distinguish it. File: fm_name_editor.py, function build_proposals (about lines 264 and 286).
+
+B4 — Moderate. Duplicate (command, id, language) keys: import updates only the last row.
+Failure point: index() keeps the last Entry for each key. The main table still lists every row, so two club lines with the same id both look editable. Import’s Proposal.target points only at the last one, so “Apply ticked” changes one duplicate and leaves the earlier line on the old spelling. File: fm_name_editor.py, function index (about line 229) and build_proposals (the tgt.get(key) use).
+
+B5 — Minor. After import adds a command the file did not previously contain, the type filter is stale.
+Failure point: MainWindow.load rebuilds the type combo from the rows. MainWindow.import_old refreshes the model and the text filter, but it does not rebuild the combo. A newly appended family (for example an award line added onto a club file) cannot be selected until the files are opened again. File: fm_name_editor.py, class MainWindow, method import_old (about line 763), contrasted with load (about line 714).
+
+B6 — Minor. Reverting an imported row does nothing and the status text still says the selection was processed.
+Failure point: MainWindow.revert_selected skips any row with imported=True, and also skips rows that already match orig_name. The status bar always reports “Reverted N name(s).” even when N is 0 because every selected row was an addition. Additions have no previous name to restore; the user is not told that. File: fm_name_editor.py, class MainWindow, method revert_selected (about line 777).
+
+B7 — Minor. The launcher will not start on any machine except the one it was written for.
+Failure point: FM Name Editor.bat sets PY to C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe and APPDIR to C:\FM Name Editor. Any other user, or a Python install that is not 3.11 in that exact folder, stops at “Python 3.11 was not found” even when python is on PATH. File: FM Name Editor.bat, the PY and APPDIR assignments near the top of the script.
+
+3. Proposed Solutions
+---------------------
+The snippets below are the recommended patches only. They were not applied.
+
+--- B1. Encode failures become a clean error, and the backup is written only after the bytes exist. ---
+
+def to_bytes(self) -> bytes:
+    """Serialise every line, preserving BOM, encoding, and line endings.
+
+    Raises:
+        UnicodeEncodeError: the working text does not fit self.encoding.
+            Callers should catch this and leave the original file untouched.
+    """
+    text = "".join(e.raw + e.eol for e in self.entries)
+    body = text.encode(self.encoding)
+    return (BOM if self.has_bom else b"") + body
+
+
+def save(self, backup=True):
+    """Write this document back to its path.
+
+    The full byte string is built first. If encoding fails, no backup is
+    taken and the original file is not opened for writing.
+
+    Args:
+        backup: When True and the path exists, copy it to a timestamped
+            .bak sibling before the replacement is written.
+    """
+    payload = self.to_bytes()
+    if backup and self.path.exists():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(self.path, self.path.with_name(f"{self.path.name}.bak-{stamp}"))
+    self.path.write_bytes(payload)
+    for e in self.entries:
+        if e.kind == "name":
+            e.orig_name = e.name
+            e.imported = False
+    self.dirty = False
+
+And in MainWindow.save, widen the handler:
+
+def save(self):
+    """Write every dirty document, and report encode errors without crashing."""
+    dirty = [d for d in self.docs if d.dirty]
+    if not dirty:
+        self.statusBar().showMessage("Nothing to save.", 4000)
+        return
+    try:
+        for d in dirty:
+            d.save()
+    except (OSError, UnicodeError) as exc:
+        QMessageBox.critical(self, APP_NAME, f"Save failed:\n{exc}")
+        return
+    self.model.layoutChanged.emit()
+    self.apply_filter()
+    self.statusBar().showMessage(
+        f"Saved {len(dirty)} file(s). Backups written alongside as .bak-<date>.", 8000)
+
+--- B2. Reject names that would break a one-record-per-line file. ---
+
+def name_is_legal(new: str) -> bool:
+    """Return True when new can be stored as one quoted .lnc field.
+
+    Args:
+        new: The candidate name, already stripped of surrounding whitespace.
+
+    A legal name is non-empty, contains no double quote, and contains no
+    ASCII control character (including CR and LF). Tabs are allowed because
+    they sit inside the quotes and do not split the line.
+    """
+    if not new or '"' in new:
+        return False
+    return all(ord(ch) >= 32 or ch == "\t" for ch in new)
+
+Use it at the start of EntryModel.setData, in place of the current emptiness and quote test:
+
+def setData(self, index, value, role=Qt.EditRole):
+    """Apply an in-place rename when the text is a single legal field."""
+    if role != Qt.EditRole or index.column() != self.NAME_COL:
+        return False
+    new = str(value).strip()
+    e = self.rows[index.row()]
+    if not name_is_legal(new) or new == e.name:
+        return False
+    e.set_name(new)
+    self.row_changed(index.row())
+    return True
+
+--- B3. Count skipped older names, and do not pre-tick a rename of stock text. ---
+
+Inside build_proposals, replace the silent continue and the checked flag:
+
+def build_proposals(target_docs, old_docs, base_docs=None):
+    """Compare older files against the loaded files.
+
+    Returns:
+        changes, missing, stats. stats['skipped'] is the number of older
+        name lines that were not proposed because the name was blank or
+        contained a double quote.
+
+    A proposed change is pre-ticked only when an unedited original was
+    supplied and this row is a genuine personal edit. Rows noted
+    'Renamed since' stay unticked so a stock spelling change is not
+    written back by accident.
+    """
+    tgt = index(target_docs)
+    old = index(old_docs)
+    base = index(base_docs) if base_docs else None
+    changes, missing = [], []
+    stats = {"old": len(old), "same": 0, "stock": 0, "skipped": 0}
+    for key, oe in old.items():
+        name = oe.name.strip()
+        if '"' in name or not name:
+            stats["skipped"] += 1
+            continue
+        if base is not None and key in base and base[key].name.strip() == name:
+            stats["stock"] += 1
+            continue
+        te = tgt.get(key)
+        base_name, note = "", ""
+        if base is not None:
+            if key in base:
+                base_name = base[key].name.strip()
+                if te is not None and te.name != base_name:
+                    note = "Renamed since"
+            else:
+                note = "Your addition"
+        pre_tick = base is not None and note != "Renamed since"
+        if te is None:
+            missing.append(Proposal(
+                oe.cmd, oe.id, oe.lang, name, None, oe.section, False,
+                base_name, note))
+        elif te.name == name:
+            stats["same"] += 1
+        else:
+            changes.append(Proposal(
+                oe.cmd, oe.id, oe.lang, name, te, te.section,
+                pre_tick, base_name, note))
+    return changes, missing, stats
+
+In ImportDialog.compare, after the malformed-line sentence, add the skipped count to the summary label (same method, about line 612):
+
+if stats.get("skipped"):
+    text += (f" {stats['skipped']} older name(s) were skipped because they "
+             "were blank or contained a double quote.")
+
+--- B4. Point a proposal at every row that shares the key, not only the last. ---
+
+def index_all(docs) -> dict:
+    """Map (command, id, language) to every name row with that key.
+
+    Unlike index(), earlier duplicates are kept. The first row in file
+    order is first in the list.
+
+    Args:
+        docs: Loaded LncDoc objects, in the order they were opened.
+
+    Returns:
+        A dict of key to a list of Entry.
+    """
+    out = {}
+    for d in docs:
+        for e in d.names():
+            out.setdefault(e.key, []).append(e)
+    return out
+
+Apply across the whole list inside the branch that currently does tgt.get(key). When more than one current row shares the key, either update every row in apply_proposals or surface a single proposal whose note is "Duplicate id (N rows)". The smaller safe change in apply_proposals is:
+
+def apply_proposals(changes, missing, docs):
+    """Write ticked proposals into the loaded documents.
+
+    A change whose target_rows list is set updates every duplicate, so two
+    lines with the same database id cannot drift apart.
+
+    Returns:
+        The number of existing rows whose name changed, and the list of
+        Entry objects appended for missing ids.
+    """
+    n = 0
+    for p in changes:
+        rows = getattr(p, "target_rows", None) or ([p.target] if p.target else [])
+        if not p.checked:
+            continue
+        for target in rows:
+            if target is not None and target.name != p.new:
+                target.set_name(p.new)
+                n += 1
+    added = []
+    for p in missing:
+        if p.checked:
+            added.append(pick_doc_for(p.cmd, docs).append_entry(p.cmd, p.id, p.new, p.lang))
+    return n, added
+
+--- B5. Rebuild the type list after an import the same way load() does. ---
+
+def rebuild_type_filter(self):
+    """Refill the type combo from the name rows currently loaded.
+
+    The current command filter is kept when that command is still present.
+    Signals are blocked so refilling does not run the filter twice.
+    """
+    current = self.type_box.currentData() or ""
+    self.type_box.blockSignals(True)
+    self.type_box.clear()
+    self.type_box.addItem("All types", "")
+    for cmd in sorted({e.cmd for e in self.model.rows}, key=friendly):
+        self.type_box.addItem(friendly(cmd), cmd)
+    restored = self.type_box.findData(current)
+    self.type_box.setCurrentIndex(restored if restored >= 0 else 0)
+    self.type_box.blockSignals(False)
+
+Call self.rebuild_type_filter() at the end of MainWindow.load (in place of the inline combo rebuild) and again inside import_old, immediately after self.model.set_docs(self.docs).
+
+--- B6. Say why a revert did not change an imported row. ---
+
+def revert_selected(self):
+    """Restore orig_name on selected edits. Imported rows are left in place.
+
+    An imported row was not in the file when it was opened, so there is no
+    previous spelling to restore. The status bar states that separately
+    from the number of rows actually reverted.
+    """
+    rows = {self.proxy.mapToSource(i).row()
+            for i in self.view.selectionModel().selectedIndexes()}
+    n = 0
+    skipped_added = 0
+    for r in rows:
+        e = self.model.rows[r]
+        if e.imported:
+            skipped_added += 1
+            continue
+        if e.name != e.orig_name:
+            e.set_name(e.orig_name)
+            self.model.row_changed(r)
+            n += 1
+    msg = f"Reverted {n} name(s)."
+    if skipped_added:
+        msg += f" Left {skipped_added} added row(s) unchanged."
+    self.statusBar().showMessage(msg, 5000)
+
+--- B7. Find Python on PATH, then fall back to the known install. ---
+
+This is a batch fragment, not Python. Replace the single hard-coded PY assignment near the top of FM Name Editor.bat:
+
+rem Prefer the interpreter on PATH. Fall back to the known 3.11 install.
+set "PY="
+for /f "delims=" %%I in ('where python 2^>nul') do (
+    if not defined PY set "PY=%%I"
+)
+if not defined PY set "PY=C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe"
+
+Leave APPDIR as it is until the program is installed somewhere else. The existing "Python 3.11 was not found" message should be reworded to "Python was not found on PATH or at the fallback location" so it matches the new search.
+
+4. Insertion Points
+-------------------
+B1
+- File fm_name_editor.py, class LncDoc, method to_bytes, current body at lines 189–191. Replace the method.
+- File fm_name_editor.py, class LncDoc, method save, current body at lines 193–202. Replace the method so the payload is built before copy2.
+- File fm_name_editor.py, class MainWindow, method save, the except at line 735. Change `except OSError` to `except (OSError, UnicodeError)`.
+
+B2
+- File fm_name_editor.py. Insert name_is_legal immediately after function friendly (after line 57), before fold. It uses no GUI imports, so it stays in the engine half of the file.
+- File fm_name_editor.py, class EntryModel, method setData, lines 382–391. Replace the `if not new or '"' in new or new == e.name` test with the name_is_legal call.
+
+B3
+- File fm_name_editor.py, function build_proposals, lines 250–288. Replace the function. Callers (ImportDialog.compare) already unpack three return values; only the stats dict gains the key "skipped".
+- File fm_name_editor.py, class ImportDialog, method compare, immediately after the `if bad:` block that ends near line 612. Append the skipped-count sentence to `text` before setText.
+
+B4
+- File fm_name_editor.py. Insert index_all immediately after function index (after line 235).
+- File fm_name_editor.py, function build_proposals. Where it currently does `te = tgt.get(key)`, build target_rows from index_all(target_docs) and pass that list into Proposal. Add the attribute in Proposal.__init__ (class Proposal, line 239) as target_rows=None.
+- File fm_name_editor.py, function apply_proposals, lines 302–312. Replace the function so it walks target_rows.
+
+B5
+- File fm_name_editor.py, class MainWindow. Insert method rebuild_type_filter beside load.
+- File fm_name_editor.py, class MainWindow, method load, lines 716–720. Replace the inline combo rebuild with self.rebuild_type_filter().
+- File fm_name_editor.py, class MainWindow, method import_old, line 770 (the set_docs call). Call self.rebuild_type_filter() on the next line, before apply_filter.
+
+B6
+- File fm_name_editor.py, class MainWindow, method revert_selected, lines 777–787. Replace the method.
+
+B7
+- File FM Name Editor.bat, the `set "PY=..."` line (the first assignment under "Paths and settings"). Replace that one line with the PATH search. Update the echo under the :no_python label in the same file so the message no longer claims that only Python 3.11 was sought.
+
+End of note 02.
