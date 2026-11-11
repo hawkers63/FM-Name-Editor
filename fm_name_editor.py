@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.1
+FM Name Editor v2.2
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -11,8 +11,10 @@ Browse and edit Football Manager .lnc name files. Clubs and competitions
 are shown side by side (long name, short name, code). The line-by-line
 table is still there. Edits can be carried across from an older version
 by database ID, deployed into the FM27 database, and transformed in bulk.
-Release 2.1 adds name packs, a backup browser, section-scoped replace,
-and the UTF-16 Greek person-name file.
+Release 2.1 added name packs, a backup browser, section-scoped replace,
+and the UTF-16 Greek person-name file. Release 2.2 makes every write
+safe: one game-write check, checked fields, a disk baseline for unsaved
+state, and files replaced one at a time with a way back.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -21,27 +23,33 @@ Design rules
 ------------
 * Lines you do not touch are written back byte-for-byte as they were read.
 * Editing a name replaces only the quoted name on that line.
-* Bytes are built before any backup. A file outside the game tree still
-  gets a timestamped .bak beside it. A file inside the game tree is copied
-  into the project's backups folder instead.
+* Bytes are built before any backup. Every file is written to a temporary
+  file beside it and swapped in with os.replace, one file at a time. A file
+  that changed on disk since it was read is not overwritten. If a later file
+  fails, the files already replaced are put back.
+* A file inside the game tree is copied into the project's backups folder
+  first, with a manifest.json naming where each copy came from. A file
+  outside the game tree gets a timestamped .bak beside it instead.
 * UTF-16 files, including the Greek person-name file, are written back
   in the encoding they were opened with.
 """
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
+import os
 import re
-import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.1"
+VERSION = "2.2"
 
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
@@ -84,6 +92,27 @@ FILE_SECTION_HINT = (
 
 PACK_FORMAT = "fm-name-pack"
 PACK_VERSION = 1
+ARCHIVE_FORMAT = "fm-name-editor-archive"
+ARCHIVE_VERSION = 1
+MANIFEST_NAME = "manifest.json"
+# How an operation recorded in a backup manifest ended.
+ARCHIVE_RESULTS = {
+    "pending": "outcome not recorded",
+    "complete": "complete",
+    "stopped": "stopped before any file was replaced",
+    "rolled back": "stopped; the files already replaced were put back",
+    "partly written": "stopped part-way; some files hold the new version",
+}
+# What happened to one file, as recorded in a backup manifest.
+FILE_OUTCOMES = {
+    "written": "written",
+    "not written": "not written",
+    "failed": "unchanged, because its replacement failed",
+    "restored": "put back as it was",
+    "removed": "removed again",
+    "left written": "left holding the new version",
+    "renamed": "renamed",
+}
 UTF8_BOM = BOM
 UTF16_LE_BOM = b"\xff\xfe"
 UTF16_BE_BOM = b"\xfe\xff"
@@ -541,19 +570,16 @@ class LncDoc:
         self.touch()
 
     def save(self, backup: bool = True) -> None:
-        """Write this document back to its path.
+        """Write this document back to its own path.
 
-        The full byte string is built first. If encoding fails, no backup is
-        taken and the original file is not opened for writing. This path
-        still uses a beside-file .bak. Saves into the game tree go through
-        save_documents, which archives under the project backups folder.
+        It takes the same route as every other write, see write_documents:
+        the bytes are built first, the file must still hold what was read,
+        and it is replaced through a temporary file. ``backup`` keeps a
+        ``.bak-<date>`` copy beside it. Game files are saved with
+        save_documents, which copies them into the project's backups folder
+        instead.
         """
-        payload = self.to_bytes()
-        if backup and self.path.exists():
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            shutil.copy2(self.path, self.path.with_name(f"{self.path.name}.bak-{stamp}"))
-        self.path.write_bytes(payload)
-        self.mark_clean(payload)
+        write_documents("Save", [(self, self.path, "beside" if backup else "none")])
 
     def names(self):
         return [e for e in self.entries if e.kind == "name"]
@@ -1136,8 +1162,96 @@ def under_game_tree(path: Path, game_root: Path | None) -> bool:
     return file_path == root or file_path.startswith(root + "\\") or file_path.startswith(root + "/")
 
 
-def new_archive_dir(archive_root: Path) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+def _path_key(path) -> str:
+    """A comparable spelling of a path: absolute, and case-folded as Windows compares."""
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        resolved = Path(os.path.abspath(path))
+    return os.path.normcase(str(resolved))
+
+
+def same_path(first, second) -> bool:
+    """True when two paths name the same file."""
+    return _path_key(first) == _path_key(second)
+
+
+def database_folder_of(path) -> str:
+    """The numbered database folder a path sits in, such as "2700", or "" if none."""
+    for parent in Path(path).parents:
+        if parent.name.isascii() and parent.name.isdigit():
+            return parent.name
+    return ""
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+# ---- writing one file ----------------------------------------------------
+
+def _discard(path) -> bool:
+    """Remove a staging file if it is still there. False when it could not be removed."""
+    if path is None:
+        return True
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
+
+
+def _stage_bytes(path: Path, payload: bytes) -> Path:
+    """Write payload to a new temporary file beside path and return its name.
+
+    The file sits in the destination's own folder, so the os.replace that
+    follows stays on one volume. Its name ends in ``.writing``, so the game
+    never reads it as a name file. The bytes are flushed to disk before
+    this returns. On failure the file is removed and the error is raised.
+    """
+    handle, name = tempfile.mkstemp(
+        prefix=f"{path.name}.", suffix=".writing", dir=str(path.parent))
+    staged = Path(name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        _discard(staged)
+        raise
+    return staged
+
+
+def write_file_atomically(path, payload: bytes, times=None) -> None:
+    """Replace one file with payload in a single step.
+
+    The bytes go to a unique temporary sibling and are flushed to disk, then
+    os.replace swaps that sibling in. If anything fails, the file at path is
+    left as it was, and the temporary file is removed in ``finally``.
+    ``times`` (access and modification time in nanoseconds) is applied to
+    the new file, so a backup copy keeps its original's date. This covers
+    one file. Several files written this way are not one atomic step; see
+    write_documents for how a set of files is handled.
+    """
+    path = Path(path)
+    staged = _stage_bytes(path, payload)
+    try:
+        if times is not None:
+            os.utime(staged, ns=times)
+        os.replace(staged, path)
+    finally:
+        _discard(staged)
+
+
+def _times_of(stat):
+    return None if stat is None else (stat.st_atime_ns, stat.st_mtime_ns)
+
+
+# ---- backup folders and their manifests ----------------------------------
+
+def new_archive_dir(archive_root: Path, now: datetime | None = None) -> Path:
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
     dest = archive_root / stamp
     suffix = 0
     while dest.exists():
@@ -1147,77 +1261,439 @@ def new_archive_dir(archive_root: Path) -> Path:
     return dest
 
 
-def archive_files(paths: list[Path], archive_root: Path) -> Path:
-    """Copy existing files into a new timestamped folder. Missing paths are skipped."""
-    dest_dir = new_archive_dir(archive_root)
-    used: set[str] = set()
-    for path in paths:
-        if not path.exists():
-            continue
-        name = path.name
-        target = dest_dir / name
-        if name.casefold() in used or target.exists():
-            target = dest_dir / f"{path.stem}-{len(used)}{path.suffix}"
-        shutil.copy2(path, target)
-        used.add(name.casefold())
-    return dest_dir
+def _unique_name(folder: Path, name: str, taken: set) -> str:
+    """name, or name-2, name-3 and so on, so no two copies share a file name."""
+    stem, suffix = os.path.splitext(name)
+    candidate = name
+    count = 1
+    while candidate.casefold() in taken or (folder / candidate).exists():
+        count += 1
+        candidate = f"{stem}-{count}{suffix}"
+    taken.add(candidate.casefold())
+    return candidate
 
 
-def save_documents(docs, game_root: Path | None, archive_root: Path) -> Path | None:
-    """Write documents. Every payload is encoded before any backup is made.
+def _describe_encoding(path: Path, data: bytes):
+    """Encoding and BOM of a name file's bytes. (None, None) for other files."""
+    if path.suffix.casefold() != ".lnc":
+        return None, None
+    try:
+        _text, encoding, has_bom = decode_lnc_bytes(data)
+    except UnicodeError:
+        return "unreadable", None
+    return encoding, has_bom
 
-    Files under game_root share one archive folder. Other files keep a
-    timestamped .bak beside them. Returns the archive path, or None when
-    no game file was copied.
+
+def write_manifest(folder: Path, manifest: dict) -> None:
+    text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    write_file_atomically(Path(folder) / MANIFEST_NAME, text.encode("utf-8"))
+
+
+def read_manifest(folder: Path) -> dict | None:
+    """Return a backup folder's manifest, or None for a folder made before 2.2.
+
+    Raises:
+        ValueError: manifest.json is there but cannot be read as a manifest.
     """
-    if not docs:
+    folder = Path(folder)
+    path = folder / MANIFEST_NAME
+    if not path.is_file():
         return None
-    payloads = [(doc, doc.to_bytes()) for doc in docs]
-    game_paths = [
-        doc.path for doc, _payload in payloads
-        if doc.path.exists() and under_game_tree(doc.path, game_root)
-    ]
-    archive = archive_files(game_paths, archive_root) if game_paths else None
-    for doc, _payload in payloads:
-        if doc.path.exists() and not under_game_tree(doc.path, game_root):
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            shutil.copy2(doc.path, doc.path.with_name(f"{doc.path.name}.bak-{stamp}"))
-    for doc, payload in payloads:
-        doc.path.write_bytes(payload)
-    for doc, payload in payloads:
-        doc.mark_clean(payload)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"The manifest in {folder.name} could not be read: {exc}") from exc
+    if not isinstance(data, dict) or data.get("format") != ARCHIVE_FORMAT:
+        raise ValueError(f"{MANIFEST_NAME} in {folder.name} is not a backup manifest.")
+    if data.get("version") != ARCHIVE_VERSION:
+        raise ValueError(
+            f"The manifest in {folder.name} is version {data.get('version')}. "
+            f"This editor reads version {ARCHIVE_VERSION}.")
+    files = data.get("files")
+    if not isinstance(files, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("original"), str)
+            and isinstance(item.get("archived"), str)
+            for item in files):
+        raise ValueError(f"The manifest in {folder.name} has no usable list of files.")
+    return data
+
+
+def manifest_entry(manifest: dict | None, archived_name: str) -> dict | None:
+    """The manifest's record for one copy, found by its name in the backup folder."""
+    if not manifest:
+        return None
+    wanted = archived_name.casefold()
+    for item in manifest["files"]:
+        if item["archived"].casefold() == wanted:
+            return item
+    return None
+
+
+def _store_copies(sources, archive_root: Path, operation: str,
+                  database: str | None = None) -> tuple[Path, list[Path]]:
+    """Copy file contents into a new backup folder and describe them in manifest.json.
+
+    ``sources`` lists (original path, bytes, os.stat_result or None). The
+    bytes are what the file held when it was read, so the copy and any check
+    made on that reading are of the same contents. Each copy is written
+    through a temporary file and keeps its original's dates. Two sources
+    with one name get separate copies (``name-2.lnc`` and so on), and the
+    manifest records which original each copy came from. The manifest is
+    written last, so a folder that has one holds every copy it lists. Its
+    ``result`` stays "pending" until finish_manifest records the outcome.
+    Returns the folder and the copies, in the order of ``sources``.
+    """
+    now = datetime.now()
+    folder = new_archive_dir(archive_root, now)
+    taken: set = set()
+    files, copies = [], []
+    for original, data, stat in sources:
+        original = Path(original)
+        name = _unique_name(folder, original.name, taken)
+        write_file_atomically(folder / name, data, _times_of(stat))
+        encoding, has_bom = _describe_encoding(original, data)
+        modified = None
+        if stat is not None:
+            modified = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+        files.append({
+            "original": str(original),
+            "archived": name,
+            "size": len(data),
+            "sha256": sha256_hex(data),
+            "encoding": encoding,
+            "bom": has_bom,
+            "modified": modified,
+        })
+        copies.append(folder / name)
+    if database is None:
+        found = {database_folder_of(original) for original, _data, _stat in sources}
+        database = ", ".join(sorted(found - {""}))
+    write_manifest(folder, {
+        "format": ARCHIVE_FORMAT,
+        "version": ARCHIVE_VERSION,
+        "operation": operation,
+        "timestamp": now.isoformat(timespec="seconds"),
+        "database": database,
+        "editor_version": VERSION,
+        "result": "pending",
+        "files": files,
+    })
+    return folder, copies
+
+
+def archive_files(paths, archive_root: Path, operation: str = "Backup",
+                  database: str | None = None) -> Path:
+    """Copy existing files into a new backup folder with a manifest. Missing paths are skipped."""
+    sources = []
+    for path in paths:
+        path = Path(path)
+        if path.is_file():
+            stat = path.stat()
+            sources.append((path, path.read_bytes(), stat))
+    return _store_copies(sources, archive_root, operation, database)[0]
+
+
+def finish_manifest(folder: Path, result: str, outcomes: dict | None = None) -> bool:
+    """Record in a backup folder's manifest how its operation ended.
+
+    ``result`` is a key of ARCHIVE_RESULTS. ``outcomes`` maps an original
+    path, as the manifest spells it, to that file's state. This is best
+    effort: the files are already where they are, so a failure here returns
+    False and is not reported as a failed write.
+    """
+    try:
+        manifest = read_manifest(folder)
+        if manifest is None:
+            return False
+        manifest["result"] = result
+        for item in manifest["files"]:
+            state = (outcomes or {}).get(item["original"])
+            if state:
+                item["outcome"] = state
+        write_manifest(folder, manifest)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _beside_copy(path: Path, data: bytes, stat) -> Path:
+    """Write a ``.bak-<date>`` copy of data next to path and return its name."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.name}.bak-{stamp}")
+    count = 1
+    while target.exists():
+        count += 1
+        target = path.with_name(f"{path.name}.bak-{stamp}-{count}")
+    write_file_atomically(target, data, _times_of(stat))
+    return target
+
+
+# ---- writing several files -------------------------------------------------
+
+class WriteError(OSError):
+    """A write stopped. The message says where each file stands.
+
+    ``files`` holds a FileWrite for every destination once replacing had
+    begun, and is empty when the write stopped before touching anything.
+    ``archive`` is the backup folder, if one was made.
+    """
+
+    def __init__(self, message: str, files=(), archive=None):
+        super().__init__(message)
+        self.files = list(files)
+        self.archive = archive
+
+
+class ExternalChangeError(WriteError):
+    """Files changed on disk after the editor read them, so nothing was replaced."""
+
+    def __init__(self, paths):
+        self.paths = [Path(path) for path in paths]
+        listed = "\n".join(str(path) for path in self.paths)
+        super().__init__(
+            "These files changed on disk, or were removed, after the editor read them:\n"
+            f"{listed}\n\nNothing was written, so the files on disk are kept as they are. "
+            "To carry your edits across, export them as a name pack, open the files "
+            "again, and import the pack.")
+
+
+class FileWrite:
+    """One destination in a write, and where it stands.
+
+    ``state`` is "pending" until the write runs, then one of: "written";
+    "not written" (an earlier file failed, so this one was not tried);
+    "failed" (its replacement failed, so the file is as it was); "restored"
+    (it was replaced, then put back from the bytes read before); "removed"
+    (it was created, then removed again); or "left written" (it was
+    replaced and could not be put back, ``detail`` says why).
+    """
+
+    __slots__ = ("doc", "dest", "payload", "backup_mode", "before", "stat",
+                 "backup", "staged", "state", "detail")
+
+    def __init__(self, doc, dest, payload: bytes, backup_mode: str):
+        self.doc = doc
+        self.dest = Path(dest)
+        self.payload = payload
+        self.backup_mode = backup_mode    # "archive", "beside", or "none"
+        self.before = None                # bytes on disk before the write; None if no file
+        self.stat = None
+        self.backup = None                # where the copy of ``before`` went
+        self.staged = None                # temporary file waiting to be swapped in
+        self.state = "pending"
+        self.detail = ""
+
+    @property
+    def existed(self) -> bool:
+        return self.before is not None
+
+    def describe(self) -> str:
+        if self.state == "written":
+            return "written"
+        if self.state == "not written":
+            return "not written, so it is unchanged (an earlier file failed)"
+        if self.state == "failed":
+            return f"could not be replaced, so it is unchanged ({self.detail})"
+        if self.state == "restored":
+            return "put back as it was, from the copy taken before the write"
+        if self.state == "removed":
+            return "removed again (it did not exist before)"
+        if self.state == "left written":
+            if not self.existed:
+                return f"was created and could not be removed ({self.detail})"
+            where = f" The previous version is in {self.backup}." if self.backup else ""
+            return f"holds the new version, because putting it back failed ({self.detail}).{where}"
+        return self.state
+
+
+def _read_current(path: Path):
+    """The bytes and stat of a file as it is now, or (None, None) when there is no file."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None, None
+    return path.read_bytes(), stat
+
+
+def _put_back(write: FileWrite) -> None:
+    """Undo one replacement: write the earlier bytes back, or remove a new file."""
+    try:
+        if write.before is None:
+            write.dest.unlink()
+            write.state = "removed"
+        else:
+            write_file_atomically(write.dest, write.before, _times_of(write.stat))
+            write.state = "restored"
+    except OSError as exc:
+        write.state = "left written"
+        write.detail = str(exc)
+
+
+def _write_report(operation: str, writes, leftovers) -> str:
+    touched = any(w.state in ("restored", "removed", "left written") for w in writes)
+    if touched:
+        head = (f"{operation} stopped part-way. Files are replaced one at a time, per "
+                "file, not as one batch. This is where each file stands now:")
+    else:
+        head = f"{operation} stopped before any file was replaced:"
+    lines = [head, ""]
+    for write in writes:
+        lines.append(f"{write.dest}\n    {write.describe()}")
+    if leftovers:
+        lines += ["", "These temporary files could not be removed:"]
+        lines += [str(path) for path in leftovers]
+    lines += ["", "Your edits are still open in the editor."]
+    return "\n".join(lines)
+
+
+def _settle(writes) -> None:
+    """Mark clean every document whose destination now holds its payload."""
+    for write in writes:
+        if write.state in ("written", "left written"):
+            write.doc.path = write.dest
+            write.doc.mark_clean(write.payload)
+
+
+def _end_result(writes) -> str:
+    states = {write.state for write in writes}
+    if "left written" in states:
+        return "partly written"
+    if states & {"restored", "removed"}:
+        return "rolled back"
+    return "stopped"
+
+
+def write_documents(operation: str, plan, archive_root: Path | None = None) -> Path | None:
+    """Write documents to their destinations one file at a time, with a way back.
+
+    ``plan`` lists (doc, destination, backup), where backup is "archive"
+    (copy the current file into a new folder under ``archive_root``, with a
+    manifest), "beside" (a ``.bak-<date>`` copy next to it), or "none".
+
+    1. Every payload is encoded. An encoding error stops the write here.
+    2. Every destination is read. One that its document was opened from
+       must still hold the bytes read then. If it changed or went,
+       ExternalChangeError is raised and nothing is written.
+    3. Payloads are staged as temporary files beside their destinations.
+    4. Backups are written from the bytes read in step 2.
+    5. Each destination is read again. A change since step 2 stops the
+       write before any file is replaced.
+    6. Destinations are replaced one at a time with os.replace. If one
+       fails, the files already replaced get their earlier bytes back, or
+       are removed when they did not exist, and WriteError says where each
+       file stands. Several files are never described as one atomic step.
+
+    Staging files are removed in ``finally``. A document whose destination
+    now holds its payload is marked clean with those bytes, and its path
+    becomes that destination. Returns the backup folder, or None.
+
+    Raises:
+        UnicodeEncodeError: a payload could not be encoded (step 1).
+        ExternalChangeError: a destination changed on disk (steps 2 and 5).
+        WriteError: a replacement failed (step 6), or two documents would
+            write the same file.
+        OSError: reading, staging, or backing up failed. No file was
+            replaced then.
+    """
+    writes = [FileWrite(doc, dest, doc.to_bytes(), backup) for doc, dest, backup in plan]
+    if not writes:
+        return None
+    seen: set = set()
+    for write in writes:
+        key = _path_key(write.dest)
+        if key in seen:
+            raise WriteError(
+                f"Two open files would both be written to {write.dest}. "
+                "Close one of them first. Nothing was written.")
+        seen.add(key)
+    changed = []
+    for write in writes:
+        write.before, write.stat = _read_current(write.dest)
+        if same_path(write.doc.path, write.dest) and write.before != write.doc.baseline_bytes:
+            changed.append(write.dest)
+    if changed:
+        raise ExternalChangeError(changed)
+
+    archive = None
+    try:
+        for write in writes:
+            write.dest.parent.mkdir(parents=True, exist_ok=True)
+            write.staged = _stage_bytes(write.dest, write.payload)
+        archived = [w for w in writes if w.backup_mode == "archive" and w.existed]
+        if archived:
+            if archive_root is None:
+                raise ValueError("This write needs a backup folder.")
+            archive, copies = _store_copies(
+                [(w.dest, w.before, w.stat) for w in archived], archive_root, operation)
+            for write, copy in zip(archived, copies):
+                write.backup = copy
+        for write in writes:
+            if write.backup_mode == "beside" and write.existed:
+                write.backup = _beside_copy(write.dest, write.before, write.stat)
+        moved = [w.dest for w in writes if _read_current(w.dest)[0] != w.before]
+        if moved:
+            if archive is not None:
+                finish_manifest(archive, "stopped")
+            raise ExternalChangeError(moved)
+        for index, write in enumerate(writes):
+            try:
+                os.replace(write.staged, write.dest)
+            except OSError as exc:
+                write.state = "failed"
+                write.detail = str(exc)
+                for done in reversed(writes[:index]):
+                    _put_back(done)
+                for later in writes[index + 1:]:
+                    later.state = "not written"
+                leftovers = []
+                for other in writes:
+                    if other.staged is not None and not _discard(other.staged):
+                        leftovers.append(other.staged)
+                    other.staged = None
+                _settle(writes)
+                if archive is not None:
+                    finish_manifest(archive, _end_result(writes),
+                                    {str(w.dest): w.state for w in writes})
+                raise WriteError(
+                    _write_report(operation, writes, leftovers), writes, archive) from exc
+            write.staged = None
+            write.state = "written"
+    finally:
+        for write in writes:
+            _discard(write.staged)
+    _settle(writes)
+    if archive is not None:
+        finish_manifest(archive, "complete", {str(w.dest): w.state for w in writes})
     return archive
 
 
-def deploy_documents(pairs, archive_root: Path) -> Path | None:
-    """Write each document to its game destination.
+def save_documents(docs, game_root: Path | None, archive_root: Path) -> Path | None:
+    """Write documents back to their own paths, see write_documents.
 
-    Payloads are written to temporary siblings first. Existing game files
-    are archived only after that succeeds. A failed encode leaves the game
-    files untouched and creates no archive.
+    Files under game_root are copied into one new folder under archive_root,
+    with a manifest. Other files keep a ``.bak-<date>`` copy beside them.
+    Returns the backup folder, or None when no game file was copied.
+    """
+    plan = [
+        (doc, doc.path, "archive" if under_game_tree(doc.path, game_root) else "beside")
+        for doc in docs
+    ]
+    return write_documents("Save", plan, archive_root)
+
+
+def deploy_documents(pairs, archive_root: Path) -> Path | None:
+    """Write each document to its game destination, see write_documents.
+
+    The current game files are copied into a new folder under archive_root,
+    with a manifest, before anything is replaced. A failed encode leaves the
+    game files untouched and creates no backup folder. Each document's path
+    becomes its destination once that file is written.
 
     pairs: list of (LncDoc, destination Path).
     """
-    staged = [(doc, dest, doc.to_bytes()) for doc, dest in pairs]
-    written: list[Path] = []
-    try:
-        for _doc, dest, payload in staged:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dest.with_name(dest.name + ".writing")
-            tmp.write_bytes(payload)
-            written.append(tmp)
-        existing = [dest for _doc, dest, _payload in staged if dest.exists()]
-        archive = archive_files(existing, archive_root) if existing else None
-        for (_doc, dest, _payload), tmp in zip(staged, written):
-            tmp.replace(dest)
-        for doc, dest, payload in staged:
-            doc.path = dest
-            doc.mark_clean(payload)
-        return archive
-    except Exception:
-        for tmp in written:
-            tmp.unlink(missing_ok=True)
-        raise
+    return write_documents(
+        "Deploy", [(doc, dest, "archive") for doc, dest in pairs], archive_root)
 
 
 def process_names_from_tasklist(text: str) -> list[str]:
@@ -1323,7 +1799,9 @@ def licence_inventory(version_dir: Path) -> list[dict]:
     ):
         src = version_dir / rel
         disabled = src.with_name(src.name + ".disabled")
-        if src.is_file():
+        if src.is_file() and disabled.is_file():
+            state = "both"
+        elif src.is_file():
             state = "present"
         elif disabled.is_file():
             state = "disabled"
@@ -1342,21 +1820,38 @@ def licence_inventory(version_dir: Path) -> list[dict]:
 def toggle_licence(version_dir: Path, rel: Path, archive_root: Path) -> str:
     """Rename a name-mask file to `.disabled`, or restore it.
 
-    The current file is copied into the archive first. Nothing is deleted.
+    The current file is copied into a new backup folder first, with a
+    manifest, through write_file_atomically. No bytes are written into the
+    game tree: the toggle is one rename inside one folder, which never
+    replaces a file. When both names exist it refuses, because choosing
+    between them is the user's call. Nothing is deleted.
+
+    Raises:
+        FileExistsError: the file and its ``.disabled`` copy both exist.
+        FileNotFoundError: neither exists.
     """
     if rel not in MASK_FILES:
         raise ValueError(f"Not a name-mask file: {rel}")
     src = version_dir / rel
     disabled = src.with_name(src.name + ".disabled")
+    if src.exists() and disabled.exists():
+        raise FileExistsError(
+            f"Both {src.name} and {disabled.name} are in {src.parent}. The editor will "
+            "not choose between them. Move or rename one of them yourself.")
     if src.is_file():
-        archive_files([src], archive_root)
-        src.rename(disabled)
-        return "disabled"
-    if disabled.is_file():
-        archive_files([disabled], archive_root)
-        disabled.rename(src)
-        return "restored"
-    raise FileNotFoundError(src)
+        current, target, operation, result = src, disabled, "Disable licensing file", "disabled"
+    elif disabled.is_file():
+        current, target, operation, result = disabled, src, "Restore licensing file", "restored"
+    else:
+        raise FileNotFoundError(src)
+    archive = archive_files([current], archive_root, operation, version_dir.name)
+    try:
+        os.rename(current, target)
+    except OSError:
+        finish_manifest(archive, "stopped")
+        raise
+    finish_manifest(archive, "complete", {str(current): "renamed"})
+    return result
 
 
 def preview_replace(docs, pattern: str, replacement: str, section: str = "",
@@ -1616,6 +2111,69 @@ def diff_documents(working: LncDoc, archived: LncDoc) -> list[dict]:
     return rows
 
 
+def bytes_match(doc: LncDoc, data: bytes) -> bool | None:
+    """True when the open document would write exactly ``data``.
+
+    None when its text cannot be encoded, so no byte comparison is possible.
+    """
+    try:
+        return doc.to_bytes() == data
+    except UnicodeError:
+        return None
+
+
+def compare_with_backup(doc: LncDoc, archive_file: Path) -> tuple[list[dict], bool | None]:
+    """Compare an open file with a backed-up copy, in two separate ways.
+
+    Returns the supported-name differences (see diff_documents) and whether
+    the files are byte-identical (see bytes_match). A comment, a blank line,
+    an unsupported command, a line ending, or the encoding can differ while
+    every supported name matches; the second value catches that.
+
+    Raises:
+        OSError, UnicodeError: the backup could not be read.
+    """
+    archived = LncDoc(archive_file)
+    return diff_documents(doc, archived), bytes_match(doc, archived.baseline_bytes)
+
+
+def describe_backup_match(differences: int, identical: bool | None) -> str:
+    """One plain sentence on how an open file compares with a backup."""
+    if differences:
+        return (f"{differences:,} difference(s) in supported names, so the files are "
+                "not byte-identical either.")
+    if identical is None:
+        return ("Supported names match. A byte-for-byte check could not be made, because "
+                "the open text cannot be written in its file's encoding.")
+    if identical:
+        return "Supported names match, and the files are byte-identical."
+    return ("Supported names match, but the files are not byte-identical: comments, blank "
+            "lines, other commands, line endings, or the encoding differ.")
+
+
+def match_open_document(archive_file: Path, docs, manifest: dict | None = None):
+    """Find the open document a backed-up file belongs to.
+
+    Returns ``(doc, how)``. When the manifest lists the copy, the original
+    path decides and ``how`` is "path", so two open files with one name are
+    told apart. Otherwise (a backup from before 2.2, or the original is not
+    open) the one open file with the original's name is used and ``how`` is
+    "name", so the window can say so. ``(None, "")`` means no match, or
+    more than one file with that name.
+    """
+    entry = manifest_entry(manifest, archive_file.name)
+    name = archive_file.name
+    if entry is not None:
+        for doc in docs:
+            if same_path(doc.path, entry["original"]):
+                return doc, "path"
+        name = Path(entry["original"]).name
+    found = [doc for doc in docs if doc.path.name.casefold() == name.casefold()]
+    if len(found) == 1:
+        return found[0], "name"
+    return None, ""
+
+
 def restore_into(doc: LncDoc, archive_file: Path) -> None:
     """Replace the open document's lines with a backup. The path is kept.
 
@@ -1646,6 +2204,21 @@ def run_gui(paths):
         QWidget)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
+    GAME_WRITE_NOTE = (
+        "A copy of each existing game file is stored under backups first. Files are "
+        "replaced one at a time; if one fails, the files already replaced are put back "
+        "from that copy.")
+
+    def report_write_failure(parent, operation: str, exc: Exception) -> None:
+        """Tell the user why a write stopped and where each file stands."""
+        if isinstance(exc, ExternalChangeError):
+            QMessageBox.warning(parent, APP_NAME, str(exc))
+        elif isinstance(exc, WriteError):
+            QMessageBox.critical(parent, APP_NAME, str(exc))
+        else:
+            QMessageBox.critical(
+                parent, APP_NAME,
+                f"{operation} failed:\n{exc}\n\nNo file was replaced.")
 
     # ---------------- main table ----------------
     class EntryModel(QAbstractTableModel):
@@ -1972,6 +2545,7 @@ def run_gui(paths):
     }
     QStatusBar { background: #1a1e28; color: #8a94a6; }
     QLabel#metrics { color: #8a94a6; background: transparent; padding: 2px 6px; }
+    QLabel#muted { color: #8a94a6; background: transparent; }
     QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QListWidget, QTableView, QTableWidget {
         background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
         selection-background-color: #8b5cf6; selection-color: #ffffff;
@@ -2303,7 +2877,12 @@ def run_gui(paths):
 
         def refresh(self) -> None:
             self.rows = licence_inventory(self.version)
-            labels = {"present": "Present", "disabled": "Disabled", "missing": "Missing"}
+            labels = {
+                "present": "Present",
+                "disabled": "Disabled",
+                "missing": "Missing",
+                "both": "Present, and a .disabled copy too",
+            }
             self.table.setRowCount(len(self.rows))
             for index, row in enumerate(self.rows):
                 role = "Name mask" if row["toggle"] else "Report only"
@@ -2322,6 +2901,13 @@ def run_gui(paths):
                     self, APP_NAME,
                     "Only a present or disabled name-mask file can be toggled.")
                 return
+            if row["state"] == "both":
+                QMessageBox.information(
+                    self, APP_NAME,
+                    f"{row['name']} and its .disabled copy are both in the folder. The "
+                    "editor will not choose between them. Move or rename one of them "
+                    "yourself, then try again.")
+                return
             verb = "disable" if row["state"] == "present" else "restore"
             target = row["path"]
             if row["state"] == "disabled":
@@ -2329,7 +2915,8 @@ def run_gui(paths):
             preflight = game_write_preflight(f"{verb} a licensing file", [target])
             if not confirm_game_write(
                     self, preflight, f"This will {verb} the file below.",
-                    "A copy is stored in the backups folder first."):
+                    "A copy is stored in the backups folder first. The file is renamed "
+                    "in one step and its contents are not changed."):
                 return
             try:
                 result = toggle_licence(self.version, row["rel"], BACKUP_ROOT)
@@ -2513,6 +3100,11 @@ def run_gui(paths):
             lists.addWidget(self.archive_list, 1)
             lists.addWidget(self.file_list, 1)
             lay.addLayout(lists)
+            self.origin = QLabel("")
+            self.origin.setObjectName("muted")
+            self.origin.setWordWrap(True)
+            self.origin.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lay.addWidget(self.origin)
             self.summary = QLabel("")
             self.summary.setWordWrap(True)
             lay.addWidget(self.summary)
@@ -2533,26 +3125,84 @@ def run_gui(paths):
             self.archive_list.currentRowChanged.connect(self.show_archive)
             self.file_list.currentRowChanged.connect(lambda _row: self.show_diff())
             self.archives = list_archives(BACKUP_ROOT)
+            self.manifests: dict = {}
             if not self.archives:
                 self.summary.setText("No backups yet. Save or Deploy a game file to create one.")
             for folder in self.archives:
-                self.archive_list.addItem(folder.name)
+                try:
+                    found, problem = read_manifest(folder), ""
+                except ValueError as exc:
+                    found, problem = None, str(exc)
+                self.manifests[folder] = (found, problem)
+                item = QListWidgetItem(self.archive_label(folder, found, problem))
+                if found is not None:
+                    result = found.get("result", "pending")
+                    item.setToolTip(f"{found.get('operation', 'Backup')}: "
+                                    f"{ARCHIVE_RESULTS.get(result, result)}")
+                self.archive_list.addItem(item)
             if self.archives:
                 self.archive_list.setCurrentRow(0)
+
+        @staticmethod
+        def archive_label(folder: Path, manifest, problem: str) -> str:
+            """Folder name, operation, and file count. The outcome in a word or two."""
+            if problem:
+                return f"{folder.name}    (manifest unreadable)"
+            if manifest is None:
+                return folder.name
+            label = (f"{folder.name}    {manifest.get('operation', 'Backup')}, "
+                     f"{len(manifest['files'])} file(s)")
+            result = manifest.get("result", "pending")
+            if result == "pending":
+                label += "    (outcome not recorded)"
+            elif result != "complete":
+                label += f"    ({result})"
+            return label
+
+        def manifest_for(self, path: Path):
+            return self.manifests.get(path.parent, (None, ""))
+
+        def describe_origin(self, path: Path) -> str:
+            manifest, problem = self.manifest_for(path)
+            if problem:
+                return f"{problem} Files in this folder are matched to open files by name."
+            if manifest is None:
+                return ("This backup was made before version 2.2 and has no manifest, "
+                        "so it is matched to an open file by name.")
+            when = str(manifest.get("timestamp", "")).replace("T", " ")
+            text = f"{manifest.get('operation', 'Backup')} on {when}"
+            if manifest.get("database"):
+                text += f", database {manifest['database']}"
+            result = manifest.get("result", "pending")
+            text += f": {ARCHIVE_RESULTS.get(result, result)}."
+            entry = manifest_entry(manifest, path.name)
+            if entry is None:
+                return text + " The manifest does not list this file."
+            text += f" This copy came from {entry['original']}."
+            outcome = entry.get("outcome")
+            if result != "complete" and outcome:
+                text += f" Afterwards that file was {FILE_OUTCOMES.get(outcome, outcome)}."
+            return text
 
         def show_archive(self, row: int):
             self.file_list.clear()
             self.table.setRowCount(0)
             self.restore_btn.setEnabled(False)
+            self.origin.setText("")
             if row < 0 or row >= len(self.archives):
                 return
             folder = self.archives[row]
+            manifest, _problem = self.manifests.get(folder, (None, ""))
             files = sorted(
-                (path for path in folder.iterdir() if path.is_file()),
+                (path for path in folder.iterdir()
+                 if path.is_file() and path.name.casefold() != MANIFEST_NAME),
                 key=lambda path: path.name.casefold())
             for path in files:
-                item = QListWidgetItem(f"{path.name}  ({path.stat().st_size} bytes)")
+                item = QListWidgetItem(f"{path.name}  ({path.stat().st_size:,} bytes)")
                 item.setData(Qt.UserRole, str(path))
+                entry = manifest_entry(manifest, path.name)
+                if entry is not None:
+                    item.setToolTip(f"Copied from {entry['original']}")
                 self.file_list.addItem(item)
             if files:
                 self.file_list.setCurrentRow(0)
@@ -2566,36 +3216,39 @@ def run_gui(paths):
             return Path(item.data(Qt.UserRole))
 
         def matching_doc(self, path: Path):
-            found = [
-                doc for doc in self.docs
-                if doc.path.name.casefold() == path.name.casefold()
-            ]
-            if len(found) == 1:
-                return found[0]
-            return None
+            """The open document for a backed-up file, and how it was matched."""
+            manifest, _problem = self.manifest_for(path)
+            return match_open_document(path, self.docs, manifest)
 
         def show_diff(self):
             self.table.setRowCount(0)
             self.restore_btn.setEnabled(False)
             path = self.selected_file()
             if path is None:
+                self.origin.setText("")
                 return
+            self.origin.setText(self.describe_origin(path))
             if path.suffix.casefold() != ".lnc":
                 self.summary.setText(
                     "That backup is not a name file. It is listed so you can see it "
                     "was archived. Restore it from Licensing, not from here.")
                 return
-            doc = self.matching_doc(path)
+            doc, how = self.matching_doc(path)
             if doc is None:
-                self.summary.setText(
-                    f"Open a file named {path.name} before comparing or restoring it.")
+                entry = manifest_entry(self.manifest_for(path)[0], path.name)
+                if entry is not None:
+                    wanted = entry["original"]
+                    self.summary.setText(
+                        f"Open {wanted} before comparing or restoring this copy.")
+                else:
+                    self.summary.setText(
+                        f"Open one file named {path.name} before comparing or restoring it.")
                 return
             try:
-                archived = LncDoc(path)
+                rows, identical = compare_with_backup(doc, path)
             except (OSError, UnicodeError) as exc:
                 self.summary.setText(f"Could not read the backup:\n{exc}")
                 return
-            rows = diff_documents(doc, archived)
             self.table.setRowCount(len(rows))
             for index, row in enumerate(rows):
                 values = [
@@ -2609,20 +3262,23 @@ def run_gui(paths):
                 for column, value in enumerate(values):
                     self.table.setItem(index, column, QTableWidgetItem(value))
             self.table.resizeColumnsToContents()
-            if rows:
-                self.summary.setText(f"{len(rows)} difference(s) against the open file.")
-            else:
-                self.summary.setText("The open file matches this backup.")
+            text = describe_backup_match(len(rows), identical)
+            if doc.dirty:
+                text += " The open file has unsaved changes, and the comparison includes them."
+            if how == "name" and manifest_entry(self.manifest_for(path)[0], path.name):
+                text += (f" It is compared with {doc.path}, which has the same name but is "
+                         "not the file this copy came from.")
+            self.summary.setText(text)
             self.restore_btn.setEnabled(True)
 
         def restore(self):
             path = self.selected_file()
-            doc = None if path is None else self.matching_doc(path)
+            doc = None if path is None else self.matching_doc(path)[0]
             if path is None or doc is None:
                 return
             answer = QMessageBox.question(
                 self, APP_NAME,
-                f"Replace the open {doc.path.name} with the copy from "
+                f"Replace the open {doc.path} with the copy {path.name} from "
                 f"{path.parent.name}?\n\nNothing is written until you Save or Deploy.",
                 QMessageBox.Yes | QMessageBox.No)
             if answer != QMessageBox.Yes:
@@ -2889,12 +3545,14 @@ def run_gui(paths):
             preflight = game_write_preflight("Save", [doc.path for doc in dirty], GAME_DB_ROOT)
             if preflight.game_paths and not confirm_game_write(
                     self, preflight, "Save these files into the game folder?",
-                    "A copy of each existing game file is stored under backups first."):
+                    GAME_WRITE_NOTE):
                 return
             try:
                 archive = save_documents(dirty, GAME_DB_ROOT, BACKUP_ROOT)
             except (OSError, UnicodeError) as exc:
-                QMessageBox.critical(self, APP_NAME, f"Save failed:\n{exc}")
+                if isinstance(exc, WriteError) and exc.files:
+                    self.reload_views()     # a file left written is now clean
+                report_write_failure(self, "Save", exc)
                 return
             self.reload_views()
             if archive is not None:
@@ -3302,7 +3960,7 @@ def run_gui(paths):
                     "None of the open files are FM27_Club_Names.lnc or FM27_Fix.lnc.")
                 return
             pairs = [(seen[name], targets[name]) for name in NAME_FILES if name in seen]
-            note = "A copy of each existing game file is stored under backups first."
+            note = GAME_WRITE_NOTE
             if skipped:
                 note += "\n\nLeft untouched:\n" + "\n".join(skipped)
             preflight = game_write_preflight("Deploy", [dest for _doc, dest in pairs])
@@ -3311,7 +3969,9 @@ def run_gui(paths):
             try:
                 archive = deploy_documents(pairs, BACKUP_ROOT)
             except (OSError, UnicodeError) as exc:
-                QMessageBox.critical(self, APP_NAME, f"Deploy failed:\n{exc}")
+                if isinstance(exc, WriteError) and exc.files:
+                    self.reload_views()     # a file left written is now clean
+                report_write_failure(self, "Deploy", exc)
                 return
             self.reload_views()
             where = str(archive) if archive is not None else "no previous file to copy"
@@ -3403,7 +4063,7 @@ def run_gui(paths):
             text = pack_to_csv(pack) if as_csv else pack_to_json(pack)
             data = text.encode("utf-8-sig" if as_csv else "utf-8")
             try:
-                Path(path).write_bytes(data)
+                write_file_atomically(Path(path), data)
             except OSError as exc:
                 QMessageBox.critical(self, APP_NAME, f"Could not write the pack:\n{exc}")
                 return

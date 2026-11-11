@@ -1,13 +1,15 @@
-"""Release 2.1 checks for the name editor engine and a headless window smoke test.
+"""Release 2.2 checks for the name editor engine and headless window tests.
 
 The Steam database is only read, and only when it is present. Writes use
 temporary copies.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -34,6 +36,23 @@ def close_window(win) -> None:
     for doc in win.docs:
         doc.mark_clean()
     win.close()
+
+
+def failing_replace(*targets):
+    """An os.replace that refuses to replace these paths and works for every other."""
+    real = os.replace
+    keys = {os.path.normcase(str(path)) for path in targets}
+
+    def replace(src, dst):
+        if os.path.normcase(str(dst)) in keys:
+            raise PermissionError(13, "Access is denied", str(dst))
+        return real(src, dst)
+
+    return replace
+
+
+def staging_files(folder: Path) -> list[str]:
+    return sorted(path.name for path in folder.iterdir() if path.name.endswith(".writing"))
 
 
 class LegalNames(unittest.TestCase):
@@ -1099,6 +1118,442 @@ class Session2Window(unittest.TestCase):
             self.assertEqual(
                 model.headerData(0, Qt.Horizontal, Qt.ToolTipRole), editor.FILE_SECTION_HINT)
         self.assertIn("File sections", [label.text() for label in win.findChildren(QLabel)])
+
+
+class Session3Writes(unittest.TestCase):
+    """Release 2.2, session 3: files are replaced one at a time, with a way back (F6)."""
+
+    CLUB = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+    FIX = '"COMP_LONG_NAME_CHANGE"\t9\t"Cup"\t""\n'
+
+    def _game(self, tmp):
+        """Both name files in a stand-in for lnc\\all, opened and edited."""
+        root = Path(tmp)
+        folder = root / "db" / "2700" / "lnc" / "all"
+        folder.mkdir(parents=True)
+        write_lnc(folder / "FM27_Club_Names.lnc", self.CLUB)
+        write_lnc(folder / "FM27_Fix.lnc", self.FIX)
+        docs = editor.open_documents(
+            [folder / "FM27_Club_Names.lnc", folder / "FM27_Fix.lnc"])
+        editor.try_set_name(docs[0].names()[0], "Alpha United")
+        editor.try_set_name(docs[1].names()[0], "Cup Final")
+        return root, folder, docs
+
+    def test_atomic_write_leaves_the_file_alone_on_failure(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "names.lnc"
+            path.write_bytes(b"old")
+            editor.write_file_atomically(path, b"new")
+            self.assertEqual(path.read_bytes(), b"new")
+            failures = (
+                ("replace", PermissionError(13, "Access is denied")),
+                ("fsync", OSError(28, "No space left on device")),
+            )
+            for name, error in failures:
+                with self.subTest(name):
+                    with patch.object(editor.os, name, side_effect=error):
+                        with self.assertRaises(OSError):
+                            editor.write_file_atomically(path, b"newer")
+                    self.assertEqual(path.read_bytes(), b"new")
+                    self.assertEqual([item.name for item in Path(tmp).iterdir()], ["names.lnc"])
+
+    def test_a_replacement_that_fails_leaves_the_destination(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, folder, docs = self._game(tmp)
+            club = docs[0]
+            original = club.path.read_bytes()
+            with patch.object(editor.os, "replace", side_effect=failing_replace(club.path)):
+                with self.assertRaises(editor.WriteError) as caught:
+                    editor.save_documents([club], root / "db", root / "backups")
+            error = caught.exception
+            self.assertEqual(club.path.read_bytes(), original)
+            self.assertTrue(club.dirty)
+            self.assertEqual(staging_files(folder), [])
+            self.assertEqual([write.state for write in error.files], ["failed"])
+            self.assertIn("stopped before any file was replaced", str(error))
+            manifest = editor.read_manifest(error.archive)
+            self.assertEqual(manifest["result"], "stopped")
+            self.assertEqual(manifest["files"][0]["outcome"], "failed")
+
+    def test_second_replacement_failure_puts_the_first_back(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, folder, docs = self._game(tmp)
+            originals = {doc.path: doc.path.read_bytes() for doc in docs}
+            pairs = [(doc, doc.path) for doc in docs]
+            with patch.object(editor.os, "replace", side_effect=failing_replace(docs[1].path)):
+                with self.assertRaises(editor.WriteError) as caught:
+                    editor.deploy_documents(pairs, root / "backups")
+            error = caught.exception
+            for path, data in originals.items():
+                self.assertEqual(path.read_bytes(), data)
+            self.assertEqual(staging_files(folder), [])
+            self.assertEqual([write.state for write in error.files], ["restored", "failed"])
+            self.assertTrue(all(doc.dirty for doc in docs))
+            self.assertEqual([doc.path for doc in docs], list(originals))
+            text = str(error)
+            self.assertIn("one at a time, per file", text)
+            self.assertNotIn("atomic", text)
+            self.assertIn(f"{docs[0].path}\n    put back as it was", text)
+            self.assertIn(f"{docs[1].path}\n    could not be replaced", text)
+            manifest = editor.read_manifest(error.archive)
+            self.assertEqual(manifest["result"], "rolled back")
+            self.assertEqual(
+                {entry["archived"]: entry["outcome"] for entry in manifest["files"]},
+                {"FM27_Club_Names.lnc": "restored", "FM27_Fix.lnc": "failed"})
+            for entry in manifest["files"]:
+                self.assertEqual(
+                    (error.archive / entry["archived"]).read_bytes(),
+                    originals[Path(entry["original"])])
+
+    def test_a_new_file_is_removed_when_a_later_file_fails(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, folder, docs = self._game(tmp)
+            target = root / "db" / "2730" / "lnc" / "all"
+            target.mkdir(parents=True)
+            write_lnc(target / "FM27_Fix.lnc", self.FIX)
+            pairs = [(docs[0], target / "FM27_Club_Names.lnc"),
+                     (docs[1], target / "FM27_Fix.lnc")]
+            with patch.object(editor.os, "replace",
+                              side_effect=failing_replace(target / "FM27_Fix.lnc")):
+                with self.assertRaises(editor.WriteError) as caught:
+                    editor.deploy_documents(pairs, root / "backups")
+            self.assertEqual([write.state for write in caught.exception.files],
+                             ["removed", "failed"])
+            self.assertFalse((target / "FM27_Club_Names.lnc").exists())
+            self.assertEqual(staging_files(target), [])
+            self.assertEqual(docs[0].path, folder / "FM27_Club_Names.lnc")
+            self.assertIn("removed again (it did not exist before)", str(caught.exception))
+
+    def test_a_file_that_cannot_be_put_back_is_reported(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, folder, docs = self._game(tmp)
+            club, fix = docs[0].path, docs[1].path
+            real = os.replace
+            calls = []
+
+            def replace(src, dst):
+                if Path(dst) == fix:
+                    raise PermissionError(13, "Access is denied", str(dst))
+                if Path(dst) == club:
+                    calls.append(src)
+                    if len(calls) > 1:          # the second call is the put-back
+                        raise PermissionError(13, "Access is denied", str(dst))
+                return real(src, dst)
+
+            payload = docs[0].to_bytes()
+            with patch.object(editor.os, "replace", side_effect=replace):
+                with self.assertRaises(editor.WriteError) as caught:
+                    editor.deploy_documents([(doc, doc.path) for doc in docs], root / "backups")
+            error = caught.exception
+            self.assertEqual([write.state for write in error.files], ["left written", "failed"])
+            self.assertEqual(club.read_bytes(), payload)
+            self.assertFalse(docs[0].dirty)     # the file on disk now holds what the editor has
+            self.assertTrue(docs[1].dirty)
+            self.assertIn(f"The previous version is in {error.archive}", str(error))
+            self.assertEqual(staging_files(folder), [])
+            self.assertEqual(editor.read_manifest(error.archive)["result"], "partly written")
+
+    def test_a_file_changed_since_it_was_read_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, folder, docs = self._game(tmp)
+            doc = docs[0]
+            write_lnc(doc.path, self.CLUB.replace("Alpha", "Steam update"))
+            outside = doc.path.read_bytes()
+            attempts = {
+                "save": lambda: editor.save_documents([doc], root / "db", root / "backups"),
+                "deploy": lambda: editor.deploy_documents([(doc, doc.path)], root / "backups"),
+                "save beside": lambda: doc.save(),
+            }
+            for label, attempt in attempts.items():
+                with self.subTest(label):
+                    with self.assertRaises(editor.ExternalChangeError) as caught:
+                        attempt()
+                    self.assertEqual(caught.exception.paths, [doc.path])
+                    self.assertIn("Nothing was written", str(caught.exception))
+                    self.assertEqual(doc.path.read_bytes(), outside)
+                    self.assertTrue(doc.dirty)
+            self.assertFalse((root / "backups").exists())
+            self.assertEqual(
+                sorted(path.name for path in folder.iterdir()),
+                ["FM27_Club_Names.lnc", "FM27_Fix.lnc"])
+            doc.path.unlink()
+            with self.assertRaises(editor.ExternalChangeError):
+                editor.save_documents([doc], root / "db", root / "backups")
+            self.assertFalse(doc.path.exists())
+            # A deploy over a file the document was not opened from has no earlier
+            # reading to compare with. The file there is backed up, then replaced.
+            other = root / "db" / "2730" / "lnc" / "all" / "FM27_Fix.lnc"
+            other.parent.mkdir(parents=True)
+            write_lnc(other, self.FIX.replace("Cup", "Other"))
+            before = other.read_bytes()
+            archive = editor.deploy_documents([(docs[1], other)], root / "backups")
+            self.assertEqual((archive / "FM27_Fix.lnc").read_bytes(), before)
+            self.assertEqual(docs[1].path, other)
+            self.assertFalse(docs[1].dirty)
+
+    def test_two_documents_cannot_write_one_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _folder, docs = self._game(tmp)
+            twin = editor.LncDoc(docs[0].path)
+            editor.try_set_name(twin.names()[0], "Other")
+            original = docs[0].path.read_bytes()
+            with self.assertRaises(editor.WriteError) as caught:
+                editor.save_documents([docs[0], twin], root / "db", root / "backups")
+            self.assertEqual(caught.exception.files, [])
+            self.assertEqual(docs[0].path.read_bytes(), original)
+            self.assertFalse((root / "backups").exists())
+
+
+class Session3Archive(unittest.TestCase):
+    """Release 2.2, session 3: backup manifests, matching, and the honest diff."""
+
+    def test_manifest_describes_each_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            club = root / "db" / "2700" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            greek = root / "db" / "2700" / "lnc" / "greek" / "person_name_changes.lnc"
+            club.parent.mkdir(parents=True)
+            greek.parent.mkdir(parents=True)
+            write_lnc(club, '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n')
+            greek.write_bytes(b"\xff\xfe" + (
+                '"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"ος"\t2\t"ης"\r\n'
+            ).encode("utf-16-le"))
+            os.utime(club, (1_700_000_000, 1_700_000_000))
+            originals = {club: club.read_bytes(), greek: greek.read_bytes()}
+            docs = editor.open_documents([club, greek])
+            editor.try_set_name(docs[0].names()[0], "Alpha United")
+            editor.try_set_name(docs[1].persons()[0], "ου")
+            archive = editor.save_documents(docs, root / "db", root / "backups")
+            manifest = editor.read_manifest(archive)
+            self.assertEqual(manifest["format"], "fm-name-editor-archive")
+            self.assertEqual(manifest["version"], 1)
+            self.assertEqual(manifest["operation"], "Save")
+            self.assertEqual(manifest["database"], "2700")
+            self.assertEqual(manifest["editor_version"], editor.VERSION)
+            self.assertEqual(manifest["result"], "complete")
+            datetime.fromisoformat(manifest["timestamp"])
+            entries = {entry["original"]: entry for entry in manifest["files"]}
+            self.assertEqual(set(entries), {str(club), str(greek)})
+            for path, data in originals.items():
+                entry = entries[str(path)]
+                self.assertEqual((archive / entry["archived"]).read_bytes(), data)
+                self.assertEqual(entry["size"], len(data))
+                self.assertEqual(entry["sha256"], hashlib.sha256(data).hexdigest())
+                self.assertTrue(entry["bom"])
+                self.assertEqual(entry["outcome"], "written")
+            self.assertEqual(entries[str(club)]["encoding"], "utf-8")
+            self.assertEqual(entries[str(greek)]["encoding"], "utf-16-le")
+            self.assertEqual((archive / "FM27_Club_Names.lnc").stat().st_mtime, 1_700_000_000)
+            self.assertEqual(staging_files(archive), [])
+            # A folder from before 2.2 has no manifest. A broken one is reported.
+            older = root / "backups" / "20250101-000000"
+            older.mkdir()
+            self.assertIsNone(editor.read_manifest(older))
+            (older / "manifest.json").write_text("{not json", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                editor.read_manifest(older)
+            (older / "manifest.json").write_text('{"format": "other"}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                editor.read_manifest(older)
+
+    def test_same_name_sources_are_told_apart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            live = root / "db" / "2700" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            work = root / "db" / "2400" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            for path, name in ((live, "Alpha"), (work, "Beta")):
+                path.parent.mkdir(parents=True)
+                write_lnc(path, f'"CLUB_NAME_CHANGE"\t1\t"{name}"\t""\n')
+            archive = editor.archive_files([live, work], root / "backups", "Save")
+            manifest = editor.read_manifest(archive)
+            self.assertEqual(
+                [entry["archived"] for entry in manifest["files"]],
+                ["FM27_Club_Names.lnc", "FM27_Club_Names-2.lnc"])
+            self.assertEqual(manifest["database"], "2400, 2700")
+            self.assertIn(b"Beta", (archive / "FM27_Club_Names-2.lnc").read_bytes())
+            docs = editor.open_documents([work, live])
+            for entry, expected in zip(manifest["files"], (live, work)):
+                doc, how = editor.match_open_document(archive / entry["archived"], docs, manifest)
+                self.assertEqual((doc.path, how), (expected, "path"))
+            # Without a manifest, two open files with one name cannot be told apart.
+            copy = archive / "FM27_Club_Names.lnc"
+            self.assertEqual(editor.match_open_document(copy, docs, None), (None, ""))
+            self.assertEqual(editor.match_open_document(copy, docs[:1], None), (docs[0], "name"))
+
+    def test_backup_comparison_separates_names_from_bytes(self):
+        rows = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        cases = {
+            "same.lnc": (rows, 0, True, "Supported names match, and the files are byte-identical."),
+            "comment.lnc": ("#An older comment\n" + rows, 0, False,
+                            "Supported names match, but the files are not byte-identical"),
+            "name.lnc": (rows.replace("Alpha", "Alpha Old"), 1, False,
+                         "1 difference(s) in supported names"),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "FM27_Club_Names.lnc"
+            write_lnc(path, rows)
+            doc = editor.LncDoc(path)
+            for name, (text, count, identical, phrase) in cases.items():
+                with self.subTest(name):
+                    copy = root / name
+                    write_lnc(copy, text)
+                    diff, same = editor.compare_with_backup(doc, copy)
+                    self.assertEqual(len(diff), count)
+                    self.assertIs(same, identical)
+                    self.assertIn(phrase, editor.describe_backup_match(len(diff), same))
+            doc.encoding = "cp1252"
+            editor.try_set_name(doc.names()[0], "Ā")
+            diff, same = editor.compare_with_backup(doc, root / "same.lnc")
+            self.assertIsNone(same)
+            self.assertIn("could not be made", editor.describe_backup_match(0, None))
+
+    def test_licensing_rename_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            version = root / "2700"
+            rel = editor.MASK_FILES[-1]
+            src = version / rel
+            src.parent.mkdir(parents=True)
+            src.write_bytes(b"mask-bytes")
+            disabled = src.with_name(src.name + ".disabled")
+            disabled.write_bytes(b"older-mask")
+            rows = {row["name"]: row for row in editor.licence_inventory(version)}
+            self.assertEqual(rows[rel.as_posix()]["state"], "both")
+            with self.assertRaises(FileExistsError):
+                editor.toggle_licence(version, rel, root / "backups")
+            self.assertEqual(src.read_bytes(), b"mask-bytes")
+            self.assertEqual(disabled.read_bytes(), b"older-mask")
+            self.assertFalse((root / "backups").exists())
+            disabled.unlink()
+            self.assertEqual(editor.toggle_licence(version, rel, root / "backups"), "disabled")
+            archive = editor.list_archives(root / "backups")[0]
+            manifest = editor.read_manifest(archive)
+            self.assertEqual(manifest["operation"], "Disable licensing file")
+            self.assertEqual(manifest["database"], "2700")
+            self.assertEqual(manifest["result"], "complete")
+            entry = manifest["files"][0]
+            self.assertEqual(entry["original"], str(src))
+            self.assertIsNone(entry["encoding"])
+            self.assertEqual(entry["outcome"], "renamed")
+            self.assertEqual(staging_files(src.parent), [])
+
+
+class Session3Window(unittest.TestCase):
+    """Release 2.2, session 3: the window reports each file and matches backups by path."""
+
+    def _window(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        return win
+
+    def test_a_failed_deploy_says_where_each_file_stands(self):
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            game = root / "db"
+            folder = game / "2700" / "lnc" / "all"
+            folder.mkdir(parents=True)
+            club, fix = folder / "FM27_Club_Names.lnc", folder / "FM27_Fix.lnc"
+            write_lnc(club, Session3Writes.CLUB)
+            write_lnc(fix, Session3Writes.FIX)
+            originals = {club: club.read_bytes(), fix: fix.read_bytes()}
+            with patch.object(editor, "GAME_DB_ROOT", game), \
+                    patch.object(editor, "BACKUP_ROOT", root / "backups"):
+                win.refresh_versions()
+                self.assertTrue(win.load([str(club), str(fix)]))
+                editor.try_set_name(win.docs[0].names()[0], "Alpha United")
+                editor.try_set_name(win.docs[1].names()[0], "Cup Final")
+                with patch.object(editor, "football_manager_running", return_value=[]), \
+                        patch.object(QMessageBox, "question",
+                                     return_value=QMessageBox.Yes) as asked, \
+                        patch.object(QMessageBox, "critical") as shown, \
+                        patch.object(editor.os, "replace", side_effect=failing_replace(fix)):
+                    win.deploy()
+            self.assertIn("one at a time", asked.call_args.args[2])
+            self.assertEqual(shown.call_count, 1)
+            text = shown.call_args.args[2]
+            self.assertIn("Deploy stopped part-way", text)
+            self.assertIn(f"{club}\n    put back as it was", text)
+            self.assertIn(f"{fix}\n    could not be replaced", text)
+            for path, data in originals.items():
+                self.assertEqual(path.read_bytes(), data)
+            self.assertTrue(all(doc.dirty for doc in win.docs))
+            self.assertEqual(staging_files(folder), [])
+
+    def test_save_refuses_a_file_changed_on_disk(self):
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, Session3Writes.CLUB)
+            self.assertTrue(win.load([str(path)]))
+            editor.try_set_name(win.docs[0].names()[0], "Alpha United")
+            write_lnc(path, Session3Writes.CLUB.replace("Alpha", "Changed elsewhere"))
+            outside = path.read_bytes()
+            with patch.object(QMessageBox, "warning") as warned:
+                win.save()
+            self.assertEqual(warned.call_count, 1)
+            self.assertIn("changed on disk", warned.call_args.args[2])
+            self.assertIn(str(path), warned.call_args.args[2])
+            self.assertEqual(path.read_bytes(), outside)
+            self.assertTrue(win.docs[0].dirty)
+            self.assertEqual(sorted(item.name for item in Path(tmp).iterdir()), ["mine.lnc"])
+
+    def test_backups_window_matches_by_original_path(self):
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            live = root / "db" / "2700" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            work = root / "work" / "FM27_Club_Names.lnc"
+            for path, name in ((live, "Alpha"), (work, "Work")):
+                path.parent.mkdir(parents=True)
+                write_lnc(path, f'"CLUB_NAME_CHANGE"\t1\t"{name}"\t""\n')
+            backups = root / "backups"
+            archive = editor.archive_files([live], backups, "Deploy")
+            editor.finish_manifest(archive, "complete")
+            stored = (archive / live.name).read_bytes()
+            write_lnc(live, '#A heading the copy lacks\n"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n')
+            self.assertTrue(win.load([str(work), str(live)]))
+            opened = []
+            with patch.object(editor, "BACKUP_ROOT", backups), \
+                    patch.object(QDialog, "exec", lambda dialog: opened.append(dialog) or 0):
+                win.open_backups()
+            dialog = opened[0]
+            self.assertIn("Deploy, 1 file(s)", dialog.archive_list.item(0).text())
+            self.assertEqual(dialog.file_list.count(), 1)       # manifest.json is not listed
+            self.assertIn(f"This copy came from {live}", dialog.origin.text())
+            self.assertIn("Supported names match, but the files are not byte-identical",
+                          dialog.summary.text())
+            self.assertTrue(dialog.restore_btn.isEnabled())
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                dialog.restore()
+            by_path = {doc.path: doc for doc in win.docs}
+            self.assertEqual(by_path[live].to_bytes(), stored)
+            self.assertTrue(by_path[live].dirty)
+            self.assertFalse(by_path[work].dirty)
 
 
 if __name__ == "__main__":

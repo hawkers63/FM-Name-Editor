@@ -1,14 +1,14 @@
 # Changelog
 
-Release: 2.1
+Release: 2.2
 Status: released
-Application on disk: 2.1
+Application on disk: 2.2
 
-The program on disk reports `VERSION = "2.1"`. The launcher banner says v2.1.
+The program on disk reports `VERSION = "2.2"`. The launcher banner says v2.2.
 
-## Unreleased — Release 2.2 in progress
+## 2.2 (11 November 2026)
 
-Not released. `VERSION` still reads 2.1. Sessions 1 and 2 of Release 2.2 were done on 11 November 2026; session 3 follows.
+Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. A correctness and write-safety release built from the review of 2.1 (findings F1–F6). It adds no new features beyond what those repairs need; the window looks the same apart from a few labels and the Backups window.
 
 Session 1 — correctness and write safety, part one (review findings F1, F2, F3):
 
@@ -25,6 +25,18 @@ Session 2 — correctness and write safety, part two (review findings F4 and F5,
 - **Opening files is all or nothing.** Every file is read first. If one cannot be read or decoded, a message names it and the files already open stay open. Before, a bad encoding could escape the error handler and a failed open emptied the workspace. The import dialog now catches decoding errors too.
 - **Plainer labels.** "Missing short name" and "Missing code" are now "No short-name override" and "No code override". "Section" is now "File section", with a hint that it is the comment heading in the file and not a reliable country. The unsaved count includes restored and removed rows, and says "file differs from disk" when only comments or layout differ.
 - Tests: 50, up from 33. New cover for restore baselines and pending state, repeated and failed restores, Greek rule revert in every order, all-or-nothing opening, the close prompt after a restore, and the new labels.
+
+Session 3 — correctness and write safety, part three (review finding F6, backup identity, and the backup comparison):
+
+- **Each file is replaced in one step.** Every write goes to a temporary file beside its destination, is flushed to disk, and is swapped in with a single `os.replace`. A failure leaves that file as it was, and the temporary file is removed. Save, Deploy, backup copies, the `.bak` beside an outside file, and pack export all take this route.
+- **A file changed on disk is not overwritten.** Before anything is replaced, each file is read again and compared with the bytes the editor read when it opened the file, or last wrote it. If another program changed or removed it, nothing is written, and the message names the file and explains how to carry your edits across. A Deploy over a file that is not the one you opened has nothing to compare with; it is backed up and replaced, as before.
+- **A failed write puts the earlier files back.** Save and Deploy replace files one at a time, not as one batch. If a later file cannot be replaced (for example, because another program holds it open), the files already replaced are put back from the copy taken before the write, a newly created file is removed again, and the message lists every file and where it stands. If a file cannot be put back, the message says so and names the backup copy that holds its previous version.
+- **Backups describe themselves.** Each backup folder now holds a `manifest.json` recording the operation, the time, the database folder, the editor version, how the operation ended, and for each file its original path, size, SHA-256, encoding, BOM, date, and what happened to it. Two files with the same name get separate copies, and every copy keeps its original's date.
+- **The Backups window matches by path.** A backed-up file is compared with, and restored into, the open file it came from, even when another open file has the same name. Backups made before 2.2 have no manifest and are matched by name, as before, and the window says so. Each backup in the list shows its operation, its file count, and any ending other than complete. `manifest.json` itself is not listed.
+- **An honest comparison.** The Backups window reports differences in supported names and, separately, whether the files are byte-identical. A changed comment, blank line, or line ending no longer reads as a match.
+- **Licensing toggle.** Its backup copy takes the same route and gets a manifest. The rename is one step inside one folder and never replaces a file: when both a name-mask file and its `.disabled` copy exist, the toggle refuses and the inspector shows "Present, and a .disabled copy too".
+- Tests: 64, up from 50. New cover for a single-file write that fails, a failed first or second replacement, removal of a newly created file, a file that cannot be put back, files changed or removed on disk, two open files with one destination, manifests for UTF-8 and UTF-16 files, same-name copies, matching by path, the two-part comparison, the licensing rename, and window tests for a failed Deploy, a refused Save, and the Backups window.
+
 Housekeeping:
 
 - **Proprietary licence.** A `LICENSE` file now states that FM Name Editor is copyright Mark Hawksworth (hawkers63), all rights reserved, with no copying, distribution, modification, reverse engineering, sublicensing or commercial use without prior written consent. `fm_name_editor.py` carries the matching copyright banner.

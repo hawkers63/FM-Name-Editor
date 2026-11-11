@@ -8,7 +8,7 @@ A single-file PySide6 desktop editor for Football Manager 27 `.lnc` name files, 
 | --- | --- |
 | `fm_name_editor.py` | The whole program. Engine first, GUI inside `run_gui()` with lazy Qt imports. `VERSION` near the top. |
 | `FM Name Editor.bat` | Launcher. Finds `python` on PATH, falls back to the 3.11 install, offers to pip-install PySide6. Version banner in its header comment. |
-| `tests/test_engine.py` | Standard-library `unittest`. Temporary fixtures plus two read-only round trips of the live game files and one offscreen window smoke test. |
+| `tests/test_engine.py` | Standard-library `unittest`. Temporary fixtures plus two read-only round trips of the live game files and offscreen window tests. |
 | `CHANGELOG.md`, `README.md` | Public. Each carries a `Release / Status / Application on disk` header that must agree with `VERSION`. |
 | `roadmap.md` | Private. The numbered session plan and what each session must deliver. Tells you which session is next. |
 | `memory.md` | Private. Measured facts about this PC's game files, decisions already made, and the defect ledger. |
@@ -36,6 +36,7 @@ A release closes when the last session in it is done. Then, in one commit: bump 
 - **Byte preservation.** A line that is not edited is written back byte for byte. BOM, encoding (UTF-8 or UTF-16 LE), and each line's own ending survive. A name edit replaces only the quoted span.
 - **Unsaved means the bytes differ.** `LncDoc.dirty` compares the working lines with `baseline_bytes`, the file as last read or written. Change lines through `Entry.set_name` and `Entry.set_source`, or call `doc.touch()` after any other change to `entries`, a line's text, or its ending. After a successful write call `doc.mark_clean(payload)` with the bytes written. A restore keeps the disk baseline (`replace_working`) and never resets the originals.
 - **Preview, then memory, then disk.** Bulk tools, imports, replace, and restore change memory only. Only Save and Deploy write files, and only after a backup.
+- **One write path.** Never write a file with `write_bytes` or `open(..., "w")`. One file goes through `write_file_atomically` (a temporary sibling, flushed, then `os.replace`). Documents go through `write_documents` (via `save_documents`, `deploy_documents`, or `LncDoc.save`): it refuses a file that changed on disk since it was read (`ExternalChangeError`), backs up game files into `backups\<stamp>\` with a `manifest.json`, replaces files one at a time, and puts already-replaced files back if a later one fails (`WriteError` lists each file's state). Never describe a set of files as written atomically.
 - **The game tree is sacred.** Writes outside `C:\FM Name Editor` go only to the paths named in `memory.md`, after an archive copy and a confirmation. Never delete game files. Never use the Steam tree as a write fixture in tests. Refuse to write game files while `fm.exe` is running; never stop that process.
 - **One dependency.** PySide6 only. No second GUI toolkit, no charts, no AI SDK, no service. Ask before adding any package.
 - **One module.** Keep the engine and GUI in `fm_name_editor.py`, engine helpers free of Qt imports so the tests can import them.
