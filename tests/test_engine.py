@@ -6,15 +6,43 @@ temporary copies.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import fm_name_editor as editor
+
+_SANDBOX: list = []
+
+
+def setUpModule():
+    """Point every folder the editor writes to at a temporary folder for the whole run.
+
+    Tests that need their own folders still patch these; this only makes
+    sure nothing reaches the real backups, profiles, or state folders.
+    """
+    sandbox = tempfile.TemporaryDirectory()
+    _SANDBOX.append(sandbox)
+    root = Path(sandbox.name)
+    for name in ("BACKUP_ROOT", "PROFILE_ROOT", "STATE_ROOT"):
+        patcher = mock.patch.object(editor, name, root / name.split("_")[0].lower())
+        patcher.start()
+        _SANDBOX.append(patcher)
+
+
+def tearDownModule():
+    for item in reversed(_SANDBOX):
+        if isinstance(item, tempfile.TemporaryDirectory):
+            item.cleanup()
+        else:
+            item.stop()
+    _SANDBOX.clear()
 
 BOM = b"\xef\xbb\xbf"
 LIVE_DIR = Path(
@@ -32,10 +60,19 @@ def write_lnc(path: Path, text: str, bom: bool = True) -> None:
 
 
 def close_window(win) -> None:
-    """Close a test window without the unsaved-changes prompt."""
+    """Close and delete a test window, without the unsaved-changes prompt.
+
+    Deleting matters: each new window sets the application style sheet again,
+    which restyles every widget still alive, so closed windows left around
+    make every later window test slower.
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent
+
     for doc in win.docs:
         doc.mark_clean()
     win.close()
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def failing_replace(*targets):
@@ -1554,6 +1591,457 @@ class Session3Window(unittest.TestCase):
             self.assertEqual(by_path[live].to_bytes(), stored)
             self.assertTrue(by_path[live].dirty)
             self.assertFalse(by_path[work].dirty)
+
+
+class Session4Profiles(unittest.TestCase):
+    """Release 2.3, session 4: spelling profiles that outlive Save and Deploy."""
+
+    STOCK = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t740\t"Wolverhamption Wanderers"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t708\t"Sheffield United"\t""\n'
+        '"CLUB_NAME_CHANGE"\t1\t"Arsenal"\t""\n'
+    )
+    WOLVES = ("CLUB_NAME_CHANGE", "740", "")
+    SHEFF = ("CLUB_SHORT_NAME_CHANGE", "708", "")
+    CODE = ("CLUB_3LETTER_NAME_CHANGE", "740", "")
+
+    def _club(self, folder: Path, text: str | None = None) -> editor.LncDoc:
+        path = folder / "FM27_Club_Names.lnc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_lnc(path, self.STOCK if text is None else text)
+        return editor.LncDoc(path)
+
+    def _recorded(self, tmp):
+        """Two edits and one added line, recorded from a stock file into a saved profile."""
+        root = Path(tmp)
+        doc = self._club(root / "work")
+        rows = {entry.id: entry for entry in doc.names()}
+        editor.try_set_name(rows["740"], "Wolverhampton Wanderers")
+        editor.try_set_name(rows["708"], "Sheff Utd")
+        doc.append_entry("CLUB_3LETTER_NAME_CHANGE", "740", "WOL", "")
+        profile = editor.create_profile(
+            "My usual spellings", "Traditional names", root / "profiles")
+        counts = editor.record_edits(profile, [doc])
+        editor.save_profile(profile, root / "profiles")
+        return root, doc, profile, counts
+
+    def test_profile_file_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, doc, profile, _counts = self._recorded(tmp)
+            self.assertEqual(profile.path, root / "profiles" / "my-usual-spellings.json")
+            again = editor.load_profile(profile.path)
+            self.assertEqual((again.name, again.note), ("My usual spellings", "Traditional names"))
+            self.assertEqual(again.rows, profile.rows)
+            self.assertEqual(again.to_bytes(), profile.path.read_bytes())
+            data = json.loads(profile.path.read_text(encoding="utf-8"))
+            self.assertEqual((data["format"], data["version"]), ("fm-name-profile", 1))
+            wolves = again.rows[self.WOLVES]
+            self.assertEqual(wolves["name"], "Wolverhampton Wanderers")
+            self.assertEqual(wolves["baseline"], "Wolverhamption Wanderers")
+            self.assertEqual(wolves["source"], str(doc.path))
+            self.assertEqual(
+                wolves["source_sha256"], hashlib.sha256(doc.path.read_bytes()).hexdigest())
+            self.assertIsNone(again.rows[self.CODE]["baseline"])
+            profiles, problems = editor.list_profiles(root / "profiles")
+            self.assertEqual(([item.name for item in profiles], problems),
+                             (["My usual spellings"], []))
+            self.assertEqual(staging_files(root / "profiles"), [])
+
+    def test_record_edits_keeps_baselines_and_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, doc, profile, counts = self._recorded(tmp)
+            self.assertEqual(counts, {"added": 3, "updated": 0, "same": 0, "persons": 0,
+                                      "removed": 0, "skipped": 0, "repeated": 0})
+            self.assertNotIn(("CLUB_NAME_CHANGE", "1", ""), profile.rows)   # untouched
+            again = editor.record_edits(profile, [doc])
+            self.assertEqual((again["added"], again["updated"], again["same"]), (0, 0, 3))
+            editor.try_set_name(next(e for e in doc.names() if e.id == "708"), "Sheffield Utd")
+            again = editor.record_edits(profile, [doc])
+            self.assertEqual((again["updated"], again["same"]), (1, 2))
+            self.assertEqual(profile.rows[self.SHEFF]["name"], "Sheffield Utd")
+            self.assertEqual(profile.rows[self.SHEFF]["baseline"], "Sheffield United")
+            greek = root / "person_name_changes.lnc"
+            greek.write_bytes(b"\xff\xfe" + (
+                '"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"ος"\t2\t"ης"\r\n'
+            ).encode("utf-16-le"))
+            rules = editor.LncDoc(greek)
+            editor.try_set_name(rules.persons()[0], "ου")
+            counts = editor.record_edits(profile, [rules])
+            self.assertEqual((counts["persons"], counts["added"]), (1, 0))
+
+    def test_saved_edits_are_not_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = self._club(Path(tmp))
+            editor.try_set_name(doc.names()[0], "Wolves")
+            doc.save(backup=False)
+            profile = editor.Profile("Late")
+            self.assertEqual(editor.record_edits(profile, [doc])["added"], 0)
+            self.assertEqual(profile.rows, {})
+
+    def test_apply_with_an_unchanged_baseline_is_ticked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _doc, profile, _counts = self._recorded(tmp)
+            fresh = self._club(root / "game")          # the stock file again
+            changes, missing, stats = editor.apply_profile(profile, [fresh])
+            self.assertEqual(
+                [(p.id, p.new, p.checked, p.note) for p in changes],
+                [("740", "Wolverhampton Wanderers", True, "Baseline unchanged"),
+                 ("708", "Sheff Utd", True, "Baseline unchanged")])
+            self.assertEqual(
+                [(p.cmd, p.new, p.checked, p.doc) for p in missing],
+                [("CLUB_3LETTER_NAME_CHANGE", "WOL", True, fresh)])
+            self.assertEqual((stats["ticked"], stats["review"], stats["same"]), (3, 0, 0))
+            updated, added = editor.apply_profile_proposals(profile.name, changes, missing, [fresh])
+            self.assertEqual((updated, len(added)), (2, 1))
+            names = {(entry.cmd, entry.id): entry.name for entry in fresh.names()}
+            self.assertEqual(names[("CLUB_NAME_CHANGE", "740")], "Wolverhampton Wanderers")
+            self.assertEqual(names[("CLUB_3LETTER_NAME_CHANGE", "740")], "WOL")
+            self.assertEqual(added[0].profile_mark, ("My usual spellings", "WOL"))
+            self.assertTrue(fresh.dirty)
+            changes, missing, stats = editor.apply_profile(profile, [fresh])
+            self.assertEqual((changes, missing, stats["same"]), ([], [], 3))
+
+    def test_apply_with_a_changed_baseline_is_unticked_and_noted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _doc, profile, _counts = self._recorded(tmp)
+            update = (self.STOCK.replace("Sheffield United", "Sheffield Utd FC")
+                      + '"CLUB_3LETTER_NAME_CHANGE"\t740\t"WLV"\t""\n')
+            fresh = self._club(root / "game", update)
+            changes, missing, stats = editor.apply_profile(profile, [fresh])
+            by_key = {(p.cmd, p.id): p for p in changes}
+            sheff = by_key[("CLUB_SHORT_NAME_CHANGE", "708")]
+            self.assertFalse(sheff.checked)
+            self.assertIn("the file says Sheffield Utd FC", sheff.note)
+            self.assertIn("when recorded it said Sheffield United", sheff.note)
+            self.assertEqual(sheff.base, "Sheffield United")
+            code = by_key[("CLUB_3LETTER_NAME_CHANGE", "740")]
+            self.assertFalse(code.checked)
+            self.assertIn("when recorded it said no line", code.note)
+            self.assertTrue(by_key[("CLUB_NAME_CHANGE", "740")].checked)
+            self.assertEqual(missing, [])
+            self.assertEqual((stats["ticked"], stats["review"]), (1, 2))
+            editor.apply_profile_proposals(profile.name, changes, missing, [fresh])
+            names = {(entry.cmd, entry.id): entry.name for entry in fresh.names()}
+            self.assertEqual(names[("CLUB_SHORT_NAME_CHANGE", "708")], "Sheffield Utd FC")
+            self.assertEqual(names[("CLUB_NAME_CHANGE", "740")], "Wolverhampton Wanderers")
+
+    def test_a_line_the_file_no_longer_has_is_unticked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _doc, profile, _counts = self._recorded(tmp)
+            update = self.STOCK.replace(
+                '"CLUB_SHORT_NAME_CHANGE"\t708\t"Sheffield United"\t""\n', "")
+            fresh = self._club(root / "game", update)
+            _changes, missing, stats = editor.apply_profile(profile, [fresh])
+            by_key = {(p.cmd, p.id): p for p in missing}
+            gone = by_key[("CLUB_SHORT_NAME_CHANGE", "708")]
+            self.assertFalse(gone.checked)
+            self.assertIn("has no line for it now; when recorded it said Sheffield United",
+                          gone.note)
+            self.assertIs(gone.doc, fresh)
+            self.assertTrue(by_key[("CLUB_3LETTER_NAME_CHANGE", "740")].checked)
+            self.assertEqual((stats["ticked"], stats["review"]), (2, 1))
+
+    def test_rows_for_files_that_are_not_open_are_left_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _doc, profile, _counts = self._recorded(tmp)
+            other = root / "game" / "FM27_Fix.lnc"
+            other.parent.mkdir(parents=True)
+            write_lnc(other, '"COMP_LONG_NAME_CHANGE"\t9\t"Cup"\t""\n')
+            changes, missing, stats = editor.apply_profile(profile, [editor.LncDoc(other)])
+            self.assertEqual((changes, missing), ([], []))
+            self.assertEqual(stats["elsewhere"], 3)
+            self.assertIn("not open", editor.describe_profile_apply(profile, stats))
+
+    def test_unsaved_edits_and_other_profiles_stay_unticked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _doc, profile, _counts = self._recorded(tmp)
+            fresh = self._club(root / "game")
+            wolves = next(entry for entry in fresh.names() if entry.id == "740")
+            editor.try_set_name(wolves, "Wolves")
+            changes, _missing, _stats = editor.apply_profile(profile, [fresh])
+            first = next(p for p in changes if p.id == "740")
+            self.assertFalse(first.checked)
+            self.assertIn("Unsaved edit Wolves would be replaced", first.note)
+            editor.revert_entry(wolves)
+            other = editor.Profile("Modern names")
+            other.rows[self.WOLVES] = dict(profile.rows[self.WOLVES], name="Wolves")
+            changes, missing, _stats = editor.apply_profile(other, [fresh])
+            self.assertTrue(changes[0].checked)
+            editor.apply_profile_proposals(other.name, changes, missing, [fresh])
+            self.assertEqual(wolves.name, "Wolves")
+            changes, _missing, stats = editor.apply_profile(profile, [fresh])
+            first = next(p for p in changes if p.id == "740")
+            self.assertFalse(first.checked)
+            self.assertIn("Competes with profile Modern names, which set Wolves", first.note)
+            self.assertEqual(stats["review"], 1)
+
+    def test_save_and_deploy_leave_the_profile_file_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _doc, profile, _counts = self._recorded(tmp)
+            before = profile.path.read_bytes()
+            stamp = profile.path.stat().st_mtime_ns
+            fresh = self._club(root / "game")
+            changes, missing, _stats = editor.apply_profile(profile, [fresh])
+            editor.apply_profile_proposals(profile.name, changes, missing, [fresh])
+            fresh.save(backup=False)
+            editor.deploy_documents(
+                [(fresh, root / "deployed" / fresh.path.name)], root / "backups")
+            self.assertEqual(profile.path.read_bytes(), before)
+            self.assertEqual(profile.path.stat().st_mtime_ns, stamp)
+
+    def test_record_deploy_update_reopen_apply(self):
+        """The roadmap's acceptance, with the game putting its own files back in between."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "db" / "2700" / "lnc" / "all"
+            club = self._club(folder)
+            fix_path = folder / "FM27_Fix.lnc"
+            write_lnc(fix_path, '"COMP_LONG_NAME_CHANGE"\t9\t"Sky Bet Championship"\t""\n')
+            stock = {path: path.read_bytes() for path in (club.path, fix_path)}
+            docs = [club, editor.LncDoc(fix_path)]
+            editor.try_set_name(next(e for e in club.names() if e.id == "740"),
+                                "Wolverhampton Wanderers")
+            editor.try_set_name(docs[1].names()[0], "Championship")
+            profile = editor.create_profile("Mine", "", root / "profiles")
+            editor.record_edits(profile, docs)
+            editor.save_profile(profile, root / "profiles")
+            editor.deploy_documents([(doc, doc.path) for doc in docs], root / "backups")
+            # Reopened as deployed, every spelling already matches.
+            changes, missing, stats = editor.apply_profile(
+                profile, editor.open_documents(list(stock)))
+            self.assertEqual((changes, missing, stats["same"]), ([], [], 2))
+            # A game update puts its own files back. Reopen and Apply: the spellings
+            # come back ticked, because the stock names are the recorded baselines.
+            for path, data in stock.items():
+                path.write_bytes(data)
+            reopened = editor.open_documents(list(stock))
+            changes, missing, stats = editor.apply_profile(
+                editor.load_profile(profile.path), reopened)
+            self.assertEqual(len(changes), 2)
+            self.assertTrue(all(proposal.checked for proposal in changes))
+            editor.apply_profile_proposals(profile.name, changes, missing, reopened)
+            self.assertEqual(reopened[1].names()[0].name, "Championship")
+            self.assertEqual(
+                next(e for e in reopened[0].names() if e.id == "740").name,
+                "Wolverhampton Wanderers")
+
+    def test_profile_names_files_rename_and_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            first = editor.create_profile("  My usual spellings ", "", root)
+            self.assertEqual((first.name, first.path.name),
+                             ("My usual spellings", "my-usual-spellings.json"))
+            for bad, words in (("", "Give the profile a name"),
+                               ("x" * 81, "80 characters"),
+                               ("Tab\tname", "control characters"),
+                               ("MY USUAL SPELLINGS", "already a profile")):
+                with self.subTest(bad=bad[:12]):
+                    self.assertIn(words, editor.profile_name_problem(bad, [first]))
+                    with self.assertRaises(ValueError):
+                        editor.create_profile(bad, "", root, [first])
+            for name, file_name in (("My usual spellings!", "my-usual-spellings-2.json"),
+                                    ("Ünïcödé", "unicode.json"),
+                                    ("CON", "con-profile.json"),
+                                    ("!!!", "profile.json")):
+                with self.subTest(name=name):
+                    self.assertEqual(editor.create_profile(name, "", root).path.name, file_name)
+            first.rows[self.WOLVES] = {
+                "command": "CLUB_NAME_CHANGE", "id": "740", "language": "",
+                "name": "Wolves", "baseline": None, "source": "", "source_sha256": "",
+                "recorded": ""}
+            editor.save_profile(first, root)
+            old_path = first.path
+            renamed = editor.rename_profile(first, "Traditional names", "Old style", root, [first])
+            self.assertFalse(old_path.exists())
+            self.assertEqual(renamed.path.name, "traditional-names.json")
+            again = editor.load_profile(renamed.path)
+            self.assertEqual((again.name, again.note, len(again.rows)),
+                             ("Traditional names", "Old style", 1))
+            same_file = editor.rename_profile(renamed, "TRADITIONAL NAMES", None, root, [renamed])
+            self.assertEqual(same_file.path, renamed.path)
+            self.assertEqual(same_file.note, "Old style")
+            moved = editor.delete_profile(same_file, root)
+            self.assertFalse(renamed.path.exists())
+            self.assertEqual(moved.parent, root / "deleted")
+            self.assertEqual(editor.load_profile(moved).name, "TRADITIONAL NAMES")
+            self.assertNotIn("TRADITIONAL NAMES",
+                             [item.name for item in editor.list_profiles(root)[0]])
+            self.assertEqual(staging_files(root), [])
+
+    def test_unreadable_profiles_are_reported_not_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            editor.create_profile("Good", "", root)
+            (root / "broken.json").write_text("{not json", encoding="utf-8")
+            (root / "pack.json").write_text(
+                '{"format": "fm-name-pack", "version": 1, "names": []}', encoding="utf-8")
+            row = {"command": "CLUB_NAME_CHANGE", "id": "1", "language": "",
+                   "name": 'Say "hi"', "baseline": None}
+            (root / "quote.json").write_text(json.dumps(
+                {"format": "fm-name-profile", "version": 1, "name": "Quote", "rows": [row]}),
+                encoding="utf-8")
+            twice = dict(row, name="Fine")
+            (root / "twice.json").write_text(json.dumps(
+                {"format": "fm-name-profile", "version": 1, "name": "Twice",
+                 "rows": [twice, twice]}), encoding="utf-8")
+            profiles, problems = editor.list_profiles(root)
+            self.assertEqual([item.name for item in profiles], ["Good"])
+            self.assertEqual(len(problems), 4)
+            joined = "\n".join(problems)
+            for words in ("broken.json could not be read",
+                          "pack.json is not a spelling profile",
+                          "quote.json, row 1: the name",
+                          "twice.json, row 2: an earlier row"):
+                self.assertIn(words, joined)
+
+    def test_local_state_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            self.assertEqual(editor.load_state(root), {})
+            editor.save_state({"active_profile_file": "mine.json"}, root)
+            self.assertEqual(editor.load_state(root), {"active_profile_file": "mine.json"})
+            (root / "settings.json").write_text("[1, 2", encoding="utf-8")
+            self.assertEqual(editor.load_state(root), {})
+            self.assertEqual(staging_files(root), [])
+
+
+class Session4Window(unittest.TestCase):
+    """Release 2.3, session 4: the profile controls in the window header."""
+
+    def _window(self, tmp):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        roots = mock.patch.multiple(
+            editor, PROFILE_ROOT=Path(tmp) / "profiles", STATE_ROOT=Path(tmp) / "state")
+        roots.start()
+        self.addCleanup(roots.stop)
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        return win
+
+    @staticmethod
+    def _fill(name: str, note: str = ""):
+        """A stand-in for QDialog.exec that types into the profile dialog and presses OK."""
+        def run(dialog):
+            dialog.name_edit.setText(name)
+            dialog.note_edit.setText(note)
+            dialog.try_accept()
+            return dialog.result()
+        return run
+
+    def test_record_makes_a_profile_and_the_choice_is_remembered(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self._window(tmp)
+            self.assertEqual(win.profile_box.currentText(), "No profile")
+            self.assertFalse(win.apply_profile_btn.isEnabled())
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(path, Session4Profiles.STOCK)
+            self.assertTrue(win.load([str(path)]))
+            editor.try_set_name(
+                next(e for e in win.docs[0].names() if e.id == "740"), "Wolverhampton Wanderers")
+            with mock.patch.object(QDialog, "exec", self._fill("My usual spellings", "Mine")), \
+                    mock.patch.object(QMessageBox, "question",
+                                      return_value=QMessageBox.Yes) as asked:
+                win.record_into_profile()   # no profile yet: it offers to make one first
+            self.assertEqual(asked.call_count, 2)
+            self.assertIn("Record 1 spelling(s) into My usual spellings", asked.call_args.args[2])
+            self.assertEqual(win.profile_box.currentText(), "My usual spellings")
+            profile = win.current_profile()
+            self.assertEqual(profile.note, "Mine")
+            self.assertEqual(list(profile.rows), [("CLUB_NAME_CHANGE", "740", "")])
+            self.assertEqual(editor.load_profile(profile.path).rows, profile.rows)
+            self.assertEqual(editor.load_state(Path(tmp) / "state"),
+                             {"active_profile_file": "my-usual-spellings.json"})
+            # Recording the same edit again changes nothing and says so.
+            with mock.patch.object(QMessageBox, "information") as told:
+                win.record_into_profile()
+            self.assertIn("already holds", told.call_args.args[2])
+            # A new window comes up with the same profile chosen.
+            _app, second = editor.run_gui([])
+            self.addCleanup(close_window, second)
+            self.assertEqual(second.profile_box.currentText(), "My usual spellings")
+            self.assertTrue(second.apply_profile_btn.isEnabled())
+
+    def test_apply_previews_and_changes_memory_only(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self._window(tmp)
+            work = Path(tmp) / "work" / "FM27_Club_Names.lnc"
+            stock = Path(tmp) / "game" / "FM27_Club_Names.lnc"
+            for path in (work, stock):
+                path.parent.mkdir()
+                write_lnc(path, Session4Profiles.STOCK)
+            doc = editor.LncDoc(work)
+            editor.try_set_name(next(e for e in doc.names() if e.id == "708"), "Sheff Utd")
+            profile = editor.create_profile("Mine", "", editor.PROFILE_ROOT)
+            editor.record_edits(profile, [doc])
+            editor.save_profile(profile, editor.PROFILE_ROOT)
+            before = profile.path.read_bytes()
+            win.refresh_profiles(profile.path.name)
+            self.assertTrue(win.load([str(stock)]))
+            on_disk = stock.read_bytes()
+            shown = []
+
+            def apply_ticked(dialog):
+                model = dialog.change_model
+                shown.append((dialog.windowTitle(), dialog.summary.text(),
+                              [model.headerData(i, Qt.Horizontal)
+                               for i in range(model.columnCount())]))
+                dialog.apply()
+                return dialog.result()
+
+            with mock.patch.object(QDialog, "exec", apply_ticked):
+                win.apply_profile_to_files()
+            title, summary, columns = shown[0]
+            self.assertEqual(title, "Apply profile: Mine")
+            self.assertIn("1 ticked", summary)
+            self.assertIn("Profile spelling", columns)
+            self.assertIn("Baseline when recorded", columns)
+            self.assertEqual(
+                next(e for e in win.docs[0].names() if e.id == "708").name, "Sheff Utd")
+            self.assertTrue(win.docs[0].dirty)
+            self.assertEqual(stock.read_bytes(), on_disk)       # memory only until Save
+            win.save()
+            self.assertIn(b'"Sheff Utd"', stock.read_bytes())
+            self.assertEqual(profile.path.read_bytes(), before)  # Save leaves the profile alone
+
+    def test_rename_delete_and_unreadable_profiles(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            first = editor.create_profile("Old name", "", root)
+            editor.create_profile("Other", "", root)
+            (root / "broken.json").write_text("{not json", encoding="utf-8")
+            win = self._window(tmp)
+            self.assertIn("could not be read", win.statusBar().currentMessage())
+            self.assertEqual([win.profile_box.itemText(i) for i in range(win.profile_box.count())],
+                             ["No profile", "Old name", "Other"])
+            win.refresh_profiles(first.path.name)
+            with mock.patch.object(QDialog, "exec", self._fill("other")):
+                win.rename_current_profile()        # the name is taken, so nothing changes
+            self.assertTrue(first.path.exists())
+            self.assertEqual(win.profile_box.currentText(), "Old name")
+            with mock.patch.object(QDialog, "exec", self._fill("New name")):
+                win.rename_current_profile()
+            self.assertFalse(first.path.exists())
+            self.assertEqual(win.profile_box.currentText(), "New name")
+            self.assertEqual(editor.load_state(Path(tmp) / "state")["active_profile_file"],
+                             "new-name.json")
+            with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                win.delete_current_profile()
+            self.assertEqual(win.profile_box.currentText(), "No profile")
+            self.assertEqual([profile.name for profile in win.profiles], ["Other"])
+            self.assertEqual(len(list((root / "deleted").glob("new-name-*.json"))), 1)
+            self.assertEqual(editor.load_state(Path(tmp) / "state")["active_profile_file"], "")
+            self.assertTrue((root / "broken.json").exists())     # left alone
 
 
 if __name__ == "__main__":

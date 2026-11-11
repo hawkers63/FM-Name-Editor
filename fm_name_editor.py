@@ -54,6 +54,8 @@ VERSION = "2.2"
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
 BACKUP_ROOT = Path(r"C:\FM Name Editor\backups")
+PROFILE_ROOT = Path(r"C:\FM Name Editor\profiles")
+STATE_ROOT = Path(r"C:\FM Name Editor\state")
 NAME_FILES = ("FM27_Club_Names.lnc", "FM27_Fix.lnc")
 
 # --------------------------------------------------------------------------
@@ -92,6 +94,9 @@ FILE_SECTION_HINT = (
 
 PACK_FORMAT = "fm-name-pack"
 PACK_VERSION = 1
+PROFILE_FORMAT = "fm-name-profile"
+PROFILE_VERSION = 1
+STATE_FILE = "settings.json"
 ARCHIVE_FORMAT = "fm-name-editor-archive"
 ARCHIVE_VERSION = 1
 MANIFEST_NAME = "manifest.json"
@@ -185,7 +190,7 @@ class Entry:
 
     __slots__ = ("doc", "raw", "eol", "kind", "cmd", "id", "name", "lang",
                  "span", "section", "orig_name", "imported", "lineno", "_fold",
-                 "source", "orig_source", "source_span")
+                 "source", "orig_source", "source_span", "profile_mark")
 
     def __init__(self, doc, raw, eol, lineno):
         self.doc = doc
@@ -202,6 +207,7 @@ class Entry:
         self.source_span = None
         self.imported = False
         self._fold = None
+        self.profile_mark = None    # (profile name, name it set) after a profile apply
 
     @property
     def key(self):
@@ -671,16 +677,17 @@ def index_all(docs) -> dict:
 
 class Proposal:
     __slots__ = ("cmd", "id", "lang", "new", "target", "target_rows",
-                 "section", "checked", "base", "note")
+                 "section", "checked", "base", "note", "doc")
 
     def __init__(self, cmd, id_, lang, new, target, section, checked, base="", note="",
-                 target_rows=None):
+                 target_rows=None, doc=None):
         self.cmd, self.id, self.lang, self.new = cmd, id_, lang, new
         self.base = base          # name in the unedited older original, if known
         self.note = note
         self.target = target      # Entry in the current file, or None if missing
         self.section = section
         self.checked = checked
+        self.doc = doc            # file a missing row is added to; None lets pick_doc_for choose
         if target_rows is None:
             self.target_rows = [target] if target is not None else []
         else:
@@ -770,8 +777,9 @@ def apply_proposals(changes, missing, docs):
     for proposal in missing:
         if not proposal.checked:
             continue
+        doc = proposal.doc if proposal.doc is not None else pick_doc_for(proposal.cmd, docs)
         try:
-            added.append(pick_doc_for(proposal.cmd, docs).append_entry(
+            added.append(doc.append_entry(
                 proposal.cmd, proposal.id, proposal.new, proposal.lang))
         except ValueError:
             continue
@@ -2054,6 +2062,457 @@ def proposals_from_pack(docs, rows: list[dict]):
     return changes, missing, stats
 
 
+# ---- spelling profiles -----------------------------------------------------
+
+_RESERVED_STEMS = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + [f"com{n}" for n in range(1, 10)]
+    + [f"lpt{n}" for n in range(1, 10)])
+
+
+def profile_key(command: str, id_: str, language: str) -> tuple:
+    """The identity of a profile row. It matches Entry.key."""
+    return (command, id_, language.casefold())
+
+
+def _profile_row_order(row: dict):
+    return (row["command"], int(row["id"]), row["language"].casefold())
+
+
+class Profile:
+    """A named set of preferred spellings that outlives Save and Deploy.
+
+    ``rows`` maps profile_key to a row: command, id, language, the preferred
+    ``name``, the ``baseline`` (the name the file on disk had when the
+    preference was recorded, or None when it had no such line), the
+    ``source`` file, the SHA-256 of that file as it was then, and when it
+    was recorded. The baseline lets Apply tell an unchanged file from one
+    the game has changed since. A profile is not a name pack: packs are for
+    exchange and keep their own format.
+    """
+
+    __slots__ = ("name", "note", "rows", "path", "created", "updated")
+
+    def __init__(self, name: str, note: str = "", path=None, created: str = "",
+                 updated: str = ""):
+        now = datetime.now().isoformat(timespec="seconds")
+        self.name = name
+        self.note = note
+        self.rows: dict = {}
+        self.path = Path(path) if path is not None else None
+        self.created = created or now
+        self.updated = updated or self.created
+
+    def copy(self) -> "Profile":
+        twin = Profile(self.name, self.note, self.path, self.created, self.updated)
+        twin.rows = {key: dict(row) for key, row in self.rows.items()}
+        return twin
+
+    def to_bytes(self) -> bytes:
+        """UTF-8 JSON, rows in a fixed order, so an unchanged profile writes the same bytes."""
+        payload = {
+            "format": PROFILE_FORMAT,
+            "version": PROFILE_VERSION,
+            "name": self.name,
+            "note": self.note,
+            "created": self.created,
+            "updated": self.updated,
+            "rows": sorted(self.rows.values(), key=_profile_row_order),
+        }
+        return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def profile_name_problem(name: str, existing=(), own=None) -> str:
+    """Why ``name`` cannot name a profile, or "" when it can.
+
+    ``existing`` lists the profiles there are; a name must differ from
+    theirs, ignoring case. ``own`` is the profile being renamed, which may
+    keep its name.
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        return "Give the profile a name."
+    if len(cleaned) > 80:
+        return "Keep the name to 80 characters or fewer."
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+        return "A profile name cannot contain control characters."
+    for other in existing:
+        if other is not own and other.name.casefold() == cleaned.casefold():
+            return f"There is already a profile called {other.name}."
+    return ""
+
+
+def _check_profile_row(where: str, raw) -> dict:
+    """A clean copy of one stored row. Raises ValueError, naming ``where``, when it cannot be used."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where} is not a row of names.")
+    cmd = raw.get("command")
+    id_ = raw.get("id")
+    if isinstance(id_, int) and not isinstance(id_, bool):
+        id_ = str(id_)
+    lang = raw.get("language", "")
+    name = raw.get("name")
+    baseline = raw.get("baseline")
+    if not (isinstance(cmd, str) and is_name_command(cmd)):
+        raise ValueError(f"{where}: {cmd!r} is not a name command.")
+    if not (isinstance(id_, str) and id_is_legal(id_)):
+        raise ValueError(f"{where}: {id_!r} is not a database id.")
+    if not (isinstance(lang, str) and field_is_legal(lang)):
+        raise ValueError(f"{where}: the language cannot sit in one quoted field.")
+    if not (isinstance(name, str) and name_is_legal(name)):
+        raise ValueError(f"{where}: the name cannot sit in one quoted field.")
+    if baseline is not None and not (isinstance(baseline, str) and field_is_legal(baseline)):
+        raise ValueError(f"{where}: the baseline cannot sit in one quoted field.")
+    return {
+        "command": cmd,
+        "id": id_,
+        "language": lang,
+        "name": name,
+        "baseline": baseline,
+        "source": str(raw.get("source", "")),
+        "source_sha256": str(raw.get("source_sha256", "")),
+        "recorded": str(raw.get("recorded", "")),
+    }
+
+
+def load_profile(path) -> Profile:
+    """Read one profile file.
+
+    Raises:
+        OSError: the file could not be read.
+        ValueError: it is not a profile this editor can use; the message says why.
+    """
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:       # bad UTF-8 or bad JSON
+        raise ValueError(f"{path.name} could not be read as a profile: {exc}") from exc
+    if not isinstance(data, dict) or data.get("format") != PROFILE_FORMAT:
+        raise ValueError(f"{path.name} is not a spelling profile.")
+    if data.get("version") != PROFILE_VERSION:
+        raise ValueError(
+            f"{path.name} is profile version {data.get('version')}. "
+            f"This editor reads version {PROFILE_VERSION}.")
+    name, note = data.get("name"), data.get("note", "")
+    if not isinstance(name, str) or profile_name_problem(name):
+        raise ValueError(f"{path.name} has no usable profile name.")
+    if not isinstance(note, str):
+        raise ValueError(f"{path.name} has a note that is not text.")
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError(f"{path.name} has no list of rows.")
+    profile = Profile(name.strip(), note, path, str(data.get("created", "")),
+                      str(data.get("updated", "")))
+    for number, raw in enumerate(rows, 1):
+        row = _check_profile_row(f"{path.name}, row {number}", raw)
+        key = profile_key(row["command"], row["id"], row["language"])
+        if key in profile.rows:
+            raise ValueError(
+                f"{path.name}, row {number}: an earlier row has the same command, "
+                "id, and language.")
+        profile.rows[key] = row
+    return profile
+
+
+def list_profiles(root) -> tuple[list, list]:
+    """Read every profile in ``root``. Returns (profiles sorted by name, problems).
+
+    A file that cannot be read is described in ``problems`` and left alone.
+    Only the folder itself is read, so profiles in ``deleted`` are not listed.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return [], []
+    profiles, problems = [], []
+    for path in sorted(root.glob("*.json"), key=lambda item: item.name.casefold()):
+        try:
+            profiles.append(load_profile(path))
+        except (OSError, ValueError) as exc:
+            problems.append(str(exc))
+    profiles.sort(key=lambda item: (item.name.casefold(), item.path.name.casefold()))
+    return profiles, problems
+
+
+def _profile_slug(name: str) -> str:
+    """A safe file-name stem for a profile: plain letters and digits joined by hyphens."""
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", plain.casefold()).strip("-")[:60].strip("-")
+    if not slug:
+        slug = "profile"
+    if slug in _RESERVED_STEMS:
+        slug += "-profile"
+    return slug
+
+
+def _free_profile_path(root: Path, name: str, own=None) -> Path:
+    """Where a profile called ``name`` should live: a file no other profile uses."""
+    stem = _profile_slug(name)
+    candidate = Path(root) / f"{stem}.json"
+    count = 1
+    while candidate.exists() and not (own is not None and same_path(candidate, own)):
+        count += 1
+        candidate = Path(root) / f"{stem}-{count}.json"
+    return candidate
+
+
+def save_profile(profile: Profile, root) -> Path:
+    """Write a profile through write_file_atomically and return its path.
+
+    A profile without a path gets a new file in ``root``, named after it.
+    ``updated`` becomes now, but only once the write has succeeded.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = profile.path if profile.path is not None else _free_profile_path(root, profile.name)
+    previous = profile.updated
+    profile.updated = datetime.now().isoformat(timespec="seconds")
+    try:
+        write_file_atomically(path, profile.to_bytes())
+    except BaseException:
+        profile.updated = previous
+        raise
+    profile.path = path
+    return path
+
+
+def create_profile(name: str, note: str, root, existing=()) -> Profile:
+    """Make and save a new, empty profile.
+
+    Raises:
+        ValueError: the name cannot be used (see profile_name_problem).
+        OSError: the file could not be written.
+    """
+    problem = profile_name_problem(name, existing)
+    if problem:
+        raise ValueError(problem)
+    profile = Profile(name.strip(), note.strip())
+    save_profile(profile, root)
+    return profile
+
+
+def rename_profile(profile: Profile, new_name: str, note, root, existing=()) -> Profile:
+    """Give a profile a new name, and a new note unless ``note`` is None.
+
+    The renamed copy is written to a file that matches its new name first,
+    and only then is the old file removed, so a failure part-way leaves at
+    least one whole copy. Returns the renamed profile.
+
+    Raises:
+        ValueError: the name cannot be used.
+        OSError: a file could not be written or removed.
+    """
+    problem = profile_name_problem(new_name, existing, own=profile)
+    if problem:
+        raise ValueError(problem)
+    twin = profile.copy()
+    twin.name = new_name.strip()
+    if note is not None:
+        twin.note = note.strip()
+    old_path = profile.path
+    twin.path = _free_profile_path(Path(root), twin.name, own=old_path)
+    save_profile(twin, root)
+    if old_path is not None and not same_path(old_path, twin.path):
+        old_path.unlink(missing_ok=True)
+    return twin
+
+
+def delete_profile(profile: Profile, root) -> Path:
+    """Move a profile's file into ``root/deleted``, where it can be recovered by hand.
+
+    Nothing is erased. Returns where the file went.
+    """
+    if profile.path is None:
+        raise FileNotFoundError(f"The profile {profile.name} has no file.")
+    bin_folder = Path(root) / "deleted"
+    bin_folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = bin_folder / f"{profile.path.stem}-{stamp}.json"
+    count = 1
+    while target.exists():
+        count += 1
+        target = bin_folder / f"{profile.path.stem}-{stamp}-{count}.json"
+    os.rename(profile.path, target)     # one step; never replaces a file on Windows
+    return target
+
+
+def record_edits(profile: Profile, docs) -> dict:
+    """Copy the open files' unsaved name edits into ``profile``, with their baselines.
+
+    A name line is recorded when it differs from the file on disk
+    (``Entry.changed``): an edited name, whose baseline is the text on
+    disk, or an added line, whose baseline is None because the file has no
+    such line. The newer spelling replaces a row the profile already has.
+    Edits that were saved are part of the file on disk now, so they are not
+    edits any more: record before Save or Deploy. Person rules are not keyed
+    by database id, and rows a restore left out are not spellings, so
+    neither is recorded; both are counted. A row with a field that could
+    not be written as one line is skipped and counted. When a key is on
+    several edited lines, the last is recorded.
+
+    Only memory changes; save the profile afterwards. Returns counts for
+    "added", "updated", "same", "persons", "removed", "skipped", "repeated".
+    """
+    counts = dict.fromkeys(
+        ("added", "updated", "same", "persons", "removed", "skipped", "repeated"), 0)
+    stamp = datetime.now().isoformat(timespec="seconds")
+    latest: dict = {}
+    for doc in docs:
+        counts["persons"] += sum(1 for entry in doc.persons() if entry.changed)
+        counts["removed"] += len(doc.removed_rows)
+        source_hash = sha256_hex(doc.baseline_bytes)
+        for entry in doc.names():
+            if not entry.changed:
+                continue
+            baseline = None if entry.imported else entry.orig_name
+            if (not is_name_command(entry.cmd) or not id_is_legal(entry.id)
+                    or not name_is_legal(entry.name) or not field_is_legal(entry.lang)
+                    or (baseline is not None and not field_is_legal(baseline))):
+                counts["skipped"] += 1
+                continue
+            if entry.key in latest:
+                counts["repeated"] += 1
+            latest[entry.key] = {
+                "command": entry.cmd,
+                "id": entry.id,
+                "language": entry.lang,
+                "name": entry.name,
+                "baseline": baseline,
+                "source": str(doc.path),
+                "source_sha256": source_hash,
+                "recorded": stamp,
+            }
+    for key, row in latest.items():
+        old = profile.rows.get(key)
+        if old is not None and (old["name"], old["baseline"]) == (row["name"], row["baseline"]):
+            counts["same"] += 1
+            continue
+        counts["updated" if old is not None else "added"] += 1
+        profile.rows[key] = row
+    return counts
+
+
+def _shown(text) -> str:
+    return "no line" if text is None else text
+
+
+def apply_profile(profile: Profile, docs):
+    """Turn a profile into proposals for the open files, for the usual preview.
+
+    A row's open baseline is the text on disk for its key, or None when no
+    line on disk has it. A proposal is ticked only when that still equals
+    the baseline the row was recorded with, so a spelling the game has
+    changed since is looked at before it is replaced. It is left unticked,
+    with a note, when the baseline differs, when the line has an unsaved
+    edit of its own, or when another profile set it in this session. A row
+    the open files lack becomes an added line in the open file it was
+    recorded from; when no open file has that name it is counted under
+    "elsewhere" and left out. Rows that already read the preferred name
+    are counted as "same".
+
+    Nothing changes yet. Returns (changes, missing, stats); apply the
+    ticked ones with apply_profile_proposals.
+    """
+    targets = index_all(docs)
+    by_file: dict = {}
+    for doc in docs:
+        by_file.setdefault(doc.path.name.casefold(), doc)
+    changes, missing = [], []
+    stats = dict.fromkeys(("rows", "same", "ticked", "review", "elsewhere"), 0)
+    stats["rows"] = len(profile.rows)
+    for row in sorted(profile.rows.values(), key=_profile_row_order):
+        cmd, id_, lang = row["command"], row["id"], row["language"]
+        preferred, recorded = row["name"], row["baseline"]
+        found = targets.get(profile_key(cmd, id_, lang), [])
+        if not found:
+            doc = by_file.get(Path(row["source"]).name.casefold())
+            if doc is None:
+                stats["elsewhere"] += 1
+                continue
+            ticked = recorded is None
+            if ticked:
+                note = "Added line; the file still has no line for it"
+            else:
+                note = (f"Baseline changed: the file has no line for it now; when "
+                        f"recorded it said {recorded}")
+            stats["ticked" if ticked else "review"] += 1
+            missing.append(Proposal(
+                cmd, id_, lang, preferred, None, "", ticked, recorded or "", note, doc=doc))
+            continue
+        if all(entry.name == preferred for entry in found):
+            stats["same"] += 1
+            continue
+        current = found[-1]
+        notes = []
+        mark = current.profile_mark
+        if mark is not None and mark[0] != profile.name and current.name == mark[1]:
+            notes.append(f"Competes with profile {mark[0]}, which set {mark[1]} in this session")
+        elif current.changed:
+            notes.append(f"Unsaved edit {current.name} would be replaced")
+        on_disk = None if current.imported else current.orig_name
+        if on_disk != recorded:
+            notes.append(f"Baseline changed: the file says {_shown(on_disk)}; when "
+                         f"recorded it said {_shown(recorded)}")
+        ticked = not notes
+        if len(found) > 1:
+            notes.append(f"Duplicate id ({len(found)} rows)")
+        stats["ticked" if ticked else "review"] += 1
+        changes.append(Proposal(
+            cmd, id_, lang, preferred, current, current.section, ticked,
+            recorded or "", "; ".join(notes) or "Baseline unchanged", found))
+    return changes, missing, stats
+
+
+def describe_profile_apply(profile: Profile, stats: dict) -> str:
+    """The summary line for the Apply preview."""
+    parts = [
+        f"{stats['rows']:,} spelling(s) in {profile.name}.",
+        f"{stats['same']:,} already match.",
+        f"{stats['ticked']:,} ticked: the file still has the name they were recorded against.",
+    ]
+    if stats["review"]:
+        parts.append(f"{stats['review']:,} left unticked for you to check; the note says why.")
+    if stats["elsewhere"]:
+        parts.append(
+            f"{stats['elsewhere']:,} belong to a file that is not open, so they are left out.")
+    parts.append("Nothing is written until you Save or Deploy.")
+    return " ".join(parts)
+
+
+def apply_profile_proposals(profile_name: str, changes, missing, docs):
+    """Apply the ticked profile proposals in memory and note which profile set each line.
+
+    The note lets a later Apply of another profile show the competing
+    spelling. Returns what apply_proposals returns.
+    """
+    count, added = apply_proposals(changes, missing, docs)
+    for proposal in changes:
+        if not proposal.checked:
+            continue
+        for entry in proposal.target_rows:
+            if entry.name == proposal.new:
+                entry.profile_mark = (profile_name, proposal.new)
+    for entry in added:
+        entry.profile_mark = (profile_name, entry.name)
+    return count, added
+
+
+def load_state(root) -> dict:
+    """The editor's local settings. Missing or unreadable settings read as empty."""
+    try:
+        data = json.loads((Path(root) / STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_state(state: dict, root) -> None:
+    """Write the local settings through write_file_atomically."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    write_file_atomically(root / STATE_FILE, text.encode("utf-8"))
+
+
 def list_archives(archive_root: Path) -> list[Path]:
     """Timestamped backup folders, newest name first."""
     if not archive_root.is_dir():
@@ -2197,10 +2656,10 @@ def run_gui(paths):
     from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
     from PySide6.QtWidgets import (
         QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
-        QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-        QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+        QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
+        QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
         QPlainTextEdit, QPushButton, QRadioButton, QSplitter, QTableView,
-        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout,
+        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
         QWidget)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
@@ -2385,10 +2844,10 @@ def run_gui(paths):
                 if name == "Type": return friendly(p.cmd)
                 if name == "ID": return p.id
                 if name == "Current name": return p.target.name if p.target else ""
-                if name == "Your older name": return p.new
+                if name in ("Your older name", "Profile spelling"): return p.new
                 if name == "Language": return p.lang
                 if name == "File section": return p.section
-                if name == "Older original": return p.base
+                if name in ("Older original", "Baseline when recorded"): return p.base
                 if name == "Note": return p.note
             return None
 
@@ -2546,6 +3005,16 @@ def run_gui(paths):
     QStatusBar { background: #1a1e28; color: #8a94a6; }
     QLabel#metrics { color: #8a94a6; background: transparent; padding: 2px 6px; }
     QLabel#muted { color: #8a94a6; background: transparent; }
+    QLabel#warning { color: #f59e0b; background: transparent; }
+    QToolButton#manage {
+        background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
+        padding: 4px 10px; border-radius: 4px;
+    }
+    QToolButton#manage:hover { border-color: #8b5cf6; }
+    QMenu { background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040; }
+    QMenu::item { padding: 4px 18px; }
+    QMenu::item:selected { background: #8b5cf6; color: white; }
+    QMenu::item:disabled { color: #8a94a6; }
     QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QListWidget, QTableView, QTableWidget {
         background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
         selection-background-color: #8b5cf6; selection-color: #ffffff;
@@ -3036,25 +3505,34 @@ def run_gui(paths):
             self.accept()
 
     class PackDialog(QDialog):
-        """Tick pack rows, then apply them to the open files."""
+        """Tick proposed rows, then apply them to the open files.
 
-        def __init__(self, parent, changes, missing, summary: str):
+        Name packs and spelling profiles both use it. ``new_label`` names the
+        proposed-name column, ``base_label`` adds a column for Proposal.base,
+        and ``apply_func`` replaces apply_proposals.
+        """
+
+        def __init__(self, parent, changes, missing, summary: str,
+                     title: str = "Import name pack", new_label: str = "Your older name",
+                     base_label: str = "", apply_func=None):
             super().__init__(parent)
-            self.setWindowTitle("Import name pack")
+            self.setWindowTitle(title)
             self.resize(980, 620)
             self.changes = changes
             self.missing = missing
+            self.apply_func = apply_func or apply_proposals
             self.result_counts = None
             lay = QVBoxLayout(self)
             self.summary = QLabel(summary)
             self.summary.setWordWrap(True)
             lay.addWidget(self.summary)
             self.tabs = QTabWidget()
+            extra = [base_label] if base_label else []
             self.change_model = ProposalModel(
-                ["Use", "File section", "Type", "ID", "Current name", "Your older name",
-                 "Note", "Language"])
+                ["Use", "File section", "Type", "ID", "Current name", new_label,
+                 *extra, "Note", "Language"])
             self.missing_model = ProposalModel(
-                ["Use", "File section", "Type", "ID", "Your older name", "Note", "Language"])
+                ["Use", "File section", "Type", "ID", new_label, *extra, "Note", "Language"])
             key = lambda proposal: (fold(proposal.section), proposal.cmd, proposal.new)
             self.change_model.set_items(sorted(changes, key=key))
             self.missing_model.set_items(sorted(missing, key=key))
@@ -3068,6 +3546,9 @@ def run_gui(paths):
                 view.setAlternatingRowColors(True)
                 view.verticalHeader().setVisible(False)
                 view.horizontalHeader().setStretchLastSection(True)
+                # Fit names and headers, measuring a sample so a large pack stays quick.
+                view.horizontalHeader().setResizeContentsPrecision(200)
+                view.resizeColumnsToContents()
                 self.tabs.addTab(view, title)
             lay.addWidget(self.tabs, 1)
             box = QDialogButtonBox()
@@ -3079,8 +3560,50 @@ def run_gui(paths):
             lay.addWidget(box)
 
         def apply(self):
-            self.result_counts = apply_proposals(self.changes, self.missing, self.parent().docs)
+            self.result_counts = self.apply_func(self.changes, self.missing, self.parent().docs)
             self.accept()
+
+    class ProfileDialog(QDialog):
+        """Name a spelling profile and give it a note.
+
+        ``check`` returns why a name cannot be used, or "". The problem is
+        shown under the fields and the dialog stays open, so the text the
+        user typed is never thrown away.
+        """
+
+        def __init__(self, parent, title: str, check, name: str = "", note: str = ""):
+            super().__init__(parent)
+            self.setWindowTitle(title)
+            self.check = check
+            lay = QVBoxLayout(self)
+            form = QFormLayout()
+            self.name_edit = QLineEdit(name)
+            self.name_edit.setMaxLength(80)
+            self.note_edit = QLineEdit(note)
+            self.note_edit.setPlaceholderText("Optional, for example: traditional English names")
+            form.addRow("Name", self.name_edit)
+            form.addRow("Note", self.note_edit)
+            lay.addLayout(form)
+            self.problem = QLabel("")
+            self.problem.setObjectName("warning")
+            self.problem.setWordWrap(True)
+            lay.addWidget(self.problem)
+            box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            box.accepted.connect(self.try_accept)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.resize(480, self.sizeHint().height())
+
+        def try_accept(self) -> None:
+            problem = self.check(self.name_edit.text())
+            if problem:
+                self.problem.setText(problem)
+                self.name_edit.setFocus()
+                return
+            self.accept()
+
+        def values(self) -> tuple[str, str]:
+            return self.name_edit.text().strip(), self.note_edit.text().strip()
 
     class BackupDialog(QDialog):
         """List backup folders, diff a name file, and restore it into memory."""
@@ -3309,6 +3832,8 @@ def run_gui(paths):
             self._filling = False
             self._updating = False
             self._inspector_family = ""
+            self.state = load_state(STATE_ROOT)
+            self.profiles: list[Profile] = []
             self.resize(1280, 820)
 
             self.line_model = EntryModel()
@@ -3360,9 +3885,46 @@ def run_gui(paths):
             central = QWidget()
             outer = QVBoxLayout(central)
             outer.setContentsMargins(8, 8, 8, 8)
+            header = QHBoxLayout()
             self.metrics = QLabel()
             self.metrics.setObjectName("metrics")
-            outer.addWidget(self.metrics)
+            header.addWidget(self.metrics, 1)
+            header.addWidget(QLabel("Profile"))
+            self.profile_box = QComboBox()
+            self.profile_box.setMinimumWidth(220)
+            self.profile_box.setToolTip(
+                "A spelling profile keeps your preferred names after Save and Deploy, "
+                "so they can be applied again when the game's files change.")
+            header.addWidget(self.profile_box)
+            self.record_btn = QPushButton("Record edits")
+            self.record_btn.setToolTip(
+                "Copy the unsaved name edits into this profile, with the names on disk "
+                "as their baselines. Record before you Save or Deploy.")
+            self.record_btn.clicked.connect(self.record_into_profile)
+            header.addWidget(self.record_btn)
+            self.apply_profile_btn = QPushButton("Apply...")
+            self.apply_profile_btn.setToolTip(
+                "Preview this profile's spellings against the open files. Nothing is "
+                "written until you Save or Deploy.")
+            self.apply_profile_btn.clicked.connect(self.apply_profile_to_files)
+            header.addWidget(self.apply_profile_btn)
+            self.manage_btn = QToolButton()
+            self.manage_btn.setObjectName("manage")
+            self.manage_btn.setText("Manage")
+            self.manage_btn.setPopupMode(QToolButton.InstantPopup)
+            manage_menu = QMenu(self.manage_btn)
+            self.new_profile_act = QAction("New profile...", self)
+            self.new_profile_act.triggered.connect(self.new_profile)
+            self.rename_profile_act = QAction("Rename profile...", self)
+            self.rename_profile_act.triggered.connect(self.rename_current_profile)
+            self.delete_profile_act = QAction("Delete profile...", self)
+            self.delete_profile_act.triggered.connect(self.delete_current_profile)
+            for action in (self.new_profile_act, self.rename_profile_act,
+                           self.delete_profile_act):
+                manage_menu.addAction(action)
+            self.manage_btn.setMenu(manage_menu)
+            header.addWidget(self.manage_btn)
+            outer.addLayout(header)
             self.tabs = QTabWidget()
             outer.addWidget(self.tabs, 1)
             self.setCentralWidget(central)
@@ -3487,6 +4049,7 @@ def run_gui(paths):
             self.entity_view.selectionModel().selectionChanged.connect(
                 lambda *_args: self.on_entity_selection())
             self.tabs.currentChanged.connect(lambda _index: self.refresh_status())
+            self.profile_box.currentIndexChanged.connect(lambda _index: self.on_profile_chosen())
 
             for button in self.family_buttons:
                 button.setChecked(button.property("family") == "club")
@@ -3495,6 +4058,7 @@ def run_gui(paths):
             self.refresh_versions()
             self.apply_family()
             self.refresh_status()
+            self.refresh_profiles()
 
         def open_dialog(self):
             if not self.confirm_discard():
@@ -4116,6 +4680,226 @@ def run_gui(paths):
 
         def open_backups(self) -> None:
             BackupDialog(self, self.docs).exec()
+
+        # ----- spelling profiles -----
+        def refresh_profiles(self, select_file: str | None = None) -> None:
+            """Read the profiles folder again and fill the selector.
+
+            ``select_file`` is a profile's file name; "" selects No profile.
+            By default the remembered profile is selected. Nothing is saved.
+            """
+            self.profiles, problems = list_profiles(PROFILE_ROOT)
+            if select_file is None:
+                select_file = str(self.state.get("active_profile_file", ""))
+            names = [profile.name.casefold() for profile in self.profiles]
+            self.profile_box.blockSignals(True)
+            self.profile_box.clear()
+            self.profile_box.addItem("No profile", "")
+            for profile in self.profiles:
+                label = profile.name
+                if names.count(profile.name.casefold()) > 1:
+                    label += f" ({profile.path.name})"
+                self.profile_box.addItem(label, profile.path.name)
+                tip = f"{len(profile.rows):,} spelling(s) in {profile.path}"
+                if profile.note:
+                    tip = f"{profile.note}\n{tip}"
+                self.profile_box.setItemData(self.profile_box.count() - 1, tip, Qt.ToolTipRole)
+            index = self.profile_box.findData(select_file) if select_file else 0
+            self.profile_box.setCurrentIndex(max(index, 0))
+            self.profile_box.blockSignals(False)
+            self.update_profile_actions()
+            if problems:
+                self.statusBar().showMessage(
+                    f"{len(problems)} profile file(s) could not be read and were left "
+                    "alone: " + " | ".join(problems), 20000)
+
+        def current_profile(self):
+            wanted = self.profile_box.currentData()
+            for profile in self.profiles:
+                if wanted and profile.path is not None and profile.path.name == wanted:
+                    return profile
+            return None
+
+        def update_profile_actions(self) -> None:
+            chosen = self.current_profile() is not None
+            self.apply_profile_btn.setEnabled(chosen)
+            self.rename_profile_act.setEnabled(chosen)
+            self.delete_profile_act.setEnabled(chosen)
+
+        def remember_profile(self) -> None:
+            """Keep the chosen profile in the local state file for next time."""
+            profile = self.current_profile()
+            self.state["active_profile_file"] = profile.path.name if profile else ""
+            try:
+                save_state(self.state, STATE_ROOT)
+            except OSError as exc:
+                self.statusBar().showMessage(
+                    f"Could not remember the chosen profile: {exc}", 8000)
+
+        def on_profile_chosen(self) -> None:
+            self.update_profile_actions()
+            self.remember_profile()
+
+        def new_profile(self) -> bool:
+            dialog = ProfileDialog(
+                self, "New profile", lambda name: profile_name_problem(name, self.profiles))
+            if not dialog.exec():
+                return False
+            name, note = dialog.values()
+            try:
+                profile = create_profile(name, note, PROFILE_ROOT, self.profiles)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, APP_NAME, f"Could not create the profile:\n{exc}")
+                return False
+            self.refresh_profiles(profile.path.name)
+            self.remember_profile()
+            self.statusBar().showMessage(
+                f"Created the profile {profile.name}. Record edits into it before you "
+                "Save or Deploy.", 10000)
+            return True
+
+        def rename_current_profile(self) -> None:
+            profile = self.current_profile()
+            if profile is None:
+                return
+            dialog = ProfileDialog(
+                self, "Rename profile",
+                lambda name: profile_name_problem(name, self.profiles, own=profile),
+                profile.name, profile.note)
+            if not dialog.exec():
+                return
+            name, note = dialog.values()
+            try:
+                renamed = rename_profile(profile, name, note, PROFILE_ROOT, self.profiles)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, APP_NAME, f"Could not rename the profile:\n{exc}")
+                self.refresh_profiles()
+                return
+            self.refresh_profiles(renamed.path.name)
+            self.remember_profile()
+            self.statusBar().showMessage(f"Renamed the profile to {renamed.name}.", 8000)
+
+        def delete_current_profile(self) -> None:
+            profile = self.current_profile()
+            if profile is None:
+                return
+            answer = QMessageBox.question(
+                self, APP_NAME,
+                f"Delete the profile {profile.name} ({len(profile.rows):,} spelling(s))?\n\n"
+                f"Its file moves to {PROFILE_ROOT / 'deleted'}, so it can be recovered "
+                "by hand. The name files are not changed.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            try:
+                moved = delete_profile(profile, PROFILE_ROOT)
+            except OSError as exc:
+                QMessageBox.warning(self, APP_NAME, f"Could not delete the profile:\n{exc}")
+                return
+            self.refresh_profiles("")
+            self.remember_profile()
+            self.statusBar().showMessage(
+                f"Deleted the profile {profile.name}. Its file is now {moved}.", 10000)
+
+        def record_into_profile(self) -> None:
+            """Copy the unsaved name edits into the chosen profile, after a confirmation."""
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open the name files first.")
+                return
+            profile = self.current_profile()
+            if profile is None:
+                answer = QMessageBox.question(
+                    self, APP_NAME,
+                    "No profile is chosen. Make a new profile to record into?",
+                    QMessageBox.Yes | QMessageBox.No)
+                if answer != QMessageBox.Yes or not self.new_profile():
+                    return
+                profile = self.current_profile()
+                if profile is None:
+                    return
+            trial = profile.copy()
+            counts = record_edits(trial, self.docs)
+            notes = []
+            if counts["persons"]:
+                notes.append(f"{counts['persons']:,} person rule(s) are not names and are "
+                             "not recorded.")
+            if counts["removed"]:
+                notes.append(f"{counts['removed']:,} row(s) a restore left out are not "
+                             "recorded.")
+            if counts["skipped"]:
+                notes.append(f"{counts['skipped']:,} row(s) could not be stored as one "
+                             "line and were skipped.")
+            if counts["repeated"]:
+                notes.append(f"{counts['repeated']:,} repeated key(s) kept the last spelling.")
+            wanted = counts["added"] + counts["updated"]
+            if not wanted:
+                if counts["same"]:
+                    text = (f"{profile.name} already holds these {counts['same']:,} "
+                            "spelling(s) with the same baselines.")
+                else:
+                    text = ("There are no unsaved name edits to record. An edit that "
+                            "has been saved is part of the file on disk, so record "
+                            "edits before you Save or Deploy.")
+                QMessageBox.information(self, APP_NAME, " ".join([text, *notes]))
+                return
+            question = (f"Record {wanted:,} spelling(s) into {profile.name}? "
+                        f"{counts['added']:,} new, {counts['updated']:,} replacing an "
+                        "earlier spelling. Each keeps the name on disk as its baseline.")
+            if notes:
+                question += "\n\n" + "\n".join(notes)
+            answer = QMessageBox.question(
+                self, APP_NAME, question, QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            try:
+                save_profile(trial, PROFILE_ROOT)
+            except OSError as exc:
+                QMessageBox.critical(
+                    self, APP_NAME,
+                    f"Could not write the profile:\n{exc}\n\nThe profile on disk is "
+                    "unchanged.")
+                return
+            self.refresh_profiles(trial.path.name)
+            self.statusBar().showMessage(
+                f"Recorded {wanted:,} spelling(s) into {trial.name}, which now holds "
+                f"{len(trial.rows):,}.", 10000)
+
+        def apply_profile_to_files(self) -> None:
+            """Preview the chosen profile against the open files, then apply the ticked rows."""
+            profile = self.current_profile()
+            if profile is None:
+                QMessageBox.information(self, APP_NAME, "Choose a profile first.")
+                return
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open the name files first.")
+                return
+            try:
+                fresh = load_profile(profile.path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, APP_NAME, f"Could not read the profile:\n{exc}")
+                self.refresh_profiles()
+                return
+            changes, missing, stats = apply_profile(fresh, self.docs)
+            if not changes and not missing:
+                text = (f"All {stats['same']:,} spelling(s) in {fresh.name} that the open "
+                        "files have already match.")
+                if stats["elsewhere"]:
+                    text += (f" {stats['elsewhere']:,} belong to a file that is not open.")
+                if not stats["rows"]:
+                    text = f"{fresh.name} holds no spellings yet. Record some edits first."
+                QMessageBox.information(self, APP_NAME, text)
+                return
+            dialog = PackDialog(
+                self, changes, missing, describe_profile_apply(fresh, stats),
+                title=f"Apply profile: {fresh.name}", new_label="Profile spelling",
+                base_label="Baseline when recorded",
+                apply_func=lambda c, m, d: apply_profile_proposals(fresh.name, c, m, d))
+            if dialog.exec() and dialog.result_counts is not None:
+                updated, added = dialog.result_counts
+                self.reload_views()
+                self.statusBar().showMessage(
+                    f"Profile {fresh.name} updated {updated} line(s) and added {len(added)}. "
+                    "Nothing is written until you press Save or Deploy.", 10000)
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)

@@ -6,6 +6,19 @@ Application on disk: 2.2
 
 The program on disk reports `VERSION = "2.2"`. The launcher banner says v2.2.
 
+## Unreleased — Release 2.3 in progress
+
+Not released. `VERSION` still reads 2.2. Session 4 of Release 2.3 was done on 11 November 2026; sessions 5 and 6 follow.
+
+Session 4 — spelling profiles:
+
+- **Profiles keep your spellings after Save and Deploy.** A profile is a named file of preferred spellings in the local `profiles` folder, with a note. Each spelling keeps the name the file on disk had when you recorded it (its baseline), the file it came from, and that file's SHA-256. Name packs stay as they are, for moving spellings between machines or people.
+- **Record edits.** The new Profile controls sit in the row under the toolbar: a profile selector, **Record edits**, **Apply...**, and **Manage** (New, Rename, Delete). Record edits copies the unsaved name edits into the chosen profile, after a confirmation that counts new and replaced spellings. An edit that has already been saved is part of the file on disk, so record before you Save or Deploy; the message says so when there is nothing to record. With no profile chosen, Record edits offers to make one. Person rules are not names and are not recorded.
+- **Apply.** Apply shows the profile against the open files in the same preview as a name pack, with the profile's spelling, the baseline it was recorded against, and a note for each row. A row is ticked only when the open file still has that baseline. It is left unticked, with a note, when the game has changed that name since, when the line has an unsaved edit of its own, or when another profile set it earlier in this session. A recorded added line is offered again for the file it came from. Apply changes memory only; Save or Deploy writes it.
+- **Profiles are files you can trust.** They are written in one step through the same route as every other file. A damaged or hand-edited profile that cannot be read is named in the status bar and left alone. Delete moves the file into `profiles\deleted`, so it can be recovered by hand. The chosen profile is remembered between runs in `state\settings.json`. Save and Deploy never change a profile.
+- **Previews fit their contents.** The pack and profile previews size their columns to the names in them.
+- Tests: 80, up from 64. New cover for the profile file round trip, recording with baselines and counts, saved edits not being recorded, Apply with an unchanged, changed, or removed baseline, rows for files that are not open, unsaved edits and competing profiles, Save and Deploy leaving the profile file alone, record–Deploy–update–reopen–Apply, names, file names, rename, delete, unreadable profiles, the local settings file, and window tests for the profile controls. Every test now runs with the backups, profiles, and state folders pointed at a temporary folder, and window tests delete their windows, which brought the suite from 38 to about 4 seconds.
+
 ## 2.2 (11 November 2026)
 
 Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. A correctness and write-safety release built from the review of 2.1 (findings F1–F6). It adds no new features beyond what those repairs need; the window looks the same apart from a few labels and the Backups window.

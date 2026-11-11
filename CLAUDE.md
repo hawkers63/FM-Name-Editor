@@ -40,10 +40,11 @@ A release closes when the last session in it is done. Then, in one commit: bump 
 - **The game tree is sacred.** Writes outside `C:\FM Name Editor` go only to the paths named in `memory.md`, after an archive copy and a confirmation. Never delete game files. Never use the Steam tree as a write fixture in tests. Refuse to write game files while `fm.exe` is running; never stop that process.
 - **One dependency.** PySide6 only. No second GUI toolkit, no charts, no AI SDK, no service. Ask before adding any package.
 - **One module.** Keep the engine and GUI in `fm_name_editor.py`, engine helpers free of Qt imports so the tests can import them.
-- **Nothing in the repository from `D:\Steam`.** No `.lnc`, `.dbc`, `.edt`, `.ddt` copies, no `backups\`, no `.bak-*`, no `__pycache__`, and no `notes\`, `memory.md`, or `roadmap.md`.
+- **Nothing in the repository from `D:\Steam`.** No `.lnc`, `.dbc`, `.edt`, `.ddt` copies, no `backups\`, no `.bak-*`, no `__pycache__`, and no `notes\`, `memory.md`, `roadmap.md`, `profiles\`, or `state\`.
+- **Local files.** Spelling profiles live in `profiles\` and local settings in `state\settings.json`, both written through `write_file_atomically`. Save and Deploy never change a profile; only Record edits, New, Rename, and Delete do. Deleting a profile moves it into `profiles\deleted`.
 - **British English** in interface text, comments, and documents. Plain words over jargon.
 - **Honest labels.** An absent override is "No short-name override", not "Missing". The comment heading a row sits under is its "File section", not its country.
-- Tests are standard-library `unittest`, run from the project root, writing only to temporary directories.
+- Tests are standard-library `unittest`, run from the project root, writing only to temporary directories. `setUpModule` points `BACKUP_ROOT`, `PROFILE_ROOT`, and `STATE_ROOT` at a temporary folder for the whole run. Window tests clean up with `close_window`, which deletes the window; without that every later window test gets slower.
 
 ## Commands
 
