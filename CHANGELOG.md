@@ -6,6 +6,10 @@ Application on disk: 2.3
 
 The program on disk reports `VERSION = "2.3"`. The launcher banner says v2.3.
 
+## Unreleased - Release 2.4 in progress
+
+Not released. `VERSION` still reads 2.3. Release 2.4 is the interface around the workflow: Session 7 (layout, menus, grid, inspector, and grid speed) and Session 8 (view state, collections, background work). Nothing has changed since 2.3 yet.
+
 ## 2.3 (11 November 2026)
 
 Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. Your spellings now outlive a write, every write is reviewed in one place, and whole operations can be undone. This is Stage 2 of the review of 2.1 (items A, B, and D), built in sessions 4, 5, and 6.
