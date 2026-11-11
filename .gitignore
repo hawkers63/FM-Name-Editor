@@ -3,3 +3,8 @@ __pycache__/
 backups/
 *.bak-*
 *.writing
+
+# Working notes. They stay on this PC and are not published.
+/notes/
+/memory.md
+/roadmap.md

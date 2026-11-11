@@ -8,7 +8,7 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. It lets you 
 
 This project is a personal tool. It is not affiliated with Sports Interactive or Sega.
 
-The program you can run today is **2.1**. How the releases were shaped is in [roadmap.md](roadmap.md). Facts about the FM27 files on this PC are in [memory.md](memory.md). Version notes are in [CHANGELOG.md](CHANGELOG.md).
+The program you can run today is **2.1**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
 
 ## Run it
 
