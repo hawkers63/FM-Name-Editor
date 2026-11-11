@@ -8,3 +8,7 @@ backups/
 /notes/
 /memory.md
 /roadmap.md
+
+# Local settings. They stay on this PC.
+/profiles/
+/state/

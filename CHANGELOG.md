@@ -25,6 +25,10 @@ Session 2 — correctness and write safety, part two (review findings F4 and F5,
 - **Opening files is all or nothing.** Every file is read first. If one cannot be read or decoded, a message names it and the files already open stay open. Before, a bad encoding could escape the error handler and a failed open emptied the workspace. The import dialog now catches decoding errors too.
 - **Plainer labels.** "Missing short name" and "Missing code" are now "No short-name override" and "No code override". "Section" is now "File section", with a hint that it is the comment heading in the file and not a reliable country. The unsaved count includes restored and removed rows, and says "file differs from disk" when only comments or layout differ.
 - Tests: 50, up from 33. New cover for restore baselines and pending state, repeated and failed restores, Greek rule revert in every order, all-or-nothing opening, the close prompt after a restore, and the new labels.
+Housekeeping:
+
+- **Proprietary licence.** A `LICENSE` file now states that FM Name Editor is copyright Mark Hawksworth (hawkers63), all rights reserved, with no copying, distribution, modification, reverse engineering, sublicensing or commercial use without prior written consent. `fm_name_editor.py` carries the matching copyright banner.
+- `.gitignore` now keeps the local `profiles/` and `state/` folders out of the repository.
 
 ## 2.1 (11 November 2026)
 

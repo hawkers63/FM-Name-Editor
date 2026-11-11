@@ -2,6 +2,11 @@
 """
 FM Name Editor v2.1
 ===================
+Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
+Proprietary and confidential. No copying, distribution, modification,
+reverse engineering, sublicensing or commercial use without prior written
+consent. See LICENSE.
+
 Browse and edit Football Manager .lnc name files. Clubs and competitions
 are shown side by side (long name, short name, code). The line-by-line
 table is still there. Edits can be carried across from an older version

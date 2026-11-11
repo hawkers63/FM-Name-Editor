@@ -60,3 +60,7 @@ Use **Quick load FM27**, Open, or drop `.lnc` files onto the launcher. Quick loa
 ## Publish
 
 The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0 and 2.1 are published there. Game data and backups do not belong in that repository.
+
+## Licence
+
+Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved. This is proprietary software, not open source. See [LICENSE](LICENSE) for the terms.
