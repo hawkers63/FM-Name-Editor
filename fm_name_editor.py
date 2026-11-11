@@ -156,6 +156,25 @@ def name_is_legal(new: str) -> bool:
     return bool(new) and field_is_legal(new)
 
 
+def name_problem(text: str, noun: str = "name") -> str:
+    """Why text cannot be stored as a name, in one sentence; "" when it can.
+
+    It is "" exactly when name_is_legal(text) is true. The window shows the
+    sentence beside the field instead of quietly putting the old name back.
+    ``noun`` is "name" or "ending" (a person rule's matched ending).
+    """
+    article = "An" if noun[:1] in "aeiou" else "A"
+    if not text:
+        return f"{article} {noun} cannot be empty. To take an edit back, use Revert or Undo."
+    if '"' in text:
+        return (f'{article} {noun} cannot contain a double quote ("): the file would '
+                f"read the {noun} as ending there.")
+    if not field_is_legal(text):
+        return (f"{article} {noun} cannot contain a line break or another control "
+                "character: the file would split the line there.")
+    return ""
+
+
 def id_is_legal(id_: str) -> bool:
     """Return True for an ASCII decimal database id such as ``740``."""
     return bool(id_) and id_.isascii() and id_.isdigit()
@@ -191,7 +210,9 @@ def build_name_line(cmd: str, id_: str, name: str, lang: str) -> str:
 
 
 def fold(text: str) -> str:
-    """Lower-case and strip accents, for accent-insensitive searching."""
+    """Lower-case and strip accents, for accent-insensitive searching and sorting."""
+    if text.isascii():
+        return text.lower()     # nothing to strip; the same answer, many times faster
     nfd = unicodedata.normalize("NFD", text)
     return "".join(c for c in nfd if unicodedata.category(c) != "Mn").casefold()
 
@@ -343,6 +364,26 @@ def revert_entries(entries) -> dict:
     for entry in entries:
         counts[revert_entry(entry)] += 1
     return counts
+
+
+def line_reason(entry: Entry) -> str:
+    """The operation that last changed a line, in words: "Bulk tool", "Profile Mine".
+
+    A profile is named only while the line still holds the name it set.
+    """
+    key = entry.reason or ""
+    if key == "profile":
+        mark = entry.profile_mark
+        if mark is not None and mark[1] == entry.name:
+            return f"Profile {mark[0]}"
+    return CHANGE_REASONS.get(key, "")
+
+
+def entry_status(entry: Entry) -> str:
+    """"Added", "Edited", or "": a line's state for the All lines table."""
+    if entry.imported:
+        return "Added"
+    return "Edited" if entry.changed else ""
 
 
 def is_person_command(cmd: str) -> bool:
@@ -1333,6 +1374,181 @@ def build_entities(docs) -> list[NameEntity]:
     return sorted(found.values(), key=sort_key)
 
 
+# The inspector's heading for one entity: "Club 740".
+ENTITY_KINDS = {
+    "club": "Club",
+    "comp": "Competition",
+    "stadium": "Stadium",
+    "city": "City",
+    "nation": "Nation",
+    "award": "Award",
+}
+# How a field reads in the inspector. A field with no line is "none", and
+# reads as no_override_text says: absent is neutral, not missing.
+FIELD_STATES = {"same": "Unchanged", "edited": "Edited", "added": "Added"}
+
+
+def no_override_text(family: str, slot: str) -> str:
+    """"No short-name override", "No code override": an empty field, in words."""
+    if slot == "code":
+        return "No code override"
+    for key, label, _cmd in FAMILY_FIELDS[family]:
+        if key == slot:
+            return f"No {label.lower().replace(' ', '-')} override"
+    return "No override"
+
+
+def describe_lines(entries) -> str:
+    """Where lines sit in memory: "FM27_Club_Names.lnc, line 1034", or several."""
+    by_file: dict[str, list[int]] = {}
+    for entry in entries:
+        by_file.setdefault(entry.doc.path.name, []).append(entry.lineno)
+    parts = []
+    for name, numbers in by_file.items():
+        if len(numbers) == 1:
+            parts.append(f"{name}, line {numbers[0]}")
+        else:
+            listed = ", ".join(str(number) for number in numbers[:-1])
+            parts.append(f"{name}, lines {listed} and {numbers[-1]}")
+    return "; ".join(parts)
+
+
+class FieldView:
+    """One field of an entity as the inspector shows it.
+
+    ``state`` is a key of FIELD_STATES, or "none" when the open files have
+    no line for the field. ``on_disk`` is the text in the file on disk, or
+    None when the file has no such line yet. ``current`` is the text in
+    memory, ``reason`` the operation that changed it, ``where`` the file and
+    line (or, for an empty field, where typing a name would add one), and
+    ``count`` the number of lines that carry the field.
+    """
+
+    __slots__ = ("slot", "label", "state", "current", "on_disk", "reason", "where", "count")
+
+    def __init__(self, slot: str, label: str):
+        self.slot = slot
+        self.label = label
+        self.state = "none"
+        self.current = ""
+        self.on_disk = None
+        self.reason = ""
+        self.where = ""
+        self.count = 0
+
+    @property
+    def marker(self) -> str:
+        """The field-level change marker, in text: "Edited (Bulk tool)", "Added"."""
+        text = FIELD_STATES.get(self.state, "")
+        if self.reason:
+            text += f" ({self.reason})"
+        if self.count > 1:
+            text += f", on {self.count} lines"
+        return text
+
+
+def describe_fields(entity: NameEntity) -> list[FieldView]:
+    """Each field of an entity, with its text on disk and in memory, for the inspector.
+
+    A field on several lines (a repeated key) is described from its first
+    line, as the grid shows it, and ``where`` names every line.
+    """
+    anchor = next(entity.entries(), None)
+    views = []
+    for slot, label, _cmd in FAMILY_FIELDS[entity.family]:
+        view = FieldView(slot, label)
+        group = entity.slots.get(slot) or []
+        if not group:
+            if anchor is not None:
+                view.where = (f"Typing a name adds a line after line {anchor.lineno} "
+                              f"of {anchor.doc.path.name}.")
+            views.append(view)
+            continue
+        first = group[0]
+        view.current = first.name
+        view.count = len(group)
+        view.where = describe_lines(group)
+        if first.imported:
+            view.state = "added"
+        elif first.changed:
+            view.state, view.on_disk = "edited", first.orig_name
+        else:
+            view.state, view.on_disk = "same", first.name
+        if view.state != "same":
+            view.reason = line_reason(first)
+        views.append(view)
+    return views
+
+
+def _id_number(id_: str) -> int:
+    return int(id_) if id_.isascii() and id_.isdigit() else -1
+
+
+def entity_text(entity: NameEntity, key: str) -> str:
+    """The text of one entity-grid column: "section", "id", "lang", "status", or a field."""
+    if key == "section":
+        return entity.section
+    if key == "id":
+        return entity.id
+    if key == "lang":
+        return entity.lang
+    if key == "status":
+        return entity_status(entity)
+    return entity.name_in(key)
+
+
+def entry_text(entry: Entry, key: str) -> str:
+    """The text of one All lines column: "section", "type", "id", "name", "lang", "file", "status"."""
+    if key == "section":
+        return entry.source if entry.kind == "person" else entry.section
+    if key == "type":
+        return friendly(entry.cmd)
+    if key == "id":
+        return entry.id
+    if key == "name":
+        return entry.name
+    if key == "lang":
+        return entry.lang
+    if key == "file":
+        return entry.doc.path.name
+    if key == "status":
+        return entry_status(entry)
+    return ""
+
+
+def _sorted_by_text(rows, text_of, key: str, descending: bool) -> list:
+    """Sort rows by one column. IDs go by number; text ignores accents and capitals.
+
+    Rows with nothing in a text column go last in either direction, so a
+    sort by short name does not open on a page of empty cells. Ties keep
+    the order the rows came in. An empty ``key`` keeps that order too.
+    """
+    rows = list(rows)
+    if not key:
+        return rows
+    if key == "id":
+        rows.sort(key=lambda row: _id_number(text_of(row, "id")), reverse=descending)
+        return rows
+    keyed = [(fold(text_of(row, key)), row) for row in rows]
+    filled = [pair for pair in keyed if pair[0]]
+    filled.sort(key=lambda pair: pair[0], reverse=descending)
+    return [row for _text, row in filled] + [row for text, row in keyed if not text]
+
+
+def sort_entities(entities, key: str, descending: bool = False) -> list:
+    """Entities in grid order for one column (see _sorted_by_text). The default is the long name.
+
+    Pass the entities in build_entities order (file section, then ID), so
+    ties and an empty ``key`` follow it.
+    """
+    return _sorted_by_text(entities, entity_text, key, descending)
+
+
+def sort_entries(entries, key: str, descending: bool = False) -> list:
+    """Name lines in table order for one column (see _sorted_by_text). The default is file order."""
+    return _sorted_by_text(entries, entry_text, key, descending)
+
+
 def command_for(family: str, slot: str) -> str:
     for slot_key, _label, cmd in FAMILY_FIELDS[family]:
         if slot_key == slot:
@@ -2292,18 +2508,12 @@ class ChangeRow:
     def reason(self) -> str:
         """The operation that made this difference, in words."""
         if self.entry is None:
-            key = "restore" if self.doc.restore_pending else ""
-        elif self.state == "removed":
+            return CHANGE_REASONS["restore"] if self.doc.restore_pending else ""
+        if self.state == "removed":
             # A disk line missing from memory comes from a restore, or from an
             # undo that took out a line a write had already put on disk.
-            key = "restore" if self.doc.restore_pending else "undo"
-        else:
-            key = self.entry.reason or ""
-        if key == "profile":
-            mark = self.entry.profile_mark
-            if mark is not None and mark[1] == self.entry.name:
-                return f"Profile {mark[0]}"
-        return CHANGE_REASONS.get(key, "")
+            return CHANGE_REASONS["restore" if self.doc.restore_pending else "undo"]
+        return line_reason(self.entry)
 
     @property
     def detail(self) -> str:
@@ -3558,22 +3768,75 @@ def restore_into(doc: LncDoc, archive_file: Path) -> None:
 # --------------------------------------------------------------------------
 
 def run_gui(paths):
-    from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
-                                Qt, QTimer, Signal)
-    from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QUndoCommand, QUndoStack
+    from PySide6.QtCore import (QAbstractTableModel, QItemSelectionModel, QModelIndex,
+                                QSortFilterProxyModel, Qt, QTimer, Signal)
+    from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QKeySequence,
+                               QUndoCommand, QUndoStack)
     from PySide6.QtWidgets import (
         QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
-        QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView,
-        QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-        QPlainTextEdit, QPushButton, QRadioButton, QSplitter, QStyledItemDelegate,
-        QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolButton,
-        QVBoxLayout, QWidget)
+        QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
+        QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
+        QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
+        QSplitter, QStyledItemDelegate, QTableView, QTableWidget, QTableWidgetItem,
+        QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
         "A copy of each existing game file is stored under backups first. Files are "
         "replaced one at a time; if one fails, the files already replaced are put back "
         "from that copy.")
+    DISPLAY, EDIT, FONT = Qt.DisplayRole, Qt.EditRole, Qt.FontRole
+    FOREGROUND, TOOLTIP = Qt.ForegroundRole, Qt.ToolTipRole
+    # State text in the grids, coloured as well as worded. Lighter than the
+    # accent (#8b5cf6) so it reads on the slate panels.
+    STATE_COLOURS = {"Duplicate": QColor("#f59e0b"), "Added": QColor("#10b981"),
+                     "Edited": QColor("#a78bfa")}
+
+    def state_colour(text: str):
+        """The colour for a status cell: a repeated key first, then added, then edited."""
+        for word, colour in STATE_COLOURS.items():
+            if word in text:
+                return colour
+        return None
+
+    def reorder_rows(model, rows) -> None:
+        """Give a model's rows a new order, keeping each selection on the same row.
+
+        The grids sort in Python like this rather than through the proxy, which
+        would ask data() for every comparison: seconds with both FM27 files open.
+        """
+        model.layoutAboutToBeChanged.emit()
+        old = model.persistentIndexList()
+        held = [(model.rows[index.row()], index.column()) for index in old]
+        model.rows = rows
+        where = {id(row): number for number, row in enumerate(rows)}
+        model.changePersistentIndexList(
+            old, [model.index(where[id(row)], column) if id(row) in where else QModelIndex()
+                  for row, column in held])
+        model.layoutChanged.emit()
+
+    def text_width(metrics: QFontMetrics, texts, sample: int = 24) -> int:
+        """The widest of some texts, measuring only the longest few by character count."""
+        longest = sorted({text for text in texts if text}, key=len, reverse=True)[:sample]
+        return max((metrics.horizontalAdvance(text) for text in longest), default=0)
+
+    def fit_columns(view: QTableView, texts_by_column: dict, caps: dict | None = None) -> None:
+        """Size columns from their texts without asking the model for every cell.
+
+        resizeColumnToContents asks data() for a thousand rows per column,
+        which took seconds with both FM27 files open. Bold is measured, since
+        edited rows are bold. Each column is at least as wide as its header.
+        """
+        view.ensurePolished()
+        font = QFont(view.font())
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        header = view.horizontalHeader()
+        for column, texts in texts_by_column.items():
+            width = max(header.sectionSizeHint(column), text_width(metrics, texts) + 16)
+            if caps and column in caps:
+                width = min(width, caps[column])
+            view.setColumnWidth(column, width)
 
     class EditCommand(QUndoCommand):
         """A recorded Operation on the undo stack.
@@ -3613,20 +3876,41 @@ def run_gui(paths):
 
     # ---------------- main table ----------------
     class EntryModel(QAbstractTableModel):
+        """Every name line and person rule, in file order until a column is sorted.
+
+        Sorting happens here, in Python (sort_by), not in the proxy.
+        """
+
         COLS = ["File section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
+        KEYS = ["section", "type", "id", "name", "lang", "file", "status"]
         NAME_COL = 3
+        STATUS_COL = 6
         operation_done = Signal(object)     # an edit made here, for the undo stack
+        rejected = Signal(str)              # why a typed name or ending was not used
 
         def __init__(self):
             super().__init__()
             self.rows: list[Entry] = []
+            self.base_rows: list[Entry] = []    # file order
+            self.sort_key = ""                  # "" keeps file order
+            self.sort_descending = False
             self.bold = QFont()
             self.bold.setBold(True)
 
         def set_docs(self, docs):
             self.beginResetModel()
-            self.rows = [e for d in docs for e in d.editable()]
+            self.base_rows = [e for d in docs for e in d.editable()]
+            self.rows = sort_entries(self.base_rows, self.sort_key, self.sort_descending)
             self.endResetModel()
+
+        def sort_by(self, column: int, descending: bool) -> None:
+            """Sort by a column, or go back to file order when ``column`` is -1."""
+            self.sort_key = self.KEYS[column] if 0 <= column < len(self.KEYS) else ""
+            self.sort_descending = descending
+            reorder_rows(self, sort_entries(self.base_rows, self.sort_key, descending))
+
+        def sort_column(self) -> int:
+            return self.KEYS.index(self.sort_key) if self.sort_key in self.KEYS else -1
 
         def rowCount(self, parent=QModelIndex()):
             return 0 if parent.isValid() else len(self.rows)
@@ -3635,10 +3919,14 @@ def run_gui(paths):
             return len(self.COLS)
 
         def headerData(self, section, orientation, role=Qt.DisplayRole):
-            if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            if orientation != Qt.Horizontal:
+                return None
+            if role == DISPLAY:
                 return self.COLS[section]
-            if role == Qt.ToolTipRole and orientation == Qt.Horizontal and section == 0:
+            if role == TOOLTIP and section == 0:
                 return FILE_SECTION_HINT
+            if role == Qt.InitialSortOrderRole:
+                return Qt.AscendingOrder        # the first click on a header sorts A to Z
             return None
 
         def flags(self, index):
@@ -3653,24 +3941,18 @@ def run_gui(paths):
             return f
 
         def data(self, index, role=Qt.DisplayRole):
-            e = self.rows[index.row()]
-            c = index.column()
-            if role in (Qt.DisplayRole, Qt.EditRole):
-                if c == 0:
-                    return e.source if e.kind == "person" else e.section
-                if c == 1: return friendly(e.cmd)
-                if c == 2: return int(e.id) if role == Qt.EditRole else e.id
-                if c == 3: return e.name
-                if c == 4: return e.lang
-                if c == 5: return e.doc.path.name
-                if c == 6:
-                    return "Added" if e.imported else ("Edited" if e.changed else "")
-            if role == Qt.FontRole and e.changed:
-                return self.bold
-            if role == Qt.ToolTipRole and e.kind == "person":
-                return f"Ending was: {e.orig_source}. Replacement was: {e.orig_name}."
-            if role == Qt.ToolTipRole and e.changed and not e.imported:
-                return f"Was: {e.orig_name}"
+            if role == DISPLAY or role == EDIT:
+                return entry_text(self.rows[index.row()], self.KEYS[index.column()])
+            if role == FONT:
+                return self.bold if self.rows[index.row()].changed else None
+            if role == FOREGROUND and index.column() == self.STATUS_COL:
+                return state_colour(entry_status(self.rows[index.row()]))
+            if role == TOOLTIP:
+                e = self.rows[index.row()]
+                if e.kind == "person":
+                    return f"Ending was: {e.orig_source}. Replacement was: {e.orig_name}."
+                if e.changed and not e.imported:
+                    return f"Was: {e.orig_name}"
             return None
 
         def setData(self, index, value, role=Qt.EditRole):
@@ -3678,15 +3960,24 @@ def run_gui(paths):
                 return False
             entry = self.rows[index.row()]
             text = str(value).strip()
-            if index.column() == 0:
-                with Operation(f"edit ending: {text}") as operation:
-                    changed = try_set_source(entry, text)
+            if index.column() == 0 and entry.kind == "person":
+                noun, current = "ending", entry.source
             elif index.column() == self.NAME_COL:
-                field = "replacement" if entry.kind == "person" else "name"
-                with Operation(f"edit {field}: {text}") as operation:
-                    changed = try_set_name(entry, text)
+                noun = "replacement" if entry.kind == "person" else "name"
+                current = entry.name
             else:
                 return False
+            if text == current:
+                return False
+            problem = name_problem(text, noun)
+            if problem:
+                self.rejected.emit(problem)     # the window says why, instead of nothing
+                return False
+            with Operation(f"edit {noun}: {text}") as operation:
+                if noun == "ending":
+                    changed = try_set_source(entry, text)
+                else:
+                    changed = try_set_name(entry, text)
             if not changed:
                 return False
             self.row_changed(index.row())
@@ -3697,19 +3988,23 @@ def run_gui(paths):
             self.dataChanged.emit(self.index(row, 0), self.index(row, len(self.COLS) - 1))
 
     class EntryProxy(QSortFilterProxyModel):
+        """Filters the line table. The model sorts; this keeps the model's order."""
+
         def __init__(self):
             super().__init__()
             self.words = []
             self.cmd = ""
             self.changed_only = False
-            self.setSortRole(Qt.EditRole)
             self.setDynamicSortFilter(False)   # edited rows stay put until re-filtered
-            self.setSortCaseSensitivity(Qt.CaseInsensitive)
 
-        def set_filter(self, text, cmd, changed_only):
+        def configure(self, text, cmd, changed_only) -> None:
+            """Set the filter without running it: a model reset that follows runs it once."""
             self.words = fold(text).split()
             self.cmd = cmd
             self.changed_only = changed_only
+
+        def set_filter(self, text, cmd, changed_only):
+            self.configure(text, cmd, changed_only)
             self.invalidate()
 
         def filterAcceptsRow(self, row, parent):
@@ -3941,17 +4236,39 @@ def run_gui(paths):
         spacing: 6px; padding: 4px;
     }
     QStatusBar { background: #1a1e28; color: #8a94a6; }
+    QStatusBar QLabel { padding: 0 6px; }
+    QMenuBar { background: #1a1e28; color: #e2e8f0; }
+    QMenuBar::item { background: transparent; padding: 4px 10px; }
+    QMenuBar::item:selected { background: #2a3040; }
+    QToolBar QLabel { background: transparent; color: #8a94a6; padding: 0 2px 0 6px; }
+    QToolBar QWidget#spacer { background: transparent; }
+    QToolBar QLabel#product {
+        color: #e2e8f0; font-weight: bold; font-size: 14px; padding: 0 10px 0 4px;
+    }
+    QToolBar QToolButton {
+        background: transparent; color: #e2e8f0; border: 1px solid transparent;
+        padding: 3px 8px; border-radius: 4px;
+    }
+    QToolBar QToolButton:hover { border-color: #2a3040; background: #232838; }
+    QToolBar QToolButton:disabled { color: #5c6577; }
+    QToolBar QToolButton#review {
+        background: #8b5cf6; color: white; border-color: #8b5cf6; font-weight: bold;
+    }
+    QToolBar QToolButton#review:hover { background: #7c4ff0; }
+    QToolBar QToolButton#review:disabled {
+        background: transparent; color: #5c6577; border-color: #2a3040; font-weight: normal;
+    }
     QLabel#metrics { color: #8a94a6; background: transparent; padding: 2px 6px; }
     QLabel#muted { color: #8a94a6; background: transparent; }
     QLabel#warning { color: #f59e0b; background: transparent; }
     QLabel#blocked { color: #f59e0b; background: transparent; font-weight: bold; }
     QLabel#ok { color: #10b981; background: transparent; }
+    QLabel#edited { color: #a78bfa; background: transparent; }
+    QLabel#added { color: #10b981; background: transparent; }
+    QLabel#title { background: transparent; font-weight: bold; font-size: 15px; }
+    QLineEdit#invalid { border: 1px solid #f59e0b; }
+    QFrame#rule { background: #2a3040; max-height: 1px; border: 0; }
     QLabel#heading { background: transparent; font-weight: bold; }
-    QToolButton#manage {
-        background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
-        padding: 4px 10px; border-radius: 4px;
-    }
-    QToolButton#manage:hover { border-color: #8b5cf6; }
     QMenu { background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040; }
     QMenu::item { padding: 4px 18px; }
     QMenu::item:selected { background: #8b5cf6; color: white; }
@@ -3998,91 +4315,102 @@ def run_gui(paths):
         return f"{verb} {field_label(entity.family, slot)}: {text.strip()}"
 
     class EntityModel(QAbstractTableModel):
-        """Side-by-side rows. Column set follows the selected family."""
+        """Side-by-side rows. Column set follows the selected family.
+
+        The column list is worked out once per family, not on every call, and
+        the rows are sorted here, in Python (sort_by), by the long name until
+        another column header is clicked. The ID and File section columns
+        stay in the model; the window hides them (see MainWindow.show_columns).
+        """
 
         operation_done = Signal(object)     # an edit made here, for the undo stack
+        rejected = Signal(str)              # why a typed name was not used
 
         def __init__(self, docs):
             super().__init__()
             self.docs = docs
             self.family = "club"
             self.rows: list[NameEntity] = []
+            self.base_rows: list[NameEntity] = []   # build_entities order: section, then ID
+            self.sort_key = "long"                  # "" keeps base_rows order
+            self.sort_descending = False
             self.bold = QFont()
             self.bold.setBold(True)
             self._structure = False
+            self._set_columns()
+
+        def _set_columns(self) -> None:
+            fields = FAMILY_FIELDS[self.family]
+            keys = ["section", "id", *(slot for slot, _label, _cmd in fields)]
+            if self.family == "award":
+                keys.append("lang")
+            keys.append("status")
+            self._keys = keys
+            self._slots = frozenset(slot for slot, _label, _cmd in fields)
+            self._titles = {"section": "File section", "id": "ID", "lang": "Language",
+                            "status": "Status"}
+            self._titles.update((slot, label) for slot, label, _cmd in fields)
 
         def columns(self) -> list[str]:
-            cols = ["section", "id"]
-            cols.extend(slot for slot, _label, _cmd in FAMILY_FIELDS[self.family])
-            if self.family == "award":
-                cols.append("lang")
-            cols.append("status")
-            return cols
+            return list(self._keys)
 
         def set_family_rows(self, family: str, rows: list[NameEntity]) -> None:
             self.beginResetModel()
             self.family = family
-            self.rows = rows
+            self._set_columns()
+            self.base_rows = list(rows)
+            if self.sort_key and self.sort_key not in self._keys:
+                self.sort_key, self.sort_descending = "long", False
+            self.rows = sort_entities(self.base_rows, self.sort_key, self.sort_descending)
             self.endResetModel()
+
+        def sort_by(self, column: int, descending: bool) -> None:
+            """Sort by a column, or go back to file-section order when ``column`` is -1."""
+            self.sort_key = self._keys[column] if 0 <= column < len(self._keys) else ""
+            self.sort_descending = descending
+            reorder_rows(self, sort_entities(self.base_rows, self.sort_key, descending))
+
+        def sort_column(self) -> int:
+            return self._keys.index(self.sort_key) if self.sort_key in self._keys else -1
 
         def rowCount(self, parent=QModelIndex()):
             return 0 if parent.isValid() else len(self.rows)
 
         def columnCount(self, parent=QModelIndex()):
-            return 0 if parent.isValid() else len(self.columns())
+            return 0 if parent.isValid() else len(self._keys)
 
         def headerData(self, section, orientation, role=Qt.DisplayRole):
-            if role == Qt.ToolTipRole and orientation == Qt.Horizontal:
-                if self.columns()[section] == "section":
-                    return FILE_SECTION_HINT
+            if orientation != Qt.Horizontal or not 0 <= section < len(self._keys):
                 return None
-            if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-                key = self.columns()[section]
-                if key == "section":
-                    return "File section"
-                if key == "id":
-                    return "ID"
-                if key == "lang":
-                    return "Language"
-                if key == "status":
-                    return "Status"
-                for slot, label, _cmd in FAMILY_FIELDS[self.family]:
-                    if slot == key:
-                        return label
+            key = self._keys[section]
+            if role == DISPLAY:
+                return self._titles[key]
+            if role == TOOLTIP and key == "section":
+                return FILE_SECTION_HINT
+            if role == Qt.InitialSortOrderRole:
+                return Qt.AscendingOrder        # the first click on a header sorts A to Z
             return None
 
         def flags(self, index):
             flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-            key = self.columns()[index.column()]
-            slots = {slot for slot, _label, _cmd in FAMILY_FIELDS[self.family]}
-            if key in slots:
+            if index.isValid() and self._keys[index.column()] in self._slots:
                 flags |= Qt.ItemIsEditable
             return flags
 
         def data(self, index, role=Qt.DisplayRole):
-            if not index.isValid():
-                return None
-            entity = self.rows[index.row()]
-            key = self.columns()[index.column()]
-            slots = {slot for slot, _label, _cmd in FAMILY_FIELDS[self.family]}
-            if role in (Qt.DisplayRole, Qt.EditRole):
-                if key == "section":
-                    return entity.section
-                if key == "id":
-                    if role == Qt.EditRole and entity.id.isdigit():
-                        return int(entity.id)
-                    return entity.id
-                if key == "lang":
-                    return entity.lang
-                if key == "status":
-                    return entity_status(entity)
-                return entity.name_in(key)
-            if role == Qt.FontRole and entity.changed():
-                return self.bold
-            if role == Qt.ForegroundRole and key == "status" and entity.duplicate():
-                return QColor("#f59e0b")
-            if role == Qt.ToolTipRole and key in slots:
-                group = entity.slots.get(key) or []
+            if role == DISPLAY or role == EDIT:
+                key = self._keys[index.column()]
+                entity = self.rows[index.row()]
+                if key in self._slots:
+                    return entity.name_in(key)
+                return entity_text(entity, key)
+            if role == FONT:
+                return self.bold if self.rows[index.row()].changed() else None
+            key = self._keys[index.column()]
+            if role == FOREGROUND and key == "status":
+                return state_colour(entity_status(self.rows[index.row()]))
+            if role == TOOLTIP and key in self._slots:
+                group = self.rows[index.row()].slots.get(key) or []
                 if len(group) > 1:
                     return "Duplicate lines: " + " | ".join(entry.name for entry in group)
                 if group and group[0].changed and not group[0].imported:
@@ -4092,14 +4420,19 @@ def run_gui(paths):
         def setData(self, index, value, role=Qt.EditRole):
             if role != Qt.EditRole:
                 return False
-            key = self.columns()[index.column()]
-            slots = {slot for slot, _label, _cmd in FAMILY_FIELDS[self.family]}
-            if key not in slots:
+            key = self._keys[index.column()]
+            if key not in self._slots:
                 return False
             entity = self.rows[index.row()]
+            text = str(value).strip()
+            problem = name_problem(text)
+            if problem:
+                if text or entity.slots.get(key):   # an empty cell left empty is no change
+                    self.rejected.emit(problem)
+                return False
             was_empty = not entity.slots.get(key)
-            with Operation(cell_operation(entity, key, str(value))) as operation:
-                changed = set_entity_field(entity, key, str(value), self.docs)
+            with Operation(cell_operation(entity, key, text)) as operation:
+                changed = set_entity_field(entity, key, text, self.docs)
             if not changed:
                 return False
             self._structure = was_empty
@@ -4111,19 +4444,23 @@ def run_gui(paths):
             self.dataChanged.emit(self.index(row, 0), self.index(row, self.columnCount() - 1))
 
     class EntityProxy(QSortFilterProxyModel):
+        """Filters the entity grid. The model sorts; this keeps the model's order."""
+
         def __init__(self):
             super().__init__()
             self.words: list[str] = []
             self.section = ""
             self.mode = "all"
-            self.setSortRole(Qt.EditRole)
             self.setDynamicSortFilter(False)
-            self.setSortCaseSensitivity(Qt.CaseInsensitive)
 
-        def set_filter(self, text: str, section: str, mode: str) -> None:
+        def configure(self, text: str, section: str, mode: str) -> None:
+            """Set the filter without running it: a model reset that follows runs it once."""
             self.words = fold(text).split()
             self.section = section
             self.mode = mode
+
+        def set_filter(self, text: str, section: str, mode: str) -> None:
+            self.configure(text, section, mode)
             self.invalidate()
 
         def filterAcceptsRow(self, row, parent):
@@ -4978,6 +5315,26 @@ def run_gui(paths):
         header.setResizeContentsPrecision(200)
         return view
 
+    def fit_change_columns(view: QTableView, model) -> None:
+        """Size a changes table from its rows' text (see fit_columns); the last column stretches."""
+        rows = model.rows
+        texts = {
+            ChangeModel.STATE: {CHANGE_STATES[row.state] for row in rows},
+            ChangeModel.REASON: {row.reason for row in rows},
+            ChangeModel.TYPE: {friendly(row.command) for row in rows if row.command},
+            ChangeModel.ID: {row.id for row in rows},
+            ChangeModel.LANGUAGE: {row.language for row in rows},
+            ChangeModel.ON_DISK: {row.on_disk for row in rows},
+            ChangeModel.PROPOSED: {row.proposed for row in rows},
+            ChangeModel.FILE: {row.doc.path.name for row in rows},
+            ChangeModel.LINE: {str(row.line) for row in rows if row.line},
+            ChangeModel.INCLUDE: set(),
+        }
+        if not view.isColumnHidden(ChangeModel.DEST):
+            texts[ChangeModel.DEST] = {str(model.destination(row)) for row in rows}
+        fit_columns(view, texts, {ChangeModel.ON_DISK: 320, ChangeModel.PROPOSED: 320,
+                                  ChangeModel.DEST: 420})
+
     def describe_ticks(rows) -> str:
         """The line under the Changes tab's filter."""
         if not rows:
@@ -5086,7 +5443,7 @@ def run_gui(paths):
             self.proxy.setSourceModel(self.model)
             self.table = change_table(self.proxy)
             self.table.setColumnHidden(ChangeModel.DEST, True)   # the files table names it
-            self.table.resizeColumnsToContents()
+            fit_change_columns(self.table, self.model)
             lay.addWidget(self.table, 1)
             self.search.textChanged.connect(self.proxy.set_filter)
 
@@ -5170,6 +5527,42 @@ def run_gui(paths):
                        "These name lines share a command, ID, and language. The game's order "
                        "between them is not known.", lines)
 
+    def sortable(view: QTableView, handler) -> None:
+        """Let a table's headers sort its model in Python, not through the proxy.
+
+        One click sorts A to Z, a second Z to A, a third goes back to the
+        model's own order. ``handler(column, order)`` does the sorting.
+        """
+        header = view.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.setSortIndicatorClearable(True)
+        header.sortIndicatorChanged.connect(handler)
+
+    def relayout(model) -> None:
+        """Tell the proxy and views that text changed in many rows that did not move."""
+        model.layoutAboutToBeChanged.emit()
+        model.layoutChanged.emit()
+
+    def restyle(widget, name: str) -> None:
+        """Give a widget another style-sheet object name, and repaint it in that style."""
+        if widget.objectName() != name:
+            widget.setObjectName(name)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    class InspectorEdit(QLineEdit):
+        """A field in the inspector. Esc puts back the name in memory."""
+
+        escaped = Signal()
+
+        def keyPressEvent(self, event):
+            if event.key() == Qt.Key_Escape:
+                self.escaped.emit()
+                event.accept()
+                return
+            super().keyPressEvent(event)
+
     class MainWindow(QMainWindow):
         CHANGES_TAB = 2
 
@@ -5190,15 +5583,6 @@ def run_gui(paths):
             self.resize(1280, 820)
 
             self.undo_stack = QUndoStack(self)
-            edit_menu = self.menuBar().addMenu("&Edit")
-            self.undo_act = self.undo_stack.createUndoAction(self, "Undo")
-            self.undo_act.setShortcut(QKeySequence.Undo)
-            self.redo_act = self.undo_stack.createRedoAction(self, "Redo")
-            self.redo_act.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
-            edit_menu.addAction(self.undo_act)
-            edit_menu.addAction(self.redo_act)
-            self.edit_menu = edit_menu
-
             self.line_model = EntryModel()
             self.model = self.line_model
             self.line_proxy = EntryProxy()
@@ -5206,94 +5590,253 @@ def run_gui(paths):
             self.line_proxy.setSourceModel(self.line_model)
             self.line_model.dataChanged.connect(self.on_line_data)
             self.line_model.operation_done.connect(self.push_operation)
+            self.line_model.rejected.connect(self.say_refused)
 
             self.entity_model = EntityModel(self.docs)
             self.entity_proxy = EntityProxy()
             self.entity_proxy.setSourceModel(self.entity_model)
             self.entity_model.dataChanged.connect(self.on_entity_data)
             self.entity_model.operation_done.connect(self.push_operation)
+            self.entity_model.rejected.connect(self.say_refused)
 
-            tb = self.addToolBar("Main")
-            tb.setMovable(False)
-
-            def act(text, slot, shortcut=None, tip=""):
-                action = QAction(text, self)
-                action.triggered.connect(slot)
-                if shortcut:
-                    action.setShortcut(shortcut)
-                if tip:
-                    action.setToolTip(tip)
-                tb.addAction(action)
-                return action
-
-            act("Open files...", self.open_dialog, QKeySequence.Open)
-            act("Quick load FM27", self.quick_load, tip="Open the name files in the selected database")
-            self.save_act = act("Save", self.save, QKeySequence.Save)
-            act("Deploy to FM27", self.deploy,
-                tip="Write the open name files into lnc\\all after a backup")
-            tb.addSeparator()
-            self.import_act = act("Import older edits...", self.import_old)
-            self.revert_act = act("Revert selected", self.revert_selected)
-            self.problem_act = act("Problem lines...", self.show_problems)
-            act("Licensing...", self.open_licensing)
-            act("Bulk tools...", self.open_bulk)
-            act("Replace...", self.open_replace, tip="Find and replace with a regular expression")
-            act("Export pack...", self.export_pack, tip="Save edited names as JSON or CSV")
-            act("Import pack...", self.import_pack, tip="Apply a JSON or CSV name pack")
-            act("Backups...", self.open_backups, tip="Compare a backup with the open file and restore it")
-            tb.addSeparator()
-            tb.addWidget(QLabel(" Database "))
-            self.version_box = QComboBox()
-            self.version_box.setMinimumWidth(150)
-            tb.addWidget(self.version_box)
-
+            self.build_actions()
+            self.build_menus()
+            self.build_toolbar()
             central = QWidget()
             outer = QVBoxLayout(central)
-            outer.setContentsMargins(8, 8, 8, 8)
-            header = QHBoxLayout()
-            self.metrics = QLabel()
-            self.metrics.setObjectName("metrics")
-            header.addWidget(self.metrics, 1)
-            header.addWidget(QLabel("Profile"))
-            self.profile_box = QComboBox()
-            self.profile_box.setMinimumWidth(220)
-            self.profile_box.setToolTip(
-                "A spelling profile keeps your preferred names after Save and Deploy, "
-                "so they can be applied again when the game's files change.")
-            header.addWidget(self.profile_box)
-            self.record_btn = QPushButton("Record edits")
-            self.record_btn.setToolTip(
-                "Copy the unsaved name edits into this profile, with the names on disk "
-                "as their baselines. Record before you Save or Deploy.")
-            self.record_btn.clicked.connect(self.record_into_profile)
-            header.addWidget(self.record_btn)
-            self.apply_profile_btn = QPushButton("Apply...")
-            self.apply_profile_btn.setToolTip(
-                "Preview this profile's spellings against the open files. Nothing is "
-                "written until you Save or Deploy.")
-            self.apply_profile_btn.clicked.connect(self.apply_profile_to_files)
-            header.addWidget(self.apply_profile_btn)
-            self.manage_btn = QToolButton()
-            self.manage_btn.setObjectName("manage")
-            self.manage_btn.setText("Manage")
-            self.manage_btn.setPopupMode(QToolButton.InstantPopup)
-            manage_menu = QMenu(self.manage_btn)
-            self.new_profile_act = QAction("New profile...", self)
-            self.new_profile_act.triggered.connect(self.new_profile)
-            self.rename_profile_act = QAction("Rename profile...", self)
-            self.rename_profile_act.triggered.connect(self.rename_current_profile)
-            self.delete_profile_act = QAction("Delete profile...", self)
-            self.delete_profile_act.triggered.connect(self.delete_current_profile)
-            for action in (self.new_profile_act, self.rename_profile_act,
-                           self.delete_profile_act):
-                manage_menu.addAction(action)
-            self.manage_btn.setMenu(manage_menu)
-            header.addWidget(self.manage_btn)
-            outer.addLayout(header)
+            outer.setContentsMargins(8, 6, 8, 2)
             self.tabs = QTabWidget()
             outer.addWidget(self.tabs, 1)
             self.setCentralWidget(central)
+            self.build_entity_page()
+            self.build_line_page()
+            self.build_change_page()
 
+            self.metrics = QLabel()
+            self.metrics.setObjectName("metrics")
+            self.statusBar().addPermanentWidget(self.metrics)
+            self.pending_label = QLabel("")
+            self.pending_label.setObjectName("warning")
+            self.statusBar().addPermanentWidget(self.pending_label)
+
+            self.entity_timer = QTimer(self)
+            self.entity_timer.setSingleShot(True)
+            self.entity_timer.setInterval(200)
+            self.entity_timer.timeout.connect(self.apply_entity_filter)
+            self.entity_search.textChanged.connect(lambda _text: self.entity_timer.start())
+            self.line_timer = QTimer(self)
+            self.line_timer.setSingleShot(True)
+            self.line_timer.setInterval(200)
+            self.line_timer.timeout.connect(self.apply_line_filter)
+            self.line_search.textChanged.connect(lambda _text: self.line_timer.start())
+            self.type_box.currentIndexChanged.connect(lambda _index: self.apply_line_filter())
+            self.changed_box.toggled.connect(lambda _state: self.apply_line_filter())
+            self.section_list.currentItemChanged.connect(lambda _cur, _prev: self.on_section())
+            self.family_group.buttonClicked.connect(self.on_family_clicked)
+            self.status_group.buttonClicked.connect(self.on_status_clicked)
+            self.entity_view.selectionModel().selectionChanged.connect(
+                lambda *_args: self.on_entity_selection())
+            self.change_view.doubleClicked.connect(self.go_to_change)
+            self.tabs.currentChanged.connect(lambda _index: self.refresh_status())
+            self.profile_box.currentIndexChanged.connect(lambda _index: self.on_profile_chosen())
+
+            for button in self.family_buttons:
+                button.setChecked(button.property("family") == "club")
+            for button in self.status_buttons:
+                button.setChecked(button.property("mode") == "all")
+            self.refresh_versions()
+            self.apply_family()
+            self.refresh_status()
+            self.refresh_profiles()
+
+        # ----- building the window -----
+        def action(self, text: str, slot, keys=(), tip: str = "") -> QAction:
+            """A window action for a menu or the toolbar.
+
+            ``keys`` is a standard key or a list of key texts. A shortcut must
+            belong to one action only: Qt runs neither of two that share one.
+            """
+            made = QAction(text, self)
+            made.triggered.connect(slot)
+            if isinstance(keys, QKeySequence.StandardKey):
+                made.setShortcuts(keys)
+            elif keys:
+                made.setShortcuts([QKeySequence(key) for key in keys])
+            if tip:
+                made.setToolTip(tip)
+            return made
+
+        def build_actions(self) -> None:
+            a = self.action
+            self.open_act = a("Open files...", self.open_dialog, QKeySequence.Open,
+                              "Open one or more .lnc files")
+            self.quick_load_act = a(
+                "Quick load", self.quick_load, (),
+                "Open the two FM27 name files in the selected database folder")
+            self.save_act = a(
+                "Save...", self.save, QKeySequence.Save,
+                "Review the changes, then write the ticked ones to the files they came from")
+            self.deploy_act = a(
+                "Deploy to FM27...", self.deploy, (),
+                "Review the changes, then write the name files into lnc\\all of the selected "
+                "database, after a backup")
+            self.import_act = a(
+                "Import older edits...", self.import_old, (),
+                "Carry spellings across from an older game's .lnc files, matched by ID")
+            self.problem_act = a(
+                "Problem lines...", self.show_problems, (),
+                "List the lines that could not be read as names. They are kept as they are.")
+            self.licensing_act = a(
+                "Licensing files...", self.open_licensing, (),
+                "Check the name-mask files; four of them can be disabled or restored")
+            self.exit_act = a("Exit", self.close)
+
+            self.undo_act = self.undo_stack.createUndoAction(self, "Undo")
+            self.undo_act.setShortcut(QKeySequence.Undo)
+            self.redo_act = self.undo_stack.createRedoAction(self, "Redo")
+            self.redo_act.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+            self.edit_cell_act = a(
+                "Edit cell", self.edit_current, ["F2"],
+                "Edit the selected cell. Double-clicking it does the same.")
+            self.revert_act = a(
+                "Revert selected", self.revert_selected, (),
+                "Put the selected lines back to the text on disk")
+            self.find_act = a("Find", self.focus_find, QKeySequence.Find,
+                              "Go to the search box of the tab shown")
+            self.replace_act = a("Replace...", self.open_replace, QKeySequence.Replace,
+                                 "Find and replace with a regular expression")
+            self.bulk_act = a(
+                "Bulk tools...", self.open_bulk, (),
+                "Strip affixes, remove sponsors, or title-case the names shown")
+
+            self.entities_act = a("Entities", lambda _checked=False: self.tabs.setCurrentIndex(0),
+                                  ["Ctrl+1"])
+            self.lines_act = a("All lines", lambda _checked=False: self.tabs.setCurrentIndex(1),
+                               ["Ctrl+2"])
+            self.changes_act = a(
+                "Changes", self.show_changes_tab, ["Ctrl+Shift+C", "Ctrl+3"],
+                "Every difference between the open files and the files on disk")
+
+            self.export_act = a("Export pack...", self.export_pack, (),
+                                "Save edited names as JSON or CSV")
+            self.import_pack_act = a("Import pack...", self.import_pack, (),
+                                     "Apply a JSON or CSV name pack")
+            self.backups_act = a(
+                "Browse and restore...", self.open_backups, (),
+                "Compare a backup with the open files and restore it into memory")
+
+            self.record_act = a(
+                "Record edits", self.record_into_profile, (),
+                "Copy the unsaved name edits into this profile, with the names on disk as "
+                "their baselines. Record before you Save or Deploy.")
+            self.apply_profile_act = a(
+                "Apply...", self.apply_profile_to_files, (),
+                "Preview this profile's spellings against the open files. Nothing is written "
+                "until you Save or Deploy.")
+            self.new_profile_act = a("New profile...", self.new_profile)
+            self.rename_profile_act = a("Rename profile...", self.rename_current_profile)
+            self.delete_profile_act = a("Delete profile...", self.delete_current_profile)
+
+            self.shortcuts_act = a("Keyboard shortcuts", self.show_shortcuts,
+                                   QKeySequence.HelpContents, "List the keys the editor knows")
+
+            # Toolbar-only actions. Their text stays short and fixed, and they carry
+            # no shortcut: the menu actions own Ctrl+S, Ctrl+Z, and Ctrl+Y.
+            self.review_act = a(
+                "Review changes", self.save, (),
+                "Review the changes, then write the ticked ones to the files they came from. "
+                "The same as File > Save (Ctrl+S).")
+            self.review_act.setEnabled(False)
+            self.undo_tool = a("Undo", self.undo_stack.undo, (), "Undo (Ctrl+Z)")
+            self.redo_tool = a("Redo", self.undo_stack.redo, (), "Redo (Ctrl+Y)")
+            for tool in (self.undo_tool, self.redo_tool):
+                tool.setEnabled(False)
+            self.undo_stack.canUndoChanged.connect(self.undo_tool.setEnabled)
+            self.undo_stack.canRedoChanged.connect(self.redo_tool.setEnabled)
+            self.undo_stack.undoTextChanged.connect(
+                lambda text: self.undo_tool.setToolTip(
+                    f"Undo {text} (Ctrl+Z)" if text else "Undo (Ctrl+Z)"))
+            self.undo_stack.redoTextChanged.connect(
+                lambda text: self.redo_tool.setToolTip(
+                    f"Redo {text} (Ctrl+Y)" if text else "Redo (Ctrl+Y)"))
+
+        def build_menus(self) -> None:
+            bar = self.menuBar()
+            self.menus: list[QMenu] = []
+
+            def menu(title: str, *items) -> QMenu:
+                made = bar.addMenu(title)
+                made.setToolTipsVisible(True)
+                for item in items:
+                    if item is None:
+                        made.addSeparator()
+                    else:
+                        made.addAction(item)
+                self.menus.append(made)
+                return made
+
+            self.file_menu = menu(
+                "&File", self.open_act, self.quick_load_act, None, self.save_act,
+                self.deploy_act, None, self.import_act, None, self.problem_act,
+                self.licensing_act, None, self.exit_act)
+            self.edit_menu = menu(
+                "&Edit", self.undo_act, self.redo_act, None, self.edit_cell_act,
+                self.revert_act, None, self.find_act, self.replace_act, self.bulk_act)
+            self.view_menu = menu("&View", self.entities_act, self.lines_act, self.changes_act)
+            self.packs_menu = menu("&Packs", self.export_act, self.import_pack_act)
+            self.backups_menu = menu("&Backups", self.backups_act)
+            self.profiles_menu = menu(
+                "P&rofiles", self.record_act, self.apply_profile_act, None,
+                self.new_profile_act, self.rename_profile_act, self.delete_profile_act)
+            self.help_menu = menu("&Help", self.shortcuts_act)
+
+        def build_toolbar(self) -> None:
+            """One row under the menus: the product, the database, the profile, the
+            frequent actions, and Review changes, which stays at the right-hand end."""
+            tb = self.addToolBar("Main")
+            tb.setObjectName("main_toolbar")
+            tb.setMovable(False)
+            tb.setFloatable(False)
+            tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            tb.toggleViewAction().setVisible(False)    # no right-click way to hide the header
+            self.toolbar = tb
+            product = QLabel(APP_NAME)
+            product.setObjectName("product")
+            tb.addWidget(product)
+            tb.addSeparator()
+            tb.addWidget(QLabel("Database"))
+            self.version_box = QComboBox()
+            self.version_box.setToolTip(
+                "Quick load and Deploy use the name files in this database folder. The "
+                "highest folder that has both is chosen at start; that does not prove a "
+                "save uses it.")
+            tb.addWidget(self.version_box)
+            tb.addSeparator()
+            tb.addWidget(QLabel("Profile"))
+            self.profile_box = QComboBox()
+            self.profile_box.setMinimumWidth(170)
+            self.profile_box.setMaximumWidth(260)
+            self.profile_box.setToolTip(
+                "A spelling profile keeps your preferred names after Save and Deploy, "
+                "so they can be applied again when the game's files change.")
+            tb.addWidget(self.profile_box)
+            tb.addAction(self.record_act)
+            tb.addAction(self.apply_profile_act)
+            self.record_btn = tb.widgetForAction(self.record_act)
+            self.apply_profile_btn = tb.widgetForAction(self.apply_profile_act)
+            tb.addSeparator()
+            tb.addAction(self.quick_load_act)
+            tb.addAction(self.undo_tool)
+            tb.addAction(self.redo_tool)
+            spacer = QWidget()
+            spacer.setObjectName("spacer")
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            tb.addWidget(spacer)
+            tb.addAction(self.review_act)
+            self.review_btn = tb.widgetForAction(self.review_act)
+            self.review_btn.setObjectName("review")
+
+        def build_entity_page(self) -> None:
             entity_page = QWidget()
             entity_lay = QVBoxLayout(entity_page)
             entity_lay.setContentsMargins(0, 8, 0, 0)
@@ -5314,7 +5857,7 @@ def run_gui(paths):
             status_row = QHBoxLayout()
             self.entity_search = QLineEdit()
             self.entity_search.setPlaceholderText(
-                "Search entities (accents ignored). Ctrl+F")
+                "Search names, IDs, and file sections (accents ignored). Ctrl+F")
             self.entity_search.setClearButtonEnabled(True)
             status_row.addWidget(self.entity_search, 1)
             self.status_group = QButtonGroup(self)
@@ -5345,24 +5888,32 @@ def run_gui(paths):
 
             self.entity_view = QTableView()
             self.entity_view.setModel(self.entity_proxy)
-            self.entity_view.setSortingEnabled(True)
             self.entity_view.setSelectionBehavior(QTableView.SelectRows)
             self.entity_view.setAlternatingRowColors(True)
+            self.entity_view.setWordWrap(False)
             self.entity_view.verticalHeader().setVisible(False)
             self.entity_view.verticalHeader().setDefaultSectionSize(24)
             self.entity_view.setEditTriggers(
                 QTableView.DoubleClicked | QTableView.EditKeyPressed)
+            sortable(self.entity_view, self.on_entity_sort)
             splitter.addWidget(self.entity_view)
 
             self.inspector = QWidget()
             self.inspector_lay = QVBoxLayout(self.inspector)
-            self.inspector_lay.setContentsMargins(8, 0, 0, 0)
-            splitter.addWidget(self.inspector)
+            self.inspector_lay.setContentsMargins(10, 0, 6, 0)
+            self.inspector_fields: dict = {}
+            inspector_scroll = QScrollArea()
+            inspector_scroll.setWidgetResizable(True)
+            inspector_scroll.setFrameShape(QFrame.NoFrame)
+            inspector_scroll.setMinimumWidth(260)
+            inspector_scroll.setWidget(self.inspector)
+            splitter.addWidget(inspector_scroll)
             splitter.setStretchFactor(1, 1)
-            splitter.setSizes([210, 760, 260])
+            splitter.setSizes([190, 770, 300])
             entity_lay.addWidget(splitter, 1)
             self.tabs.addTab(entity_page, "Entities")
 
+        def build_line_page(self) -> None:
             line_page = QWidget()
             line_lay = QVBoxLayout(line_page)
             line_lay.setContentsMargins(0, 8, 0, 0)
@@ -5381,16 +5932,19 @@ def run_gui(paths):
             self.line_view = QTableView()
             self.view = self.line_view
             self.line_view.setModel(self.line_proxy)
-            self.line_view.setSortingEnabled(True)
             self.line_view.setSelectionBehavior(QTableView.SelectRows)
             self.line_view.setAlternatingRowColors(True)
+            self.line_view.setWordWrap(False)
             self.line_view.verticalHeader().setVisible(False)
             self.line_view.verticalHeader().setDefaultSectionSize(24)
-            self.line_view.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+            self.line_view.horizontalHeader().setSectionResizeMode(
+                EntryModel.NAME_COL, QHeaderView.Stretch)
+            sortable(self.line_view, self.on_line_sort)
             self.line_view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
             line_lay.addWidget(self.line_view, 1)
             self.tabs.addTab(line_page, "All lines")
 
+        def build_change_page(self) -> None:
             change_page = QWidget()
             change_lay = QVBoxLayout(change_page)
             change_lay.setContentsMargins(0, 8, 0, 0)
@@ -5415,49 +5969,12 @@ def run_gui(paths):
             self.change_proxy = ChangeProxy()
             self.change_proxy.setSourceModel(self.change_model)
             self.change_view = change_table(self.change_proxy)
+            self.change_view.setToolTip("Double-click a row to go to its line on All lines.")
             change_lay.addWidget(self.change_view, 1)
             self.tabs.addTab(change_page, "Changes")
             self.change_search.textChanged.connect(self.change_proxy.set_filter)
             self.change_model.ticks_changed.connect(
                 lambda: self.change_summary.setText(describe_ticks(self.change_model.rows)))
-
-            self.pending_label = QLabel("")
-            self.pending_label.setObjectName("warning")
-            self.statusBar().addPermanentWidget(self.pending_label)
-
-            find = QAction(self)
-            find.setShortcut(QKeySequence.Find)
-            find.triggered.connect(self.focus_find)
-            self.addAction(find)
-
-            self.entity_timer = QTimer(self)
-            self.entity_timer.setSingleShot(True)
-            self.entity_timer.setInterval(200)
-            self.entity_timer.timeout.connect(self.apply_entity_filter)
-            self.entity_search.textChanged.connect(lambda _text: self.entity_timer.start())
-            self.line_timer = QTimer(self)
-            self.line_timer.setSingleShot(True)
-            self.line_timer.setInterval(200)
-            self.line_timer.timeout.connect(self.apply_line_filter)
-            self.line_search.textChanged.connect(lambda _text: self.line_timer.start())
-            self.type_box.currentIndexChanged.connect(lambda _index: self.apply_line_filter())
-            self.changed_box.toggled.connect(lambda _state: self.apply_line_filter())
-            self.section_list.currentItemChanged.connect(lambda _cur, _prev: self.on_section())
-            self.family_group.buttonClicked.connect(self.on_family_clicked)
-            self.status_group.buttonClicked.connect(self.on_status_clicked)
-            self.entity_view.selectionModel().selectionChanged.connect(
-                lambda *_args: self.on_entity_selection())
-            self.tabs.currentChanged.connect(lambda _index: self.refresh_status())
-            self.profile_box.currentIndexChanged.connect(lambda _index: self.on_profile_chosen())
-
-            for button in self.family_buttons:
-                button.setChecked(button.property("family") == "club")
-            for button in self.status_buttons:
-                button.setChecked(button.property("mode") == "all")
-            self.refresh_versions()
-            self.apply_family()
-            self.refresh_status()
-            self.refresh_profiles()
 
         def open_dialog(self):
             if not self.confirm_discard():
@@ -5491,7 +6008,7 @@ def run_gui(paths):
             self.status_mode = "all"
             for button in self.status_buttons:
                 button.setChecked(button.property("mode") == "all")
-            self.reload_views()
+            self.reload_views(keep_place=False)
             self.tabs.setCurrentIndex(0)
             return True
 
@@ -5562,12 +6079,31 @@ def run_gui(paths):
             if operation.structural:
                 self.reload_views()
             else:
-                # As after a cell edit: re-filtering the grid repaints it too.
-                self.line_model.layoutChanged.emit()
-                self.apply_entity_filter()
-                if self.inspector_entity is not None:
-                    self.show_inspector(self.inspector_entity)
+                self.after_edit()           # as after a cell edit
             self.statusBar().showMessage(f"{verb}: {operation.label}.", 8000)
+
+        def after_edit(self) -> None:
+            """Show a change of names that moved no lines.
+
+            A view is filtered again only when its filter reads the names (a
+            search, Changed only, Edited); otherwise repainting it is enough.
+            Then the counts, and the inspector, are brought up to date.
+            """
+            if self.line_proxy.words or self.line_proxy.changed_only:
+                relayout(self.line_model)
+            else:
+                self.line_view.viewport().update()
+            if self.entity_proxy.words or self.entity_proxy.mode != "all":
+                self.entity_proxy.invalidate()
+            else:
+                self.entity_view.viewport().update()
+            self.refresh_status()
+            if self.inspector_entity is not None:
+                self.show_inspector(self.inspector_entity)
+
+        def say_refused(self, problem: str) -> None:
+            """A typed name or ending was not used: say why, instead of nothing."""
+            self.statusBar().showMessage(f"Not changed. {problem}", 12000)
 
         def confirm_discard(self) -> bool:
             if not any(d.dirty for d in self.docs):
@@ -5645,23 +6181,16 @@ def run_gui(paths):
             entries = [self.change_model.rows[row].entry for row in sorted(rows)
                        if self.change_model.rows[row].state in ("edited", "restored", "added")]
             counts = revert_entries(entries)
-            self.line_model.layoutChanged.emit()
-            self.entity_model.layoutChanged.emit()
-            self.apply_entity_filter()
+            self.after_edit()
             self._revert_message(counts)
             return counts
 
         def _revert_lines(self):
             rows = {self.line_proxy.mapToSource(index).row()
                     for index in self.line_view.selectionModel().selectedIndexes()}
-            counts = {"name": 0, "rule": 0, "added": 0, "same": 0}
-            for row in sorted(rows):
-                outcome = revert_entry(self.line_model.rows[row])
-                counts[outcome] += 1
-                if outcome in ("name", "rule"):
-                    self.line_model.row_changed(row)
-            self.entity_model.layoutChanged.emit()
-            self.apply_entity_filter()
+            # One refresh for the lot: a refresh per reverted line took seconds for hundreds.
+            counts = revert_entries(self.line_model.rows[row] for row in sorted(rows))
+            self.after_edit()
             self._revert_message(counts)
             return counts
 
@@ -5671,12 +6200,8 @@ def run_gui(paths):
             entries = [entry for row in sorted(rows)
                        for entry in self.entity_model.rows[row].entries()]
             counts = revert_entries(entries)
-            self.line_model.layoutChanged.emit()
-            self.entity_model.layoutChanged.emit()
-            self.apply_entity_filter()
+            self.after_edit()
             self._revert_message(counts)
-            if self.inspector_entity is not None:
-                self.show_inspector(self.inspector_entity)
             return counts
 
         def _revert_message(self, counts: dict) -> None:
@@ -5711,14 +6236,13 @@ def run_gui(paths):
             self.setWindowTitle(f"{'* ' if dirty else ''}{APP_NAME} {VERSION} - {names}")
             clubs = sum(1 for entity in self.all_entities if entity.family == "club")
             comps = sum(1 for entity in self.all_entities if entity.family == "comp")
-            version = self.selected_version()
-            version_name = version.name if version is not None else "none"
-            self.metrics.setText(
-                f"Database {version_name}    {clubs:,} clubs    "
-                f"{comps:,} competitions    {unsaved}")
+            self.metrics.setText(f"{clubs:,} clubs    {comps:,} competitions    {unsaved}")
             changes = collect_changes(self.docs)
             self.tabs.setTabText(
                 self.CHANGES_TAB, f"Changes ({len(changes):,})" if changes else "Changes")
+            self.review_act.setText(
+                f"Review changes ({len(changes):,})" if changes else "Review changes")
+            self.review_act.setEnabled(dirty)
             self.pending_label.setText(pending_restores(self.docs))
             if self.tabs.currentIndex() == 0:
                 shown = self.entity_proxy.rowCount()
@@ -5741,7 +6265,7 @@ def run_gui(paths):
                 rows = collect_changes(self.docs)
             self.change_model.set_rows(rows)
             self.change_proxy.set_filter(self.change_search.text())
-            self.change_view.resizeColumnsToContents()
+            fit_change_columns(self.change_view, self.change_model)
             self.change_summary.setText(describe_ticks(rows))
 
         def focus_find(self):
@@ -5759,9 +6283,12 @@ def run_gui(paths):
             self.version_box.clear()
             chosen = None
             for path in list_version_dirs(GAME_DB_ROOT):
-                label = path.name + (" names" if version_has_names(path) else "")
-                self.version_box.addItem(label, str(path))
-                if version_has_names(path):
+                has_names = version_has_names(path)
+                self.version_box.addItem(
+                    path.name if has_names else f"{path.name} (no name files)", str(path))
+                self.version_box.setItemData(
+                    self.version_box.count() - 1, str(path), Qt.ToolTipRole)
+                if has_names:
                     chosen = path
             if chosen is not None:
                 index = self.version_box.findData(str(chosen))
@@ -5770,66 +6297,141 @@ def run_gui(paths):
             self.version_box.blockSignals(False)
 
         def rebuild_type_filter(self) -> None:
-            """Refill the type combo from the name rows currently loaded.
+            """Refill the type combo from the name lines and person rules in the open files.
 
             The current command filter is kept when that command is still present.
-            Signals are blocked so refilling does not run the filter twice.
+            Signals are blocked so refilling does not run the filter.
             """
             current = self.type_box.currentData() or ""
             self.type_box.blockSignals(True)
             self.type_box.clear()
             self.type_box.addItem("All types", "")
-            for cmd in sorted({entry.cmd for entry in self.line_model.rows}, key=friendly):
+            commands = {entry.cmd for doc in self.docs for entry in doc.entries
+                        if entry.kind in ROW_KINDS}
+            for cmd in sorted(commands, key=friendly):
                 self.type_box.addItem(friendly(cmd), cmd)
             restored = self.type_box.findData(current)
             self.type_box.setCurrentIndex(restored if restored >= 0 else 0)
             self.type_box.blockSignals(False)
 
-        def reload_views(self) -> None:
+        def reload_views(self, keep_place: bool = True) -> None:
+            """Fill every view from the open files again.
+
+            Each model is reset once, and each proxy filters once, during that
+            reset. Columns are sized from their texts. With ``keep_place`` the
+            entity shown in the inspector is selected again and both tables
+            keep their scroll position, so adding a field does not lose it.
+            """
             if self._updating:
                 return
+            place = self.remember_place() if keep_place else None
             self._updating = True
             try:
-                self.line_model.set_docs(self.docs)
                 self.all_entities = build_entities(self.docs)
                 self.rebuild_type_filter()
+                self.line_proxy.configure(self.line_search.text(),
+                                          self.type_box.currentData() or "",
+                                          self.changed_box.isChecked())
+                self.line_model.set_docs(self.docs)
+                self.show_sort(self.line_view, self.line_model)
                 self.family_group.blockSignals(True)
                 for button in self.family_buttons:
                     button.setChecked(button.property("family") == self.family)
                 self.family_group.blockSignals(False)
                 self.apply_family()
-                self.apply_line_filter()
                 self._size_line_columns()
             finally:
                 self._updating = False
+            if place is not None:
+                self.return_to_place(place)
+            self.refresh_status()
+
+        def remember_place(self) -> dict:
+            entity = self.inspector_entity
+            return {
+                "entity": (entity.family, entity.id, entity.lang) if entity is not None else None,
+                "entities": self.entity_view.verticalScrollBar().value(),
+                "lines": self.line_view.verticalScrollBar().value(),
+            }
+
+        def return_to_place(self, place: dict) -> None:
+            key = place["entity"]
+            if key is not None and key[0] == self.family:
+                for row, entity in enumerate(self.entity_model.rows):
+                    if (entity.family, entity.id, entity.lang) == key:
+                        index = self.entity_proxy.mapFromSource(self.entity_model.index(row, 0))
+                        if index.isValid():
+                            self.entity_view.selectRow(index.row())
+                            self.show_inspector(entity)
+                        break
+            self.entity_view.verticalScrollBar().setValue(place["entities"])
+            self.line_view.verticalScrollBar().setValue(place["lines"])
+
+        def show_sort(self, view: QTableView, model) -> None:
+            """Show a model's sort on its header without sorting again."""
+            header = view.horizontalHeader()
+            column = model.sort_column()
+            order = Qt.DescendingOrder if model.sort_descending else Qt.AscendingOrder
+            header.blockSignals(True)
+            header.setSortIndicator(column, order)
+            header.blockSignals(False)
+
+        def on_entity_sort(self, column: int, order) -> None:
+            self.entity_model.sort_by(column, order == Qt.DescendingOrder)
+
+        def on_line_sort(self, column: int, order) -> None:
+            self.line_model.sort_by(column, order == Qt.DescendingOrder)
+
+        def show_columns(self) -> None:
+            """Hide the ID column, which the inspector shows, and File section while one
+            section is chosen, so the names get the width."""
+            for column, key in enumerate(self.entity_model.columns()):
+                hidden = key == "id" or (key == "section" and bool(self.section_filter))
+                self.entity_view.setColumnHidden(column, hidden)
 
         def _size_line_columns(self) -> None:
-            for col in (0, 1, 2, 4, 5, 6):
-                self.line_view.resizeColumnToContents(col)
-            self.line_view.setColumnWidth(0, min(self.line_view.columnWidth(0), 240))
+            rows = self.line_model.base_rows
+            texts = {
+                column: {entry_text(entry, key) for entry in rows}
+                for column, key in enumerate(EntryModel.KEYS)
+                if column != EntryModel.NAME_COL
+            }
+            texts[EntryModel.STATUS_COL] = {"Added", "Edited"}
+            fit_columns(self.line_view, texts, {0: 240})
 
         def apply_family(self) -> None:
+            """Show the chosen family: its file sections, its rows, its columns, its inspector."""
             if self._inspector_family != self.family:
                 self.rebuild_inspector()
                 self._inspector_family = self.family
             rows = [entity for entity in self.all_entities if entity.family == self.family]
-            self.entity_model.set_family_rows(self.family, rows)
             self.refill_sections()
+            self.entity_proxy.configure(
+                self.entity_search.text(), self.section_filter, self.status_mode)
+            self.entity_model.set_family_rows(self.family, rows)
+            self.show_columns()
+            self.show_sort(self.entity_view, self.entity_model)
             self._size_entity_columns()
-            self.apply_entity_filter()
             self.show_inspector(None)
 
         def _size_entity_columns(self) -> None:
+            """The long name takes the width that is left; the other columns fit their text."""
             header = self.entity_view.horizontalHeader()
             columns = self.entity_model.columns()
-            for index in range(len(columns)):
-                header.setSectionResizeMode(index, QHeaderView.Interactive)
-            stretch = "long" if "long" in columns else "name"
-            if stretch in columns:
-                header.setSectionResizeMode(columns.index(stretch), QHeaderView.Stretch)
-            for index, key in enumerate(columns):
-                if key != stretch:
-                    self.entity_view.resizeColumnToContents(index)
+            stretch = "long" if "long" in columns else columns[2]
+            rows = self.entity_model.base_rows
+            texts, caps = {}, {}
+            for column, key in enumerate(columns):
+                header.setSectionResizeMode(
+                    column, QHeaderView.Stretch if key == stretch else QHeaderView.Interactive)
+                if key in (stretch, "id"):
+                    continue
+                if key == "status":
+                    texts[column] = {entity_status(entity) for entity in rows} | {"Added, Edited"}
+                else:
+                    texts[column] = {entity_text(entity, key) for entity in rows}
+                caps[column] = 200 if key in ("section", "lang") else 280
+            fit_columns(self.entity_view, texts, caps)
 
         def refill_sections(self) -> None:
             rows = [entity for entity in self.all_entities if entity.family == self.family]
@@ -5860,6 +6462,7 @@ def run_gui(paths):
             self.section_filter = item.data(Qt.UserRole) if item is not None else ""
             if self.section_filter is None:
                 self.section_filter = ""
+            self.show_columns()
             self.apply_entity_filter()
 
         def on_family_clicked(self, button) -> None:
@@ -5868,6 +6471,7 @@ def run_gui(paths):
             self.family = button.property("family")
             self.section_filter = ""
             self.apply_family()
+            self.refresh_status()
 
         def on_status_clicked(self, button) -> None:
             self.status_mode = button.property("mode")
@@ -5891,85 +6495,325 @@ def run_gui(paths):
             if structure:
                 QTimer.singleShot(0, self.reload_views)
                 return
-            self.line_model.layoutChanged.emit()
-            self.apply_entity_filter()
+            self.after_edit()
 
         def on_line_data(self, *_args) -> None:
-            self.entity_model.layoutChanged.emit()
-            self.apply_entity_filter()
-            if self.inspector_entity is not None:
-                self.show_inspector(self.inspector_entity)
+            self.after_edit()
 
+        # ----- the inspector -----
         def rebuild_inspector(self) -> None:
+            """Lay out the inspector for the chosen family: a heading, then one block per field.
+
+            Each block shows the field's change marker, its text on disk above
+            the proposed text (so a spelling can be compared letter by letter),
+            the file and line, and a message when the typed text cannot be used.
+            """
             while self.inspector_lay.count():
                 item = self.inspector_lay.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
+                    widget.hide()           # deleteLater waits for the event loop; hide now
                     widget.deleteLater()
             self.inspector_edits = {}
+            self.inspector_fields = {}
             self.inspector_title = QLabel("Select a row")
+            self.inspector_title.setObjectName("title")
             self.inspector_title.setWordWrap(True)
             self.inspector_lay.addWidget(self.inspector_title)
+            self.inspector_meta = QLabel("")
+            self.inspector_meta.setObjectName("muted")
+            self.inspector_meta.setWordWrap(True)
+            self.inspector_meta.setToolTip(FILE_SECTION_HINT)
+            self.inspector_meta.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.inspector_lay.addWidget(self.inspector_meta)
             for slot, label, _cmd in FAMILY_FIELDS[self.family]:
+                rule = QFrame()
+                rule.setObjectName("rule")
+                rule.setFrameShape(QFrame.HLine)
+                self.inspector_lay.addWidget(rule)
+                block = QWidget()
+                grid = QGridLayout(block)
+                grid.setContentsMargins(0, 2, 0, 2)
+                grid.setHorizontalSpacing(8)
+                grid.setVerticalSpacing(3)
+                grid.setColumnStretch(1, 1)
+                top = QHBoxLayout()
                 caption = QLabel(label)
-                edit = QLineEdit()
+                caption.setObjectName("heading")
+                marker = QLabel("")
+                marker.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                top.addWidget(caption)
+                top.addStretch(1)
+                top.addWidget(marker)
+                grid.addLayout(top, 0, 0, 1, 2)
+                disk_caption = QLabel("On disk")
+                disk_caption.setObjectName("muted")
+                disk = QLabel("")
+                disk.setWordWrap(True)
+                disk.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                grid.addWidget(disk_caption, 1, 0)
+                grid.addWidget(disk, 1, 1)
+                proposed = QLabel("Proposed")
+                proposed.setObjectName("muted")
+                edit = InspectorEdit()
                 edit.editingFinished.connect(
                     lambda slot=slot, edit=edit: self.commit_inspector(slot, edit))
+                edit.textEdited.connect(lambda _text, slot=slot: self.check_field(slot))
+                edit.escaped.connect(lambda slot=slot: self.put_back_field(slot))
+                grid.addWidget(proposed, 2, 0)
+                grid.addWidget(edit, 2, 1)
+                where = QLabel("")
+                where.setObjectName("muted")
+                where.setWordWrap(True)
+                grid.addWidget(where, 3, 1)
+                problem = QLabel("")
+                problem.setObjectName("warning")
+                problem.setWordWrap(True)
+                problem.hide()
+                grid.addWidget(problem, 4, 0, 1, 2)
+                self.inspector_lay.addWidget(block)
                 self.inspector_edits[slot] = edit
-                self.inspector_lay.addWidget(caption)
-                self.inspector_lay.addWidget(edit)
-            revert = QPushButton("Revert")
-            revert.clicked.connect(self.revert_selected)
-            self.inspector_lay.addWidget(revert)
+                self.inspector_fields[slot] = {"marker": marker, "disk": disk, "edit": edit,
+                                               "where": where, "problem": problem}
+            self.inspector_revert = QPushButton("Revert")
+            self.inspector_revert.setToolTip(
+                "Put the selected rows' lines back to the text on disk. Added lines stay.")
+            self.inspector_revert.clicked.connect(self.revert_selected)
+            self.inspector_lay.addWidget(self.inspector_revert)
             self.inspector_lay.addStretch(1)
 
         def show_inspector(self, entity) -> None:
+            """Fill the inspector from an entity, or empty it for None."""
             self._filling = True
             self.inspector_entity = entity
-            if not self.inspector_edits:
-                self._filling = False
-                return
-            if entity is None:
-                self.inspector_title.setText("Select a row")
-                for edit in self.inspector_edits.values():
+            try:
+                if not self.inspector_fields:
+                    return
+                if entity is None:
+                    self.inspector_title.setText("Select a row")
+                    self.inspector_meta.setText(
+                        "Its fields show here: the text on disk, the proposed text, and "
+                        "the file and line.")
+                    for widgets in self.inspector_fields.values():
+                        for name in ("marker", "disk", "where"):
+                            widgets[name].setText("")
+                        edit = widgets["edit"]
+                        edit.blockSignals(True)
+                        edit.clear()
+                        edit.setPlaceholderText("")
+                        edit.blockSignals(False)
+                        edit.setEnabled(False)
+                        self.show_field_problem(widgets, "")
+                    self.inspector_revert.setEnabled(False)
+                    return
+                language = entity.lang or next(
+                    (entry.lang for entry in entity.entries() if entry.lang), "")
+                self.inspector_title.setText(
+                    next((entity.name_in(slot) for slot, _label, _cmd
+                          in FAMILY_FIELDS[entity.family] if entity.name_in(slot)), ""))
+                self.inspector_meta.setText(
+                    f"{ENTITY_KINDS[entity.family]}    ID {entity.id}\n"
+                    f"File section: {entity.section or 'none'}\n"
+                    f"Language: {language or 'none'}")
+                for view in describe_fields(entity):
+                    widgets = self.inspector_fields[view.slot]
+                    if view.state == "none":
+                        marker, level = no_override_text(entity.family, view.slot), "muted"
+                    else:
+                        marker = view.marker
+                        level = {"edited": "edited", "added": "added"}.get(view.state, "muted")
+                        if view.count > 1:
+                            level = "warning"       # a repeated key: worded and coloured
+                    set_level(widgets["marker"], marker, level)
+                    if view.on_disk is None:
+                        set_level(widgets["disk"],
+                                  "No line yet" if view.state == "added" else "No line", "muted")
+                    else:
+                        set_level(widgets["disk"], view.on_disk, "")
+                    edit = widgets["edit"]
                     edit.blockSignals(True)
-                    edit.clear()
+                    edit.setText(view.current)
+                    edit.setPlaceholderText(
+                        "Type a name to add one" if view.state == "none" else "")
                     edit.blockSignals(False)
+                    edit.setEnabled(True)
+                    widgets["where"].setText(view.where)
+                    self.show_field_problem(widgets, "")
+                self.inspector_revert.setEnabled(entity.changed())
+            finally:
                 self._filling = False
+
+        def show_field_problem(self, widgets: dict, problem: str) -> None:
+            """Show, or clear, the message under one inspector field."""
+            widgets["problem"].setText(problem)
+            widgets["problem"].setVisible(bool(problem))
+            restyle(widgets["edit"], "invalid" if problem else "")
+
+        def check_field(self, slot: str) -> None:
+            """While typing: say at once when the text cannot be a name (emptiness waits for Enter)."""
+            widgets = self.inspector_fields.get(slot)
+            if widgets is None:
                 return
-            bits = [f"{FAMILY_LABELS[entity.family]} {entity.id}"]
-            if entity.section:
-                bits.append(entity.section)
-            if entity.lang:
-                bits.append(entity.lang)
-            self.inspector_title.setText(" | ".join(bits))
-            for slot, edit in self.inspector_edits.items():
-                edit.blockSignals(True)
-                edit.setText(entity.name_in(slot))
-                edit.blockSignals(False)
-            self._filling = False
+            text = widgets["edit"].text().strip()
+            problem = name_problem(text) if text else ""
+            if problem:
+                problem += " Press Esc to put back the name in memory."
+            self.show_field_problem(widgets, problem)
+
+        def put_back_field(self, slot: str) -> None:
+            """Esc in an inspector field: show the name in memory again."""
+            widgets = self.inspector_fields.get(slot)
+            if widgets is None or self.inspector_entity is None:
+                return
+            edit = widgets["edit"]
+            edit.blockSignals(True)
+            edit.setText(self.inspector_entity.name_in(slot))
+            edit.blockSignals(False)
+            self.show_field_problem(widgets, "")
 
         def commit_inspector(self, slot: str, edit) -> None:
+            """Use the text typed in an inspector field, as one step Undo can take back.
+
+            Text that cannot be a name stays in the field with a message beside
+            it, so it can be put right; nothing changes until it can be used.
+            """
             if self._filling:
                 return
             entity = self.inspector_entity
             if entity is None:
                 return
+            widgets = self.inspector_fields[slot]
+            text = edit.text().strip()
+            problem = name_problem(text)
+            if problem:
+                if text or entity.slots.get(slot):      # an empty field left empty is no change
+                    self.show_field_problem(
+                        widgets, problem + " Press Esc to put back the name in memory.")
+                else:
+                    self.show_field_problem(widgets, "")
+                return
+            self.show_field_problem(widgets, "")
             was_empty = not entity.slots.get(slot)
-            with self.recording(cell_operation(entity, slot, edit.text())):
-                changed = set_entity_field(entity, slot, edit.text(), self.docs)
+            with self.recording(cell_operation(entity, slot, text)):
+                changed = set_entity_field(entity, slot, text, self.docs)
             if not changed:
-                edit.blockSignals(True)
-                edit.setText(entity.name_in(slot))
-                edit.blockSignals(False)
                 return
             if was_empty:
                 QTimer.singleShot(0, self.reload_views)
                 return
-            self.line_model.layoutChanged.emit()
-            self.entity_model.layoutChanged.emit()
-            self.apply_entity_filter()
-            self.show_inspector(entity)
+            self.after_edit()
+
+        # ----- going places -----
+        def show_changes_tab(self) -> None:
+            self.tabs.setCurrentIndex(self.CHANGES_TAB)
+            self.change_view.setFocus()
+
+        def go_to_change(self, index) -> None:
+            """Double-click on the Changes tab: show that line on the All lines tab."""
+            if not index.isValid():
+                return
+            row = self.change_model.rows[self.change_proxy.mapToSource(index).row()]
+            if row.entry is None or row.state == "removed":
+                self.statusBar().showMessage(
+                    "That change has no line in memory to go to: "
+                    + ("the line is on disk and the next Save or Deploy takes it out."
+                       if row.state == "removed" else "it stands for lines outside the names."),
+                    10000)
+                return
+            try:
+                source_row = self.line_model.rows.index(row.entry)
+            except ValueError:
+                return
+            source = self.line_model.index(source_row, EntryModel.NAME_COL)
+            target = self.line_proxy.mapFromSource(source)
+            cleared = False
+            if not target.isValid():            # hidden by the All lines filters
+                self.clear_line_filters()
+                cleared = True
+                target = self.line_proxy.mapFromSource(source)
+            self.tabs.setCurrentIndex(1)
+            self.line_view.setFocus()
+            self.line_view.selectionModel().setCurrentIndex(
+                target, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            self.line_view.scrollTo(target, QAbstractItemView.PositionAtCenter)
+            message = f"Line {row.entry.lineno} of {row.entry.doc.path.name}."
+            if cleared:
+                message += " The All lines filters were cleared to show it."
+            self.statusBar().showMessage(message, 10000)
+
+        def clear_line_filters(self) -> None:
+            for widget in (self.line_search, self.type_box, self.changed_box):
+                widget.blockSignals(True)
+            self.line_search.clear()
+            self.type_box.setCurrentIndex(0)
+            self.changed_box.setChecked(False)
+            for widget in (self.line_search, self.type_box, self.changed_box):
+                widget.blockSignals(False)
+            self.line_timer.stop()
+            self.apply_line_filter()
+
+        def edit_current(self) -> None:
+            """F2: edit the current cell; on a row, its name."""
+            view = {0: self.entity_view, 1: self.line_view}.get(self.tabs.currentIndex())
+            if view is None:
+                self.statusBar().showMessage(
+                    "Changes are not edited on this tab. Double-click a row to go to its line.",
+                    8000)
+                return
+            index = view.currentIndex()
+            if not index.isValid():
+                self.statusBar().showMessage("Select a row to edit first.", 6000)
+                return
+            if not index.flags() & Qt.ItemIsEditable:
+                # A row is selected whole, so the current cell can sit in a column
+                # that is not edited: take the first name column instead.
+                index = index.siblingAtColumn(2 if view is self.entity_view
+                                              else EntryModel.NAME_COL)
+                view.setCurrentIndex(index)
+            view.setFocus()
+            view.edit(index)
+
+        def shortcut_rows(self) -> list[tuple[str, str]]:
+            """Every key the editor knows, read from the menus, then the keys inside the tables."""
+            rows = []
+            for menu in self.menus:
+                for action in menu.actions():
+                    keys = [key.toString(QKeySequence.NativeText) for key in action.shortcuts()]
+                    if not keys or not action.text():
+                        continue
+                    name = {self.undo_act: "Undo", self.redo_act: "Redo"}.get(
+                        action, action.text())
+                    rows.append((" or ".join(keys),
+                                 f"{menu.title().replace('&', '')} > {name.replace('&', '')}"))
+            rows.extend([
+                ("Double-click", "Edit a cell; on the Changes tab, go to its line"),
+                ("Enter", "Keep what was typed in a cell or an inspector field"),
+                ("Esc", "Leave a cell unchanged; in the inspector, put back the name in memory"),
+                ("Tab", "Move to the next field"),
+            ])
+            return rows
+
+        def show_shortcuts(self) -> None:
+            rows = self.shortcut_rows()
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Keyboard shortcuts")
+            lay = QVBoxLayout(dialog)
+            table = QTableWidget(len(rows), 2)
+            table.setHorizontalHeaderLabels(["Keys", "What it does"])
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.NoSelection)
+            for number, (keys, what) in enumerate(rows):
+                table.setItem(number, 0, QTableWidgetItem(keys))
+                table.setItem(number, 1, QTableWidgetItem(what))
+            table.resizeColumnsToContents()
+            table.horizontalHeader().setStretchLastSection(True)
+            lay.addWidget(table)
+            box = QDialogButtonBox(QDialogButtonBox.Close)
+            box.rejected.connect(dialog.reject)
+            lay.addWidget(box)
+            dialog.resize(620, 560)
+            dialog.exec()
 
         def quick_load(self) -> None:
             if not self.confirm_discard():
@@ -6209,7 +7053,7 @@ def run_gui(paths):
 
         def update_profile_actions(self) -> None:
             chosen = self.current_profile() is not None
-            self.apply_profile_btn.setEnabled(chosen)
+            self.apply_profile_act.setEnabled(chosen)     # the toolbar button and the menu item
             self.rename_profile_act.setEnabled(chosen)
             self.delete_profile_act.setEnabled(chosen)
 

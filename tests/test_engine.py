@@ -2636,7 +2636,8 @@ class Session6Window(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._open(win, tmp)
             self.assertEqual([action.text() for action in win.edit_menu.actions()],
-                             ["Undo", "Redo"])
+                             ["Undo", "Redo", "", "Edit cell", "Revert selected", "",
+                              "Find", "Replace...", "Bulk tools..."])     # Session 7
             self.assertFalse(win.undo_act.isEnabled())
             self.assertEqual(win.undo_act.shortcut().toString(), "Ctrl+Z")
             self.assertIn("Ctrl+Y", [key.toString() for key in win.redo_act.shortcuts()])
@@ -2996,6 +2997,465 @@ class Session5Window(unittest.TestCase):
             self.assertIn("already hold these bytes", told.call_args.args[2])
             self.assertEqual(club.stat().st_mtime_ns, before)
             self.assertFalse((Path(tmp) / "backups").exists())
+
+
+class Session7Engine(unittest.TestCase):
+    """Release 2.4, session 7: what the inspector says, and the grid's sort orders."""
+
+    TEXT = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t740\t"Wolverhamption Wanderers"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t740\t"Wolves"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"FC Barcelona"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"FC Barcelona"\t""\n'
+    )
+
+    def _doc(self, tmp, text=None) -> editor.LncDoc:
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, text or self.TEXT)
+        return editor.LncDoc(path)
+
+    @staticmethod
+    def _entity(docs, id_):
+        return next(e for e in editor.build_entities(docs) if e.id == id_)
+
+    def test_a_refused_name_says_why(self):
+        samples = ["", "Club", 'Say "hi"', "Line\nbreak", "Carriage\rreturn", "Tab\there",
+                   "Bell\x07", "Skënderbeu"]
+        for text in samples:
+            self.assertEqual(editor.name_problem(text) == "", editor.name_is_legal(text), text)
+        self.assertIn("cannot be empty", editor.name_problem(""))
+        self.assertIn("Revert or Undo", editor.name_problem(""))
+        self.assertIn("double quote", editor.name_problem('Say "hi"'))
+        self.assertIn("line break", editor.name_problem("Line\nbreak"))
+        self.assertIn("control character", editor.name_problem("Bell\x07"))
+        self.assertTrue(editor.name_problem("", "ending").startswith("An ending cannot"))
+
+    def test_fields_show_the_text_on_disk_beside_the_text_in_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = self._doc(tmp)
+            wolves = self._entity([doc], "740")
+            self.assertTrue(editor.set_entity_field(wolves, "long", "Wolverhampton Wanderers",
+                                                    [doc]))
+            long, short, code = editor.describe_fields(wolves)
+            self.assertEqual((long.state, long.on_disk, long.current),
+                             ("edited", "Wolverhamption Wanderers", "Wolverhampton Wanderers"))
+            self.assertEqual(long.marker, "Edited (Manual edit)")
+            self.assertEqual(long.where, "mine.lnc, line 2")
+            self.assertEqual((short.state, short.on_disk, short.marker),
+                             ("same", "Wolves", "Unchanged"))
+            self.assertEqual((code.state, code.on_disk, code.current, code.marker),
+                             ("none", None, "", ""))
+            self.assertEqual(code.where, "Typing a name adds a line after line 2 of mine.lnc.")
+            self.assertTrue(editor.set_entity_field(wolves, "code", "WOL", [doc]))
+            code = editor.describe_fields(self._entity([doc], "740"))[2]
+            self.assertEqual((code.state, code.on_disk, code.current, code.where),
+                             ("added", None, "WOL", "mine.lnc, line 3"))
+            self.assertEqual(code.marker, "Added (Manual edit)")
+            barca = editor.describe_fields(self._entity([doc], "3"))[0]
+            self.assertEqual(barca.count, 2)
+            self.assertEqual(barca.where, "mine.lnc, lines 5 and 6")
+            self.assertEqual(barca.marker, "Unchanged, on 2 lines")
+            # A profile is named while the line holds what it set; the reason follows the line.
+            entry = wolves.slots["long"][0]
+            entry.reason, entry.profile_mark = "profile", ("Mine", entry.name)
+            self.assertEqual(editor.describe_fields(wolves)[0].reason, "Profile Mine")
+
+    def test_an_absent_override_reads_as_absent(self):
+        self.assertEqual(editor.no_override_text("club", "short"), "No short-name override")
+        self.assertEqual(editor.no_override_text("club", "long"), "No long-name override")
+        self.assertEqual(editor.no_override_text("club", "code"), "No code override")
+        self.assertEqual(editor.no_override_text("comp", "code"), "No code override")
+        self.assertEqual(editor.no_override_text("stadium", "long"), "No name override")
+        self.assertEqual(editor.ENTITY_KINDS["comp"], "Competition")
+
+    def test_sorting_ignores_accents_and_puts_empty_cells_last(self):
+        text = (
+            "#Norway\n"
+            '"CLUB_NAME_CHANGE"\t10\t"Zeta"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Ålesund"\t""\n'
+            '"CLUB_SHORT_NAME_CHANGE"\t33\t"Only Short"\t""\n'
+            '"CLUB_NAME_CHANGE"\t4\t"beta"\t""\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = self._doc(tmp, text)
+            entities = editor.build_entities([doc])
+            self.assertEqual([e.id for e in entities], ["2", "4", "10", "33"])  # section, then ID
+
+            def order(key, descending=False):
+                return [e.id for e in editor.sort_entities(entities, key, descending)]
+
+            self.assertEqual(order("long"), ["2", "4", "10", "33"])        # Ålesund, beta, Zeta
+            self.assertEqual(order("long", True), ["10", "4", "2", "33"])  # empty still last
+            self.assertEqual(order("short"), ["33", "2", "4", "10"])
+            self.assertEqual(order("id", True), ["33", "10", "4", "2"])
+            self.assertEqual(order(""), ["2", "4", "10", "33"])
+            lines = doc.editable()
+            editor.try_set_name(lines[3], "Beta B")
+            self.assertEqual([e.name for e in editor.sort_entries(lines, "name")],
+                             ["Ålesund", "Beta B", "Only Short", "Zeta"])
+            self.assertEqual([e.name for e in editor.sort_entries(lines, "status")],
+                             ["Beta B", "Zeta", "Ålesund", "Only Short"])
+            self.assertEqual(editor.sort_entries(lines, ""), lines)
+            self.assertEqual([e.id for e in editor.sort_entries(lines, "id")],
+                             ["2", "4", "10", "33"])
+
+
+class Session7Window(unittest.TestCase):
+    """Release 2.4, session 7: menus, the header row, the grid, the inspector, and keys."""
+
+    # Lines: 1 #England, 2-3 Zulu (30), 4-5 Alpha (10), 6 #Wales, 7-8 Mike (20).
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t30\t"Zulu Town"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t30\t"Zulu"\t""\n'
+        '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t10\t"Alpha"\t""\n'
+        "#Wales\n"
+        '"CLUB_NAME_CHANGE"\t20\t"Mike Rovers"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t20\t"Aardvark"\t""\n'
+    )
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        win.show()
+        win.activateWindow()
+        QApplication.processEvents()
+        return win
+
+    def _open(self, win, tmp) -> Path:
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, self.CLUBS)
+        self.assertTrue(win.load([str(path)]))
+        return path
+
+    @staticmethod
+    def _shown(win) -> list[str]:
+        proxy = win.entity_proxy
+        return [win.entity_model.rows[proxy.mapToSource(proxy.index(n, 0)).row()].id
+                for n in range(proxy.rowCount())]
+
+    @staticmethod
+    def _select(win, id_) -> None:
+        model, proxy = win.entity_model, win.entity_proxy
+        row = next(n for n, entity in enumerate(model.rows) if entity.id == id_)
+        win.entity_view.selectRow(proxy.mapFromSource(model.index(row, 0)).row())
+
+    @staticmethod
+    def _click_heading(view, column) -> None:
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+
+        header = view.horizontalHeader()
+        x = header.sectionViewportPosition(column) + header.sectionSize(column) // 2
+        QTest.mouseClick(header.viewport(), Qt.LeftButton, Qt.NoModifier,
+                         QPoint(x, header.height() // 2))
+
+    def test_menus_hold_the_actions_and_name_their_keys(self):
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QDialog, QMessageBox, QTableWidget
+
+        win = self._window()
+        self.assertEqual([menu.title().replace("&", "") for menu in win.menus],
+                         ["File", "Edit", "View", "Packs", "Backups", "Profiles", "Help"])
+        self.assertEqual([action.text() for action in win.file_menu.actions() if action.text()],
+                         ["Open files...", "Quick load", "Save...", "Deploy to FM27...",
+                          "Import older edits...", "Problem lines...", "Licensing files...",
+                          "Exit"])
+        self.assertEqual([action.text() for action in win.profiles_menu.actions()
+                          if action.text()],
+                         ["Record edits", "Apply...", "New profile...", "Rename profile...",
+                          "Delete profile..."])
+        keys = {action.text(): action.shortcut().toString()
+                for menu in win.menus for action in menu.actions() if action.text()}
+        self.assertEqual((keys["Save..."], keys["Edit cell"], keys["Find"], keys["Changes"],
+                          keys["Undo"], keys["Keyboard shortcuts"]),
+                         ("Ctrl+S", "F2", "Ctrl+F", "Ctrl+Shift+C", "Ctrl+Z", "F1"))
+        # Each key belongs to one action: Qt runs neither of two that share one.
+        taken = [key.toString() for action in win.findChildren(QAction)
+                 for key in action.shortcuts()]
+        self.assertEqual(len(taken), len(set(taken)), taken)
+        rows = win.shortcut_rows()
+        for row in (("Ctrl+Shift+C or Ctrl+3", "View > Changes"), ("F2", "Edit > Edit cell"),
+                    ("Ctrl+Z", "Edit > Undo"), ("Ctrl+Y or Ctrl+Shift+Z", "Edit > Redo")):
+            self.assertIn(row, rows)
+        seen = []
+
+        def look(dialog):
+            seen.append((dialog.windowTitle(), dialog.findChild(QTableWidget).rowCount()))
+            return 0
+
+        with mock.patch.object(QDialog, "exec", look):
+            win.shortcuts_act.trigger()
+        self.assertEqual(seen, [("Keyboard shortcuts", len(rows))])
+        win.changes_act.trigger()
+        self.assertEqual(win.tabs.currentIndex(), 2)
+        win.entities_act.trigger()
+        self.assertEqual(win.tabs.currentIndex(), 0)
+        with mock.patch.object(QMessageBox, "information") as told:
+            win.deploy_act.trigger()                # a menu action reaches its window method
+        self.assertIn("Open the name files first", told.call_args.args[2])
+
+    def test_the_header_row_keeps_database_profile_and_review_in_view(self):
+        """Acceptance: at 1280 x 820 the database, profile, and Review changes stay visible."""
+        from PySide6.QtWidgets import QDialog, QToolButton
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self.assertEqual((win.width(), win.height()), (1280, 820))
+            self.assertLessEqual(win.toolbar.sizeHint().width(), win.toolbar.width())
+            overflow = win.toolbar.findChild(QToolButton, "qt_toolbar_ext_button")
+            self.assertFalse(overflow is not None and overflow.isVisible())
+            inside = win.rect()
+            for widget in (win.version_box, win.profile_box, win.record_btn,
+                           win.apply_profile_btn, win.review_btn):
+                self.assertTrue(widget.isVisible(), widget)
+                corner = widget.mapTo(win, widget.rect().bottomRight())
+                self.assertTrue(inside.contains(corner), widget)
+            self.assertEqual(win.review_act.text(), "Review changes")
+            self.assertFalse(win.review_act.isEnabled())
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "10")
+            self.assertTrue(model.setData(model.index(row, 2), "Alpha Athletic"))
+            self.assertEqual(win.review_act.text(), "Review changes (1)")
+            self.assertTrue(win.review_act.isEnabled())
+            self.assertEqual(win.metrics.text(), "3 clubs    0 competitions    1 unsaved")
+            seen = []
+
+            def look(dialog):
+                seen.append(dialog.windowTitle())
+                return 0
+
+            with mock.patch.object(QDialog, "exec", look):
+                win.review_btn.click()
+            self.assertEqual(seen, ["Review changes: Save"])
+            self.assertTrue(win.docs[0].dirty)          # closing the review writes nothing
+
+    def test_the_grid_sorts_by_long_name_and_gives_names_the_width(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QHeaderView
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            model, view = win.entity_model, win.entity_view
+            header = view.horizontalHeader()
+            columns = model.columns()
+            self.assertEqual(self._shown(win), ["10", "20", "30"])     # long name, A to Z
+            self.assertEqual(header.sortIndicatorSection(), columns.index("long"))
+            self.assertTrue(view.isColumnHidden(columns.index("id")))
+            self.assertFalse(view.isColumnHidden(columns.index("section")))
+            self.assertEqual(header.sectionResizeMode(columns.index("long")), QHeaderView.Stretch)
+            self._select(win, "10")
+            self.assertIn("ID 10", win.inspector_meta.text())        # the ID moved here
+            self._click_heading(view, columns.index("short"))          # a first click: A to Z
+            self.assertEqual(self._shown(win), ["20", "10", "30"])     # Aardvark, Alpha, Zulu
+            selected = [model.rows[win.entity_proxy.mapToSource(index).row()].id
+                        for index in view.selectionModel().selectedRows()]
+            self.assertEqual(selected, ["10"])                          # the same club
+            self._click_heading(view, columns.index("long"))
+            self._click_heading(view, columns.index("long"))           # a second click: Z to A
+            self.assertEqual(self._shown(win), ["30", "20", "10"])
+            self._click_heading(view, columns.index("long"))           # a third: the file's order
+            self.assertEqual(header.sortIndicatorSection(), -1)
+            self.assertEqual(self._shown(win), ["10", "30", "20"])     # file section, then ID
+            wales = next(n for n in range(win.section_list.count())
+                         if win.section_list.item(n).data(Qt.UserRole) == "Wales")
+            win.section_list.setCurrentRow(wales)
+            self.assertEqual(self._shown(win), ["20"])
+            self.assertTrue(view.isColumnHidden(columns.index("section")))
+            win.section_list.setCurrentRow(0)
+            self.assertFalse(view.isColumnHidden(columns.index("section")))
+            # Adding a field reloads the views; the club stays selected and in the inspector.
+            header.setSortIndicator(columns.index("long"), Qt.AscendingOrder)
+            self._select(win, "30")
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "30")
+            self.assertTrue(model.setData(model.index(row, columns.index("code")), "ZUL"))
+            QApplication.processEvents()                # the reload runs from the event loop
+            self.assertEqual(win.inspector_entity.id, "30")
+            self.assertEqual(win.inspector_fields["code"]["edit"].text(), "ZUL")
+            self.assertEqual(win.inspector_fields["code"]["marker"].text(), "Added (Manual edit)")
+            selected = [model.rows[win.entity_proxy.mapToSource(index).row()].id
+                        for index in view.selectionModel().selectedRows()]
+            self.assertEqual(selected, ["30"])
+
+    def test_a_refused_inspector_value_stays_in_view_with_the_reason(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self._select(win, "10")
+            fields = win.inspector_fields
+            long, code = fields["long"], fields["code"]
+            self.assertEqual(win.inspector_title.text(), "Alpha United")
+            self.assertEqual((long["disk"].text(), long["marker"].text(), long["where"].text()),
+                             ("Alpha United", "Unchanged", "mine.lnc, line 4"))
+            self.assertEqual((code["disk"].text(), code["marker"].text()),
+                             ("No line", "No code override"))
+            self.assertEqual(code["where"].text(),
+                             "Typing a name adds a line after line 4 of mine.lnc.")
+            edit = long["edit"]
+            edit.setText('Alpha "United"')
+            win.commit_inspector("long", edit)
+            self.assertEqual(edit.text(), 'Alpha "United"')            # kept, not put back
+            self.assertTrue(long["problem"].isVisible())
+            self.assertIn("double quote", long["problem"].text())
+            self.assertEqual(edit.objectName(), "invalid")
+            entity = next(e for e in win.entity_model.rows if e.id == "10")
+            self.assertEqual(entity.name_in("long"), "Alpha United")
+            self.assertFalse(win.docs[0].dirty)
+            self.assertEqual(win.undo_stack.count(), 0)
+            edit.setFocus()
+            QTest.keyClick(edit, Qt.Key_Escape)                         # puts the name back
+            self.assertEqual(edit.text(), "Alpha United")
+            self.assertFalse(long["problem"].isVisible())
+            QTest.keyClicks(edit, '"')                                  # said while typing
+            self.assertIn("double quote", long["problem"].text())
+            edit.setText("   ")
+            win.commit_inspector("long", edit)
+            self.assertIn("cannot be empty", long["problem"].text())
+            code["edit"].setText("")
+            win.commit_inspector("code", code["edit"])                  # empty stays empty
+            self.assertFalse(code["problem"].isVisible())
+            edit.setText("Alpha Athletic")
+            win.commit_inspector("long", edit)
+            self.assertFalse(long["problem"].isVisible())
+            self.assertEqual(edit.objectName(), "")
+            self.assertEqual(win.undo_act.text(), "Undo edit long name: Alpha Athletic")
+            self.assertEqual((long["disk"].text(), long["marker"].text()),
+                             ("Alpha United", "Edited (Manual edit)"))
+            # The grid says why it did not take a name, instead of saying nothing.
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "30")
+            self.assertFalse(model.setData(model.index(row, model.columns().index("short")),
+                                           "Zu\nlu"))
+            self.assertIn("Not changed. A name cannot contain a line break",
+                          win.statusBar().currentMessage())
+
+    def test_keys_and_double_click_go_where_they_say(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QAbstractItemView, QApplication
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._open(win, tmp)
+            view = win.entity_view
+            self._select(win, "30")
+            view.setCurrentIndex(view.currentIndex().siblingAtColumn(
+                win.entity_model.columns().index("status")))       # a cell that is not edited
+            view.setFocus()
+            QTest.keyClick(view, Qt.Key_F2)
+            self.assertEqual(view.state(), QAbstractItemView.EditingState)
+            self.assertEqual(view.currentIndex().column(), win.entity_model.columns().index("long"))
+            QTest.keyClick(QApplication.focusWidget(), Qt.Key_Escape)
+            self.assertNotEqual(view.state(), QAbstractItemView.EditingState)
+            names = {entry.id: entry for entry in win.docs[0].names()
+                     if entry.cmd == "CLUB_NAME_CHANGE"}
+            editor.try_set_name(names["10"], "Alpha One")
+            editor.try_set_name(names["20"], "Mike One")
+            win.reload_views()
+            QTest.keyClick(view, Qt.Key_C, Qt.ControlModifier | Qt.ShiftModifier)
+            self.assertEqual(win.tabs.currentIndex(), 2)
+            win.edit_cell_act.trigger()
+            self.assertIn("not edited on this tab", win.statusBar().currentMessage())
+            win.line_search.setText("zulu")             # hides the line the change is on
+            win.apply_line_filter()
+            changes = win.change_view
+            point = changes.visualRect(win.change_proxy.index(1, win.change_model.PROPOSED)).center()
+            # A real double-click starts with a press: Qt's views ignore one without it.
+            QTest.mouseClick(changes.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+            QTest.mouseDClick(changes.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+            self.assertEqual(win.tabs.currentIndex(), 1)
+            current = win.line_view.currentIndex()
+            entry = win.line_model.rows[win.line_proxy.mapToSource(current).row()]
+            self.assertEqual((entry.id, entry.name, entry.lineno), ("20", "Mike One", 7))
+            self.assertEqual(win.line_search.text(), "")
+            message = win.statusBar().currentMessage()
+            self.assertIn("Line 7 of mine.lnc.", message)
+            self.assertIn("filters were cleared", message)
+            # A removed row is a line on disk only, so there is no line in memory to go to.
+            copy = Path(tmp) / "backups" / "20261111-120000" / "mine.lnc"
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.CLUBS.replace('"CLUB_SHORT_NAME_CHANGE"\t20\t"Aardvark"\t""\n',
+                                               ""))
+            editor.restore_into(win.docs[0], copy)
+            win.reload_views()
+            win.show_changes_tab()
+            rows = win.change_model.rows
+            removed = next(n for n, row in enumerate(rows) if row.state == "removed")
+            win.go_to_change(win.change_proxy.mapFromSource(win.change_model.index(removed, 0)))
+            self.assertEqual(win.tabs.currentIndex(), 2)
+            self.assertIn("next Save or Deploy takes it out", win.statusBar().currentMessage())
+            self.assertEqual(path.read_bytes().decode("utf-8-sig"), self.CLUBS)  # memory only
+
+
+@unittest.skipUnless(all((LIVE_DIR / name).is_file() for name in editor.NAME_FILES),
+                     "the FM27 name files are not on this machine")
+class Session7Speed(unittest.TestCase):
+    """Release 2.4, session 7: with both FM27 files open, the window answers within a second.
+
+    The live files are only read; the window works on copies in a temporary folder.
+    """
+
+    def test_both_live_files_load_reload_edit_and_save_within_a_second(self):
+        import time
+        from PySide6.QtWidgets import QApplication, QDialog
+
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, before = [], {}
+            for name in editor.NAME_FILES:
+                before[name] = (LIVE_DIR / name).read_bytes()
+                copy = Path(tmp) / name
+                copy.write_bytes(before[name])
+                paths.append(str(copy))
+            win.show()
+            QApplication.processEvents()
+            timings = {}
+
+            def timed(label, step):
+                start = time.perf_counter()
+                step()
+                QApplication.processEvents()
+                timings[label] = time.perf_counter() - start
+
+            timed("load", lambda: win.load(paths))
+            self.assertEqual(win.entity_model.rowCount(), 4297)
+            timed("reload", win.reload_views)
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "740")
+            timed("cell edit",
+                  lambda: model.setData(model.index(row, 2), "Wolverhampton Wanderers"))
+            timed("undo", win.undo_act.trigger)
+            code = model.columns().index("code")
+            row = next(n for n, entity in enumerate(model.rows) if not entity.slots.get("code"))
+            timed("added line", lambda: model.setData(model.index(row, code), "ZZZ"))
+            timed("undo added line", win.undo_act.trigger)
+            timed("redo added line", win.redo_act.trigger)
+            with mock.patch.object(QDialog, "exec", press_write([])):
+                timed("save", win.save)
+            self.assertIn(b'"ZZZ"', (Path(tmp) / "FM27_Club_Names.lnc").read_bytes())
+            slow = {label: round(seconds, 2) for label, seconds in timings.items()
+                    if seconds >= 1.0}
+            self.assertEqual(slow, {}, timings)
+            for name in editor.NAME_FILES:
+                self.assertEqual((LIVE_DIR / name).read_bytes(), before[name])
 
 
 if __name__ == "__main__":
