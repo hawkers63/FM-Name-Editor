@@ -2978,33 +2978,51 @@ def licence_inventory(version_dir: Path) -> list[dict]:
     return rows
 
 
-def toggle_licence(version_dir: Path, rel: Path, archive_root: Path) -> str:
-    """Rename a name-mask file to `.disabled`, or restore it.
+LICENCE_INTENTS = ("disable", "restore")
 
-    The current file is copied into a new backup folder first, with a
-    manifest, through write_file_atomically. No bytes are written into the
-    game tree: the toggle is one rename inside one folder, which never
-    replaces a file. When both names exist it refuses, because choosing
-    between them is the user's call. Nothing is deleted.
+
+def licence_intent(state: str) -> str:
+    """What a toggle of a name-mask file in this state would do: "disable", "restore",
+    or "" when the state cannot be toggled (missing, or both names present)."""
+    return {"present": "disable", "disabled": "restore"}.get(state, "")
+
+
+def toggle_licence(version_dir: Path, rel: Path, archive_root: Path, intent: str) -> str:
+    """Disable a name-mask file (rename it to `.disabled`), or restore it.
+
+    ``intent`` is what the person confirmed, "disable" or "restore". The
+    folder is looked at again here, just before anything happens, and the
+    file must still be in the state that intent starts from: a file renamed
+    in between is refused, never renamed back the other way. The current
+    file is copied into a new backup folder first, with a manifest, through
+    write_file_atomically. No bytes are written into the game tree: the
+    change is one rename inside one folder, which never replaces a file.
+    When both names exist it refuses, because choosing between them is the
+    user's call. Nothing is deleted.
 
     Raises:
+        ValueError: not a name-mask file, or an intent other than those two.
         FileExistsError: the file and its ``.disabled`` copy both exist.
-        FileNotFoundError: neither exists.
+        FileNotFoundError: the file the intent would rename is not there.
     """
     if rel not in MASK_FILES:
         raise ValueError(f"Not a name-mask file: {rel}")
+    if intent not in LICENCE_INTENTS:
+        raise ValueError(f"Not a licensing change: {intent!r}")
     src = version_dir / rel
     disabled = src.with_name(src.name + ".disabled")
     if src.exists() and disabled.exists():
         raise FileExistsError(
             f"Both {src.name} and {disabled.name} are in {src.parent}. The editor will "
             "not choose between them. Move or rename one of them yourself.")
-    if src.is_file():
+    if intent == "disable":
         current, target, operation, result = src, disabled, "Disable licensing file", "disabled"
-    elif disabled.is_file():
-        current, target, operation, result = disabled, src, "Restore licensing file", "restored"
     else:
-        raise FileNotFoundError(src)
+        current, target, operation, result = disabled, src, "Restore licensing file", "restored"
+    if not current.is_file():
+        raise FileNotFoundError(
+            f"{current.name} is not in {current.parent} now, so there is nothing to "
+            f"{intent}. It was renamed or moved after the list was read. Nothing was renamed.")
     archive = archive_files([current], archive_root, operation, version_dir.name)
     try:
         os.rename(current, target)
@@ -3561,11 +3579,15 @@ def apply_profile(profile: Profile, docs):
     the baseline the row was recorded with, so a spelling the game has
     changed since is looked at before it is replaced. It is left unticked,
     with a note, when the baseline differs, when the line has an unsaved
-    edit of its own, or when another profile set it in this session. A row
-    the open files lack becomes an added line in the open file it was
-    recorded from; when no open file has that name it is counted under
-    "elsewhere" and left out. Rows that already read the preferred name
-    are counted as "same".
+    edit of its own, or when another profile set it in this session. When
+    a key is on several lines, Apply writes the preferred name into each,
+    so every line it would change is looked at, whatever their order, and
+    the note says which file and line each finding is on; lines that
+    already read the preferred name are left as they are. A row the open
+    files lack becomes an added line in the open file it was recorded
+    from; when no open file has that name it is counted under "elsewhere"
+    and left out. Rows that already read the preferred name are counted
+    as "same".
 
     Nothing changes yet. Returns (changes, missing, stats); apply the
     ticked ones with apply_profile_proposals.
@@ -3599,17 +3621,24 @@ def apply_profile(profile: Profile, docs):
         if all(entry.name == preferred for entry in found):
             stats["same"] += 1
             continue
-        current = found[-1]
+        # Every line Apply would change counts, not only the last: one with an
+        # unsaved edit, another profile's spelling, or a name the game changed
+        # since leaves the whole proposal unticked (note 05, finding 3).
+        changing = [entry for entry in found if entry.name != preferred]
+        current = changing[-1]
         notes = []
-        mark = current.profile_mark
-        if mark is not None and mark[0] != profile.name and current.name == mark[1]:
-            notes.append(f"Competes with profile {mark[0]}, which set {mark[1]} in this session")
-        elif current.changed:
-            notes.append(f"Unsaved edit {current.name} would be replaced")
-        on_disk = None if current.imported else current.orig_name
-        if on_disk != recorded:
-            notes.append(f"Baseline changed: the file says {_shown(on_disk)}; when "
-                         f"recorded it said {_shown(recorded)}")
+        for entry in changing:
+            where = f" ({describe_lines([entry])})" if len(found) > 1 else ""
+            mark = entry.profile_mark
+            if mark is not None and mark[0] != profile.name and entry.name == mark[1]:
+                notes.append(f"Competes with profile {mark[0]}, which set {mark[1]} in this "
+                             f"session{where}")
+            elif entry.changed:
+                notes.append(f"Unsaved edit {entry.name} would be replaced{where}")
+            on_disk = None if entry.imported else entry.orig_name
+            if on_disk != recorded:
+                notes.append(f"Baseline changed: the file says {_shown(on_disk)}; when "
+                             f"recorded it said {_shown(recorded)}{where}")
         ticked = not notes
         if len(found) > 1:
             notes.append(f"Duplicate id ({len(found)} rows)")
@@ -3654,18 +3683,61 @@ def apply_profile_proposals(profile_name: str, changes, missing, docs):
     return count, added
 
 
-def load_state(root) -> dict:
-    """The editor's local settings. Missing or unreadable settings read as empty."""
+class DamagedFileError(OSError):
+    """A local file the editor keeps is damaged, so it is not written over.
+
+    ``path`` is the file and the message says what is wrong with it. The
+    file is left exactly as it is, for the person to put right or move away.
+    """
+
+    def __init__(self, path, problem: str):
+        super().__init__(problem)
+        self.path = Path(path)
+
+
+def read_state(root) -> tuple[dict, str]:
+    """The editor's local settings, and what is wrong with the file, if anything.
+
+    Returns (settings, problem). A missing file holds no settings: ({}, "").
+    A file that cannot be read, is not UTF-8 JSON, or does not hold one
+    JSON object is damaged: ({}, a sentence naming the file and what is
+    wrong). A damaged file is left alone: save_state will not write over it.
+    """
+    path = Path(root) / STATE_FILE
     try:
-        data = json.loads((Path(root) / STATE_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {}, ""
+    except OSError as exc:
+        return {}, f"{path} could not be read: {exc.strerror or exc}."
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except UnicodeError:
+        return {}, f"{path} is not UTF-8 text."
+    except ValueError as exc:
+        return {}, f"{path} is not readable JSON: {exc}."
+    if not isinstance(data, dict):
+        return {}, f"{path} does not hold settings: it should be one JSON object."
+    return data, ""
+
+
+def load_state(root) -> dict:
+    """The editor's local settings. A missing or damaged file reads as empty (see read_state)."""
+    return read_state(root)[0]
 
 
 def save_state(state: dict, root) -> None:
-    """Write the local settings through write_file_atomically."""
+    """Write the local settings through write_file_atomically.
+
+    Raises:
+        DamagedFileError: the settings file on disk is damaged (see
+            read_state). It is left exactly as it is, never written over.
+        OSError: the file could not be written.
+    """
     root = Path(root)
+    _settings, problem = read_state(root)
+    if problem:
+        raise DamagedFileError(root / STATE_FILE, problem)
     root.mkdir(parents=True, exist_ok=True)
     text = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     write_file_atomically(root / STATE_FILE, text.encode("utf-8"))
@@ -3808,8 +3880,14 @@ def load_collection_file(root) -> CollectionFile:
     if (not isinstance(data, dict) or data.get("format") != COLLECTIONS_FORMAT
             or data.get("version") != COLLECTIONS_VERSION):
         raise ValueError(f"{path} is not a version {COLLECTIONS_VERSION} collections file.")
+    # Every value is checked for its type before it is used, so a hand-edited
+    # file with a number or a list in the wrong place is a damaged file
+    # (ValueError, named in the panel), never a crash when the window opens.
+    listed = data.get("collections") or []
+    if not isinstance(listed, list):
+        raise ValueError(f"{path} has a damaged list of collections.")
     found = []
-    for number, item in enumerate(data.get("collections") or [], 1):
+    for number, item in enumerate(listed, 1):
         where = f"{path}, collection {number}"
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
             raise ValueError(f"{where} has no name.")
@@ -3817,12 +3895,16 @@ def load_collection_file(root) -> CollectionFile:
         problem = label_problem(name, found, None, "collection")
         if problem:
             raise ValueError(f"{where}: {problem}")
+        members = item.get("members") or []
+        if not isinstance(members, list):
+            raise ValueError(f"{where} ({name}) has a damaged list of members.")
         keys = []
-        for member in item.get("members") or []:
+        for member in members:
             family = member.get("family") if isinstance(member, dict) else None
             id_ = member.get("id") if isinstance(member, dict) else None
             lang = member.get("language", "") if isinstance(member, dict) else None
-            if (family not in FAMILY_FIELDS or not isinstance(id_, str) or not id_is_legal(id_)
+            if (not isinstance(family, str) or family not in FAMILY_FIELDS
+                    or not isinstance(id_, str) or not id_is_legal(id_)
                     or not isinstance(lang, str) or not field_is_legal(lang)):
                 raise ValueError(f"{where} ({name}) has a member that is not a family, "
                                  f"an ID, and a language: {member!r}")
@@ -3867,8 +3949,10 @@ def clean_saved_searches(raw) -> list[SavedSearch]:
     """The saved searches in the settings file that the window can use, in their order.
 
     One with a name that is empty, too long, or already used, an unknown
-    family or status filter, or text that is not text is left out. A
-    missing field takes its default (Clubs, All, no words).
+    family or status filter, or a field that is not text (a number, a
+    list, null) is left out. A missing field takes its default (Clubs, All,
+    no words). Types are checked before anything else, so no value in a
+    hand-edited file can stop the window opening.
     """
     found: list[SavedSearch] = []
     defaults = {"family": "club", "text": "", "status": "all", "section": "", "collection": ""}
@@ -3877,11 +3961,10 @@ def clean_saved_searches(raw) -> list[SavedSearch]:
             continue
         name = item["name"].strip()
         values = {field: item.get(field, defaults[field]) for field in SavedSearch.FIELDS}
-        if (label_problem(name, found, None, "saved search")
+        if (not all(isinstance(value, str) for value in values.values())
+                or label_problem(name, found, None, "saved search")
                 or values["family"] not in FAMILY_FIELDS
-                or values["status"] not in STATUS_FILTERS
-                or not all(isinstance(values[field], str)
-                           for field in ("text", "section", "collection"))):
+                or values["status"] not in STATUS_FILTERS):
             continue
         found.append(SavedSearch(name, **values))
     return found
@@ -3910,7 +3993,8 @@ def clean_view(raw) -> dict:
     descending), "entity_widths" (per family, per column key), "line_widths",
     and "geometry", "window_state", and "splitter" (base64 text from Qt). A
     value of the wrong type or out of range is dropped, so an older or
-    hand-edited settings file cannot stop the window opening.
+    hand-edited settings file cannot stop the window opening. Each type is
+    checked before the value is looked up: a list or an object cannot be.
     """
     view: dict = {}
     if not isinstance(raw, dict):
@@ -3918,10 +4002,10 @@ def clean_view(raw) -> dict:
     tab = raw.get("tab")
     if isinstance(tab, int) and not isinstance(tab, bool) and 0 <= tab <= 2:
         view["tab"] = tab
-    if raw.get("family") in FAMILY_FIELDS:
-        view["family"] = raw["family"]
-    if raw.get("status") in STATUS_FILTERS:
-        view["status"] = raw["status"]
+    for name, allowed in (("family", FAMILY_FIELDS), ("status", STATUS_FILTERS)):
+        value = raw.get(name)
+        if isinstance(value, str) and value in allowed:
+            view[name] = value
     every_entity_column = {key for family in FAMILY_FIELDS for key in _entity_columns(family)}
     for name, allowed in (("entity_sort", every_entity_column), ("line_sort", LINE_COLUMNS)):
         sort = _clean_sort(raw.get(name), allowed)
@@ -4116,6 +4200,10 @@ def run_gui(paths):
         "replaced one at a time; if one fails, the files already replaced are put back "
         "from that copy.")
     GAME_CHECK = "Checking whether Football Manager is running..."
+    SETTINGS_LEFT_ALONE = (
+        "The editor leaves the file as it is. Until it is put right or moved away and the "
+        "editor started again, the chosen profile, saved searches, and the window's layout "
+        "are not saved.")
     DISPLAY, EDIT, FONT = Qt.DisplayRole, Qt.EditRole, Qt.FontRole
     FOREGROUND, TOOLTIP = Qt.ForegroundRole, Qt.ToolTipRole
     # State text in the grids, coloured as well as worded. Lighter than the
@@ -4987,12 +5075,23 @@ def run_gui(paths):
         return answer == QMessageBox.Yes
 
     class LicenceDialog(QDialog):
-        """Report licensing files, and set aside the name-mask set."""
+        """Report licensing files, and set aside the name-mask set.
+
+        A toggle goes in steps: a game check on the window's worker, the
+        confirmation, a fresh game check (a game started while the question
+        was open still stops it), then the rename the person confirmed,
+        disable or restore, never whatever the file's state then suggests.
+        One toggle runs at a time, and closing the dialog by any route
+        (Close, Esc, the title bar) drops a toggle that is still waiting.
+        """
 
         def __init__(self, parent, version: Path):
             super().__init__(parent)
             self.version = version
             self.rows: list[dict] = []
+            self.pending = 0            # the number of the toggle under way; 0 when none
+            self.serial = 0
+            self.closed = False
             self.setWindowTitle("Licensing health")
             self.resize(760, 460)
             lay = QVBoxLayout(self)
@@ -5011,15 +5110,45 @@ def run_gui(paths):
             self.table.horizontalHeader().setStretchLastSection(True)
             lay.addWidget(self.table, 1)
             row = QHBoxLayout()
-            toggle = QPushButton("Toggle selected name mask")
-            toggle.clicked.connect(self.toggle_selected)
-            row.addWidget(toggle)
+            self.toggle_btn = QPushButton("Toggle selected name mask")
+            self.toggle_btn.clicked.connect(self.toggle_selected)
+            row.addWidget(self.toggle_btn)
             row.addStretch(1)
-            close = QPushButton("Close")
-            close.clicked.connect(self.accept)
-            row.addWidget(close)
+            self.close_btn = QPushButton("Close")
+            self.close_btn.clicked.connect(self.reject)
+            row.addWidget(self.close_btn)
             lay.addLayout(row)
             self.refresh()
+
+        def done(self, result: int) -> None:
+            """Every way of closing ends here: a toggle still waiting is dropped."""
+            self.closed = True
+            super().done(result)
+
+        def current(self, request: int) -> bool:
+            """True while ``request`` is the toggle under way and the dialog is open."""
+            return not self.closed and request == self.pending
+
+        def end_toggle(self, request: int) -> None:
+            """A toggle is over, however it ended: another may start."""
+            if request == self.pending:
+                self.pending = 0
+            self.toggle_btn.setEnabled(True)
+
+        def check_game(self, then) -> None:
+            """Look for a running game on the window's worker, then call ``then(found)``.
+
+            A check that breaks counts as unknown (None), never as closed.
+            """
+            jobs = getattr(self.parent(), "jobs", None)
+            if jobs is None:
+                try:
+                    found = football_manager_running()
+                except Exception:           # unknown, as on the worker
+                    found = None
+                then(found)
+                return
+            jobs.start(GAME_CHECK, football_manager_running, then, lambda _error: then(None))
 
         def refresh(self) -> None:
             self.rows = licence_inventory(self.version)
@@ -5038,6 +5167,8 @@ def run_gui(paths):
             self.table.resizeColumnsToContents()
 
         def toggle_selected(self) -> None:
+            if self.pending or self.closed:
+                return                      # one toggle at a time, and none once closed
             selected = self.table.currentRow()
             if selected < 0:
                 return
@@ -5054,32 +5185,66 @@ def run_gui(paths):
                     "editor will not choose between them. Move or rename one of them "
                     "yourself, then try again.")
                 return
-            verb = "disable" if row["state"] == "present" else "restore"
-            target = row["path"]
-            if row["state"] == "disabled":
-                target = target.with_name(target.name + ".disabled")
-            jobs = getattr(self.parent(), "jobs", None)
-            if jobs is None:
-                self.finish_toggle(row, verb, target, football_manager_running())
-            else:
-                jobs.start(GAME_CHECK, football_manager_running,
-                           lambda found: self.finish_toggle(row, verb, target, found),
-                           lambda _error: self.finish_toggle(row, verb, target, None))
+            intent = licence_intent(row["state"])
+            current = row["path"]
+            if intent == "restore":
+                current = current.with_name(current.name + ".disabled")
+            self.serial += 1
+            request = self.pending = self.serial
+            self.toggle_btn.setEnabled(False)
+            self.check_game(lambda found: self.confirm_toggle(request, row, intent, current,
+                                                              found))
 
-        def finish_toggle(self, row: dict, verb: str, target: Path, found) -> None:
-            """The game check is back: confirm, then rename the file."""
+        def confirm_toggle(self, request: int, row: dict, intent: str, current: Path,
+                           found) -> None:
+            """The first game check is back: refuse a running game, or ask."""
+            if not self.current(request):
+                return                      # closed, or not this toggle: nothing more
             preflight = game_write_preflight(
-                f"{verb} a licensing file", [target], check=lambda: found)
+                f"{intent} a licensing file", [current], check=lambda: found)
             if not confirm_game_write(
-                    self, preflight, f"This will {verb} the file below.",
+                    self, preflight, f"This will {intent} the file below.",
                     "A copy is stored in the backups folder first. The file is renamed "
                     "in one step and its contents are not changed."):
+                self.end_toggle(request)
                 return
+            if not self.current(request):
+                return
+            # The answer may have taken a while: look again before renaming.
+            self.check_game(lambda again: self.commit_toggle(request, row, intent, current,
+                                                             again))
+
+        def commit_toggle(self, request: int, row: dict, intent: str, current: Path,
+                          found) -> None:
+            """The game check after Yes is back: rename only while the game is closed."""
+            if not self.current(request):
+                return
+            preflight = game_write_preflight(
+                f"{intent} a licensing file", [current], check=lambda: found)
+            if preflight.blocked:
+                QMessageBox.warning(self, APP_NAME,
+                                    preflight.blocked_message() + "\n\nNothing was renamed.")
+                self.end_toggle(request)
+                return
+            if preflight.check_failed:
+                # An earlier answer is not reused: this check failed, so ask again.
+                answer = QMessageBox.question(
+                    self, APP_NAME,
+                    "Just before renaming, the check for a running copy of Football Manager "
+                    f"could not be made. Rename {current.name} only if the game is closed."
+                    "\n\nHave you closed Football Manager?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer != QMessageBox.Yes or not self.current(request):
+                    self.end_toggle(request)
+                    return
             try:
-                result = toggle_licence(self.version, row["rel"], BACKUP_ROOT)
+                result = toggle_licence(self.version, row["rel"], BACKUP_ROOT, intent)
             except (OSError, ValueError) as exc:
+                self.end_toggle(request)
+                self.refresh()              # show the folder as it is now
                 QMessageBox.critical(self, APP_NAME, f"Could not change the file:\n{exc}")
                 return
+            self.end_toggle(request)
             self.refresh()
             parent = self.parent()
             if parent is not None:
@@ -6093,7 +6258,9 @@ def run_gui(paths):
             self._updating = False
             self._sizing = False
             self._inspector_family = ""
-            self.state = load_state(STATE_ROOT)
+            # A damaged settings file is named in the status bar and never written
+            # over (note 05, finding 5); the window opens with its defaults.
+            self.state, self.state_problem = read_state(STATE_ROOT)
             self.saved_view = clean_view(self.state.get("view"))
             self.saved_searches = clean_saved_searches(self.state.get("saved_searches"))
             self.entity_widths = {family: dict(widths) for family, widths
@@ -6141,6 +6308,10 @@ def run_gui(paths):
             self.pending_label = QLabel("")
             self.pending_label.setObjectName("warning")
             self.statusBar().addPermanentWidget(self.pending_label)
+            self.settings_label = QLabel("")
+            self.settings_label.setObjectName("warning")
+            self.statusBar().addPermanentWidget(self.settings_label)
+            self.show_settings_problem()
 
             self.entity_timer = QTimer(self)
             self.entity_timer.setSingleShot(True)
@@ -6174,8 +6345,10 @@ def run_gui(paths):
                 self.open_act, self.quick_load_act, self.save_act, self.deploy_act,
                 self.review_act, self.import_act, self.licensing_act, self.undo_act,
                 self.redo_act, self.undo_tool, self.redo_tool, self.edit_cell_act,
-                self.revert_act, self.replace_act, self.bulk_act, self.import_pack_act,
-                self.backups_act, self.record_act, self.apply_profile_act,
+                self.revert_act, self.replace_act, self.bulk_act, self.export_act,
+                self.import_pack_act, self.backups_act, self.record_act,
+                self.apply_profile_act, self.new_profile_act, self.rename_profile_act,
+                self.delete_profile_act, self.add_to_collection_menu.menuAction(),
                 self.new_collection_act, self.rename_collection_act,
                 self.delete_collection_act, self.remove_from_collection_act]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
@@ -6840,10 +7013,37 @@ def run_gui(paths):
                 "window_state": text(self.saveState()),
                 "splitter": text(self.entity_splitter.saveState()),
             })
-            try:
-                save_state(self.state, STATE_ROOT)
-            except OSError:
-                pass        # the window is closing: the next run starts with the view before
+            # The window is closing: when the file cannot be written, the next run
+            # starts with the view before, and a damaged file stays as it is.
+            self.keep_settings(self.state)
+
+        def keep_settings(self, state: dict) -> str:
+            """Write the settings file. Returns "" when it was written, or why it was not.
+
+            A damaged settings file is never written over (see read_state). Once
+            one is found, no settings are written for the rest of the run, so a
+            file put right by hand meanwhile is not replaced by this window's
+            defaults either.
+            """
+            if not self.state_problem:
+                try:
+                    save_state(state, STATE_ROOT)
+                    return ""
+                except DamagedFileError as exc:     # damaged after the window opened
+                    self.state_problem = str(exc)
+                    self.show_settings_problem()
+                except OSError as exc:
+                    return f"Could not write the settings file:\n{exc}"
+            return f"{self.state_problem} {SETTINGS_LEFT_ALONE}"
+
+        def show_settings_problem(self) -> None:
+            """Name a damaged settings file in the status bar for as long as the window runs."""
+            problem = self.state_problem
+            self.settings_label.setVisible(bool(problem))
+            if problem:
+                self.settings_label.setText(
+                    f"Settings not saved: {STATE_ROOT / STATE_FILE} could not be read")
+                self.settings_label.setToolTip(f"{problem} {SETTINGS_LEFT_ALONE}")
 
         def on_entity_resized(self, column: int, _old: int, new: int) -> None:
             """Remember a width the user gave a grid column, per family."""
@@ -7093,6 +7293,7 @@ def run_gui(paths):
             entity = self.inspector_entity
             return {
                 "entity": (entity.family, entity.id, entity.lang) if entity is not None else None,
+                "drafts": self.inspector_drafts() if entity is not None else {},
                 "entities": self.entity_view.verticalScrollBar().value(),
                 "lines": self.line_view.verticalScrollBar().value(),
             }
@@ -7106,6 +7307,7 @@ def run_gui(paths):
                         if index.isValid():
                             self.entity_view.selectRow(index.row())
                             self.show_inspector(entity)
+                            self.put_drafts(place.get("drafts", {}))   # refused text stays
                         break
             self.entity_view.verticalScrollBar().setValue(place["entities"])
             self.line_view.verticalScrollBar().setValue(place["lines"])
@@ -7484,11 +7686,10 @@ def run_gui(paths):
         def store_searches(self, searches: list, done: str) -> bool:
             state = dict(self.state)
             state["saved_searches"] = [search.to_json() for search in searches]
-            try:
-                save_state(state, STATE_ROOT)
-            except OSError as exc:
+            problem = self.keep_settings(state)
+            if problem:
                 QMessageBox.warning(self, APP_NAME,
-                                    f"Could not write the settings file:\n{exc}")
+                                    f"The saved searches were not changed.\n\n{problem}")
                 return False
             self.state = state
             self.saved_searches = searches
@@ -7659,7 +7860,16 @@ def run_gui(paths):
             self.inspector_lay.addStretch(1)
 
         def show_inspector(self, entity) -> None:
-            """Fill the inspector from an entity, or empty it for None."""
+            """Fill the inspector from an entity, or empty it for None.
+
+            Shown again for the same entity (after an edit to another field or an
+            undo), a field holding text that cannot be used keeps that text and
+            its message; the rest is brought up to date. Only Esc, a commit of
+            that field, or choosing another entity clears it (note 05, finding 6).
+            """
+            same = (entity is not None and self.inspector_entity is not None
+                    and entity_key(entity) == entity_key(self.inspector_entity))
+            drafts = self.inspector_drafts() if same else {}
             self._filling = True
             self.inspector_entity = entity
             try:
@@ -7707,17 +7917,37 @@ def run_gui(paths):
                     else:
                         set_level(widgets["disk"], view.on_disk, "")
                     edit = widgets["edit"]
+                    draft = drafts.get(view.slot)
                     edit.blockSignals(True)
-                    edit.setText(view.current)
+                    if draft is None:
+                        edit.setText(view.current)
                     edit.setPlaceholderText(
                         "Type a name to add one" if view.state == "none" else "")
                     edit.blockSignals(False)
                     edit.setEnabled(True)
                     widgets["where"].setText(view.where)
-                    self.show_field_problem(widgets, "")
+                    self.show_field_problem(widgets, draft[1] if draft else "")
                 self.inspector_revert.setEnabled(entity.changed())
             finally:
                 self._filling = False
+
+        def inspector_drafts(self) -> dict:
+            """The fields holding text that cannot be used: slot -> (text, message)."""
+            return {slot: (widgets["edit"].text(), widgets["problem"].text())
+                    for slot, widgets in self.inspector_fields.items()
+                    if widgets["edit"].objectName() == "invalid"}
+
+        def put_drafts(self, drafts: dict) -> None:
+            """Show refused texts in their fields again, each with its message."""
+            for slot, (text, problem) in drafts.items():
+                widgets = self.inspector_fields.get(slot)
+                if widgets is None:
+                    continue
+                edit = widgets["edit"]
+                edit.blockSignals(True)
+                edit.setText(text)
+                edit.blockSignals(False)
+                self.show_field_problem(widgets, problem)
 
         def show_field_problem(self, widgets: dict, problem: str) -> None:
             """Show, or clear, the message under one inspector field."""
@@ -8137,11 +8367,11 @@ def run_gui(paths):
             """Keep the chosen profile in the local state file for next time."""
             profile = self.current_profile()
             self.state["active_profile_file"] = profile.path.name if profile else ""
-            try:
-                save_state(self.state, STATE_ROOT)
-            except OSError as exc:
+            problem = self.keep_settings(self.state)
+            if problem:
                 self.statusBar().showMessage(
-                    f"Could not remember the chosen profile: {exc}", 8000)
+                    "The chosen profile is not remembered for next time. "
+                    + problem.replace("\n", " "), 15000)
 
         def on_profile_chosen(self) -> None:
             self.update_profile_actions()

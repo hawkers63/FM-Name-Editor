@@ -127,6 +127,20 @@ def close_window(win) -> None:
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+def make_window(test):
+    """A test window from run_gui([]). Only a missing PySide6 skips the test.
+
+    Any other error while the window is built fails the test. Until Session 9
+    every exception was turned into a skip, which would have hidden a window
+    that no longer opens behind a green run (note 05).
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("PySide6") is None:
+        test.skipTest("PySide6 is not installed")
+    return editor.run_gui([])[1]
+
+
 def failing_replace(*targets):
     """An os.replace that refuses to replace these paths and works for every other."""
     real = os.replace
@@ -435,19 +449,21 @@ class Licensing(unittest.TestCase):
             rows = {row["name"]: row for row in editor.licence_inventory(version)}
             self.assertEqual(rows[rel.as_posix()]["state"], "present")
             self.assertTrue(rows[rel.as_posix()]["toggle"])
-            result = editor.toggle_licence(version, rel, root / "backups")
+            result = editor.toggle_licence(version, rel, root / "backups", "disable")
             self.assertEqual(result, "disabled")
             self.assertFalse(src.exists())
             self.assertTrue(src.with_name(src.name + ".disabled").is_file())
             archived = list((root / "backups").rglob("fake.edt"))
             self.assertEqual(archived[0].read_bytes(), b"mask-bytes")
-            self.assertEqual(editor.toggle_licence(version, rel, root / "backups"), "restored")
+            self.assertEqual(editor.toggle_licence(version, rel, root / "backups", "restore"),
+                             "restored")
             self.assertEqual(src.read_bytes(), b"mask-bytes")
 
     def test_report_only_file_is_not_toggled(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):
-                editor.toggle_licence(Path(tmp), editor.REPORT_FILES[0], Path(tmp) / "backups")
+                editor.toggle_licence(Path(tmp), editor.REPORT_FILES[0], Path(tmp) / "backups",
+                                      "disable")
 
 
 class ProcessList(unittest.TestCase):
@@ -621,10 +637,7 @@ class Release21(unittest.TestCase):
 class WindowSmoke(unittest.TestCase):
     def test_entity_tab_edit_and_cancelled_bulk(self):
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
 
         self.addCleanup(close_window, win)
         with tempfile.TemporaryDirectory() as tmp:
@@ -661,10 +674,7 @@ class WindowSmoke(unittest.TestCase):
         from PySide6.QtWidgets import QDialog, QMessageBox
 
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
 
         self.addCleanup(close_window, win)
         text = '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
@@ -1101,10 +1111,7 @@ class Session2Window(unittest.TestCase):
 
     def _window(self):
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         return win
 
@@ -1537,13 +1544,15 @@ class Session3Archive(unittest.TestCase):
             disabled.write_bytes(b"older-mask")
             rows = {row["name"]: row for row in editor.licence_inventory(version)}
             self.assertEqual(rows[rel.as_posix()]["state"], "both")
-            with self.assertRaises(FileExistsError):
-                editor.toggle_licence(version, rel, root / "backups")
+            for intent in editor.LICENCE_INTENTS:
+                with self.assertRaises(FileExistsError):
+                    editor.toggle_licence(version, rel, root / "backups", intent)
             self.assertEqual(src.read_bytes(), b"mask-bytes")
             self.assertEqual(disabled.read_bytes(), b"older-mask")
             self.assertFalse((root / "backups").exists())
             disabled.unlink()
-            self.assertEqual(editor.toggle_licence(version, rel, root / "backups"), "disabled")
+            self.assertEqual(editor.toggle_licence(version, rel, root / "backups", "disable"),
+                             "disabled")
             archive = editor.list_archives(root / "backups")[0]
             manifest = editor.read_manifest(archive)
             self.assertEqual(manifest["operation"], "Disable licensing file")
@@ -1561,10 +1570,7 @@ class Session3Window(unittest.TestCase):
 
     def _window(self):
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         return win
 
@@ -1993,10 +1999,7 @@ class Session4Window(unittest.TestCase):
             editor, PROFILE_ROOT=Path(tmp) / "profiles", STATE_ROOT=Path(tmp) / "state")
         roots.start()
         self.addCleanup(roots.stop)
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         return win
 
@@ -2649,10 +2652,7 @@ class Session6Window(unittest.TestCase):
 
     def _window(self):
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         return win
 
@@ -2803,10 +2803,7 @@ class Session5Window(unittest.TestCase):
 
     def _window(self):
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         return win
 
@@ -3155,10 +3152,7 @@ class Session7Window(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
 
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         win.show()
         win.activateWindow()
@@ -3598,10 +3592,7 @@ class Session8Window(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
 
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         win.show()
         QApplication.processEvents()
@@ -3854,10 +3845,7 @@ class Session8Workers(unittest.TestCase):
     def _window(self):
         from PySide6.QtWidgets import QApplication
 
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         win.show()
         QApplication.processEvents()
@@ -4102,10 +4090,7 @@ class Session7Speed(unittest.TestCase):
         from PySide6.QtWidgets import QApplication, QDialog
 
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-        try:
-            _app, win = editor.run_gui([])
-        except Exception as exc:
-            self.skipTest(f"Qt window could not be created: {exc}")
+        win = make_window(self)
         self.addCleanup(close_window, win)
         with tempfile.TemporaryDirectory() as tmp:
             paths, before = [], {}
@@ -4145,6 +4130,650 @@ class Session7Speed(unittest.TestCase):
             self.assertEqual(slow, {}, timings)
             for name in editor.NAME_FILES:
                 self.assertEqual((LIVE_DIR / name).read_bytes(), before[name])
+
+
+class Session9Licensing(unittest.TestCase):
+    """Release 2.5, session 9: the licensing toggle looks for a running game again after the
+    confirmation, runs one toggle at a time, drops a toggle when its dialog closes, and
+    renames only in the direction confirmed (note 05, findings 1 and 2)."""
+
+    def _tree(self, tmp) -> Path:
+        """A temporary db\\2700 holding one name-mask file, for the database selector."""
+        root = Path(tmp)
+        mask = root / "db" / "2700" / editor.MASK_FILES[-1]      # edt/permanent/fake.edt
+        mask.parent.mkdir(parents=True)
+        mask.write_bytes(b"mask-bytes")
+        self.enterContext(mock.patch.multiple(
+            editor, GAME_DB_ROOT=root / "db", BACKUP_ROOT=root / "backups"))
+        return mask
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.refresh_versions()                  # read the patched game folder
+        win.show()
+        QApplication.processEvents()
+        return win
+
+    @staticmethod
+    def _pick(dialog) -> int:
+        """Select the name-mask file's row in the licensing dialog."""
+        name = editor.MASK_FILES[-1].as_posix()
+        number = next(n for n, row in enumerate(dialog.rows) if row["name"] == name)
+        dialog.table.setCurrentCell(number, 0)
+        return number
+
+    def test_the_rename_follows_the_intent_confirmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            version = root / "2700"
+            rel = editor.MASK_FILES[-1]
+            src = version / rel
+            src.parent.mkdir(parents=True)
+            src.write_bytes(b"mask-bytes")
+            disabled = src.with_name(src.name + ".disabled")
+            self.assertEqual([editor.licence_intent(state)
+                              for state in ("present", "disabled", "missing", "both")],
+                             ["disable", "restore", "", ""])
+            with self.assertRaises(FileNotFoundError) as caught:   # restore, while present
+                editor.toggle_licence(version, rel, root / "backups", "restore")
+            self.assertIn("fake.edt.disabled is not in", str(caught.exception))
+            self.assertIn("Nothing was renamed", str(caught.exception))
+            self.assertTrue(src.is_file())
+            self.assertFalse(disabled.exists())
+            self.assertFalse((root / "backups").exists())          # refused before the copy
+            with self.assertRaises(ValueError):
+                editor.toggle_licence(version, rel, root / "backups", "toggle")
+            self.assertEqual(editor.toggle_licence(version, rel, root / "backups", "disable"),
+                             "disabled")
+            with self.assertRaises(FileNotFoundError):              # disable, once disabled
+                editor.toggle_licence(version, rel, root / "backups", "disable")
+            self.assertTrue(disabled.is_file())                     # not restored instead
+            self.assertFalse(src.exists())
+            self.assertEqual(len(editor.list_archives(root / "backups")), 1)
+
+    def test_a_game_started_during_the_confirmation_stops_the_rename(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mask = self._tree(tmp)
+            win = self._window()
+            running, checks = [], []
+
+            def check():
+                checks.append(list(running))
+                return list(running)
+
+            def answer(*_args, **_kwargs):
+                if asked.call_count == 1:
+                    running.append("fm.exe")    # started while the first question was open
+                return QMessageBox.Yes
+
+            refused = []
+
+            def toggle_twice(dialog):
+                self._pick(dialog)
+                dialog.toggle_btn.click()
+                refused.append((dialog.toggle_btn.isEnabled(), dialog.pending, mask.exists(),
+                                (Path(tmp) / "backups").exists()))
+                running.clear()                 # the game is closed again
+                dialog.toggle_btn.click()       # the same dialog takes another toggle
+                return 0
+
+            with mock.patch.object(editor, "football_manager_running", check), \
+                    mock.patch.object(QMessageBox, "question", side_effect=answer) as asked, \
+                    mock.patch.object(QMessageBox, "warning",
+                                      return_value=QMessageBox.Ok) as warned, \
+                    mock.patch.object(QDialog, "exec", toggle_twice):
+                win.open_licensing()
+            self.assertEqual(checks[:2], [[], ["fm.exe"]])  # before the question, and after it
+            self.assertEqual(refused, [(True, 0, True, False)])    # refused, nothing touched
+            self.assertIn("This will disable the file below", asked.call_args_list[0].args[2])
+            self.assertEqual(warned.call_count, 1)
+            self.assertIn("fm.exe", warned.call_args.args[2])
+            self.assertIn("Nothing was renamed", warned.call_args.args[2])
+            self.assertEqual((checks[2:], asked.call_count), ([[], []], 2))
+            self.assertFalse(mask.exists())                 # the second toggle went ahead
+            self.assertEqual(mask.with_name("fake.edt.disabled").read_bytes(), b"mask-bytes")
+
+    def test_each_answer_ends_the_toggle_and_a_failed_check_asks_again(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mask = self._tree(tmp)
+            disabled = mask.with_name("fake.edt.disabled")
+            win = self._window()
+            results: list = []
+            after: list = []
+
+            def check():
+                found = results.pop(0)
+                if isinstance(found, Exception):
+                    raise found
+                return found
+
+            def toggle(dialog):
+                self._pick(dialog)
+                dialog.toggle_selected()
+                after.append((dialog.toggle_btn.isEnabled(), dialog.pending))
+                return 0
+
+            yes, no = QMessageBox.Yes, QMessageBox.No
+            for answers, found, verb, ends in (
+                    ([no], [[]], "disable", "present"),             # No to the confirmation
+                    ([yes, no], [[], None], "disable", "present"),  # unknown just before
+                    ([yes, no], [[], RuntimeError("tasklist broke")], "disable", "present"),
+                    ([yes, yes], [[], None], "disable", "disabled"),
+                    ([yes], [[], []], "restore", "present")):
+                with self.subTest(answers=answers, found=found):
+                    results[:] = found
+                    after.clear()
+                    with mock.patch.object(editor, "football_manager_running", check), \
+                            mock.patch.object(QMessageBox, "question",
+                                              side_effect=answers) as asked, \
+                            mock.patch.object(QDialog, "exec", toggle):
+                        win.open_licensing()
+                    self.assertEqual(results, [])
+                    self.assertEqual(asked.call_count, len(answers))
+                    self.assertIn(f"This will {verb} the file below",
+                                  asked.call_args_list[0].args[2])
+                    if verb == "restore":
+                        self.assertIn(str(disabled), asked.call_args_list[0].args[2])
+                    if found[-1] is None or isinstance(found[-1], Exception):
+                        question = asked.call_args_list[1].args   # an earlier Yes is not reused
+                        self.assertIn("could not be made", question[2])
+                        self.assertIn("Have you closed Football Manager?", question[2])
+                        self.assertEqual(question[4], QMessageBox.No)   # No is the default
+                    self.assertEqual(after, [(True, 0)])            # over, however it ended
+                    self.assertEqual((mask.exists(), disabled.exists()),
+                                     (ends == "present", ends == "disabled"))
+
+    def test_closing_during_the_check_after_yes_renames_nothing(self):
+        import threading
+        import time
+        from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", False))
+        with tempfile.TemporaryDirectory() as tmp:
+            mask = self._tree(tmp)
+            win = self._window()
+            gate, calls = threading.Event(), []
+            self.addCleanup(gate.set)       # a failed test must not leave the worker waiting
+
+            def check():
+                calls.append(threading.current_thread())
+                if len(calls) == 2:
+                    gate.wait(10)           # the check after Yes is held
+                return []
+
+            def toggle_then_close(dialog):
+                dialog.show()
+                QApplication.processEvents()
+                self._pick(dialog)
+                dialog.toggle_btn.click()
+                deadline = time.monotonic() + 10
+                while len(calls) < 2 and time.monotonic() < deadline:
+                    QApplication.processEvents()    # the first check, then the question
+                    time.sleep(0.005)
+                self.assertEqual((len(calls), asked.call_count), (2, 1))
+                dialog.reject()                     # Esc, Close, or the title bar
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+                return dialog.result()
+
+            with mock.patch.object(editor, "football_manager_running", check), \
+                    mock.patch.object(QMessageBox, "question",
+                                      return_value=QMessageBox.Yes) as asked, \
+                    mock.patch.object(QDialog, "exec", toggle_then_close):
+                win.open_licensing()
+            self.assertEqual(asked.call_count, 1)
+            self.assertEqual(mask.read_bytes(), b"mask-bytes")
+            self.assertFalse((Path(tmp) / "backups").exists())
+            self.assertTrue(win.open_act.isEnabled())
+
+    def test_one_toggle_at_a_time_and_none_after_the_dialog_closes(self):
+        import threading
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", False))
+        with tempfile.TemporaryDirectory() as tmp:
+            mask = self._tree(tmp)
+            win = self._window()
+            for route in ("Close", "Esc", "title bar"):
+                with self.subTest(route=route):
+                    gate, threads = threading.Event(), []
+                    self.addCleanup(gate.set)   # a failed test must not leave the worker waiting
+
+                    def held():
+                        threads.append(threading.current_thread())
+                        gate.wait(10)
+                        return []
+
+                    def toggle_twice_then_close(dialog):
+                        dialog.show()
+                        QApplication.processEvents()
+                        self._pick(dialog)
+                        dialog.toggle_btn.click()
+                        self.assertFalse(dialog.toggle_btn.isEnabled())
+                        dialog.toggle_btn.click()           # off: nothing
+                        dialog.toggle_selected()            # and refused when called
+                        self.assertEqual(len(win.jobs.pending), 1)
+                        if route == "Close":
+                            dialog.close_btn.click()
+                        elif route == "Esc":
+                            QTest.keyClick(dialog, Qt.Key_Escape)
+                        else:
+                            dialog.close()                  # as the title bar's button does
+                        self.assertFalse(dialog.isVisible())
+                        gate.set()                          # the check comes back afterwards
+                        self.assertTrue(win.jobs.wait(10))
+                        return dialog.result()
+
+                    with mock.patch.object(editor, "football_manager_running", held), \
+                            mock.patch.object(QMessageBox, "question") as asked, \
+                            mock.patch.object(QDialog, "exec", toggle_twice_then_close):
+                        win.open_licensing()
+                    self.assertEqual(len(threads), 1)
+                    self.assertIsNot(threads[0], threading.main_thread())
+                    self.assertEqual(asked.call_count, 0)   # no question after the dialog closed
+                    self.assertEqual(mask.read_bytes(), b"mask-bytes")
+                    self.assertFalse((Path(tmp) / "backups").exists())
+                    self.assertTrue(win.open_act.isEnabled())   # the window is not left busy
+
+    def test_a_file_renamed_meanwhile_is_not_renamed_back(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mask = self._tree(tmp)
+            disabled = mask.with_name("fake.edt.disabled")
+            win = self._window()
+            shown = []
+
+            def renamed_elsewhere(*_args, **_kwargs):
+                mask.rename(disabled)           # disabled by hand while the question was open
+                return QMessageBox.Yes
+
+            def toggle(dialog):
+                self._pick(dialog)
+                dialog.toggle_selected()
+                shown.append(dialog.rows[self._pick(dialog)]["state"])
+                return 0
+
+            with mock.patch.object(editor, "football_manager_running", return_value=[]), \
+                    mock.patch.object(QMessageBox, "question",
+                                      side_effect=renamed_elsewhere) as asked, \
+                    mock.patch.object(QMessageBox, "critical") as told, \
+                    mock.patch.object(QDialog, "exec", toggle):
+                win.open_licensing()
+            self.assertIn("This will disable", asked.call_args.args[2])
+            self.assertIn("nothing to disable", told.call_args.args[2])
+            self.assertIn("Nothing was renamed", told.call_args.args[2])
+            self.assertTrue(disabled.is_file())             # still disabled, not restored
+            self.assertFalse(mask.exists())
+            self.assertEqual(shown, ["disabled"])           # the list shows the folder as it is
+            self.assertFalse((Path(tmp) / "backups").exists())
+
+
+class Session9Profiles(unittest.TestCase):
+    """Release 2.5, session 9: Apply looks at every line of a repeated key before it ticks a
+    proposal, whatever their order (note 05, finding 3)."""
+
+    KEY = ("CLUB_NAME_CHANGE", "1", "")
+
+    def _profile(self, source: Path, name: str = "Mine", spelling: str = "My spelling"):
+        profile = editor.Profile(name)
+        profile.rows[self.KEY] = {
+            "command": "CLUB_NAME_CHANGE", "id": "1", "language": "", "name": spelling,
+            "baseline": "Original", "source": str(source), "source_sha256": "",
+            "recorded": ""}
+        return profile
+
+    @staticmethod
+    def _doc(path: Path, *names) -> editor.LncDoc:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_lnc(path, "".join(f'"CLUB_NAME_CHANGE"\t1\t"{name}"\t""\n' for name in names))
+        return editor.LncDoc(path)
+
+    def test_a_changed_baseline_or_an_unsaved_edit_on_any_line_unticks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            profile = self._profile(path)
+            for names in (("Official Changed", "Original"), ("Original", "Official Changed")):
+                with self.subTest(order=names):
+                    changes, _missing, stats = editor.apply_profile(
+                        profile, [self._doc(path, *names)])
+                    line = names.index("Official Changed") + 1
+                    self.assertFalse(changes[0].checked)
+                    self.assertIn("Baseline changed: the file says Official Changed; when "
+                                  f"recorded it said Original (FM27_Club_Names.lnc, line {line})",
+                                  changes[0].note)
+                    self.assertIn("Duplicate id (2 rows)", changes[0].note)
+                    self.assertEqual((stats["ticked"], stats["review"]), (0, 1))
+            for edited in (0, 1):
+                with self.subTest(edited=edited):
+                    doc = self._doc(path, "Original", "Original")
+                    editor.try_set_name(doc.names()[edited], "Other unsaved edit")
+                    changes, missing, _stats = editor.apply_profile(profile, [doc])
+                    self.assertFalse(changes[0].checked)
+                    self.assertIn("Unsaved edit Other unsaved edit would be replaced "
+                                  f"(FM27_Club_Names.lnc, line {edited + 1})", changes[0].note)
+                    editor.apply_profile_proposals(profile.name, changes, missing, [doc])
+                    self.assertEqual(doc.names()[edited].name, "Other unsaved edit")  # kept
+
+    def test_lines_in_two_files_are_looked_at_in_either_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            club = self._doc(Path(tmp) / "a" / "FM27_Club_Names.lnc", "Official Changed")
+            fix = self._doc(Path(tmp) / "b" / "FM27_Fix.lnc", "Original")
+            profile = self._profile(club.path)
+            for docs in ([club, fix], [fix, club]):
+                with self.subTest(order=[doc.path.name for doc in docs]):
+                    changes, _missing, _stats = editor.apply_profile(profile, docs)
+                    self.assertEqual(len(changes), 1)
+                    self.assertFalse(changes[0].checked)
+                    self.assertIn("(FM27_Club_Names.lnc, line 1)", changes[0].note)
+
+    def test_an_earlier_line_another_profile_set_unticks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            doc = self._doc(path, "Original", "Original")
+            other = self._profile(path, "Modern names", "Modern")
+            changes, missing, _stats = editor.apply_profile(other, [doc])
+            changes[0].target_rows = changes[0].target_rows[:1]    # it set the first line only
+            editor.apply_profile_proposals(other.name, changes, missing, [doc])
+            self.assertEqual([entry.name for entry in doc.names()], ["Modern", "Original"])
+            changes, _missing, _stats = editor.apply_profile(self._profile(path), [doc])
+            self.assertFalse(changes[0].checked)
+            self.assertIn("Competes with profile Modern names, which set Modern in this "
+                          "session (FM27_Club_Names.lnc, line 1)", changes[0].note)
+
+    def test_identical_clean_lines_stay_ticked_and_apply_as_one_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            doc = self._doc(path, "Original", "Original")
+            on_disk, before = path.read_bytes(), doc.to_bytes()
+            changes, missing, stats = editor.apply_profile(self._profile(path), [doc])
+            self.assertTrue(changes[0].checked)
+            self.assertEqual(changes[0].note, "Duplicate id (2 rows)")
+            self.assertEqual((stats["ticked"], stats["review"]), (1, 0))
+            operation = editor.Operation("profile Mine")
+            with operation:
+                editor.apply_profile_proposals("Mine", changes, missing, [doc])
+            self.assertEqual([entry.name for entry in doc.names()], ["My spelling"] * 2)
+            operation.undo()
+            self.assertEqual(doc.to_bytes(), before)
+            self.assertFalse(doc.dirty)
+            operation.redo()
+            self.assertEqual([entry.name for entry in doc.names()], ["My spelling"] * 2)
+            self.assertEqual(path.read_bytes(), on_disk)            # memory only
+            # A line that already reads the spelling is left alone; the other is shown.
+            doc = self._doc(path, "Original", "Original")
+            editor.try_set_name(doc.names()[1], "My spelling")
+            changes, _missing, _stats = editor.apply_profile(self._profile(path), [doc])
+            self.assertTrue(changes[0].checked)
+            self.assertIs(changes[0].target, doc.names()[0])
+
+
+class Session9Settings(unittest.TestCase):
+    """Release 2.5, session 9: a value of the wrong type in the settings or collections file
+    cannot stop the window opening, and a damaged settings file is named and never written
+    over (note 05, findings 4 and 5)."""
+
+    WRONG = ([], {}, None, True, 7, 2.5)
+
+    def test_values_of_the_wrong_type_are_dropped_not_fatal(self):
+        for value in self.WRONG:
+            with self.subTest(value=value):
+                for field in ("tab", "family", "status", "entity_sort", "line_sort",
+                              "entity_widths", "line_widths", "geometry", "window_state",
+                              "splitter"):
+                    self.assertEqual(editor.clean_view({field: value}), {}, field)
+                self.assertEqual(editor.clean_view({"entity_widths": {"club": value}}), {})
+                self.assertEqual(editor.clean_view(value), {})
+                for field in ("name", *editor.SavedSearch.FIELDS):
+                    self.assertEqual(
+                        editor.clean_saved_searches([{"name": "Broken", field: value}]), [],
+                        field)
+                self.assertEqual(editor.clean_saved_searches([value]), [])
+                self.assertEqual(editor.clean_saved_searches(value), [])
+        # A field that is missing still takes its default.
+        self.assertEqual([s.to_json() for s in editor.clean_saved_searches([{"name": "Plain"}])],
+                         [{"name": "Plain", "family": "club", "text": "", "status": "all",
+                           "section": "", "collection": ""}])
+
+    def test_a_damaged_settings_file_is_named_and_never_written_over(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            path = root / "settings.json"
+            self.assertEqual(editor.read_state(root), ({}, ""))         # missing: no settings
+            editor.save_state({"active_profile_file": "mine.json"}, root)   # and made as before
+            self.assertEqual(editor.read_state(root), ({"active_profile_file": "mine.json"}, ""))
+            path.write_bytes(BOM + b'{"active_profile_file": "bom.json"}')
+            self.assertEqual(editor.read_state(root), ({"active_profile_file": "bom.json"}, ""))
+            for data, words in ((b"{broken", "is not readable JSON"),
+                                (b'{"view": "\xff"}', "is not UTF-8 text"),
+                                (b"[1, 2]", "should be one JSON object"),
+                                (b'"text"', "should be one JSON object"),
+                                (b"null", "should be one JSON object"),
+                                (b"", "is not readable JSON")):
+                with self.subTest(data=data):
+                    path.write_bytes(data)
+                    settings, problem = editor.read_state(root)
+                    self.assertEqual(settings, {})
+                    self.assertIn(str(path), problem)
+                    self.assertIn(words, problem)
+                    self.assertEqual(editor.load_state(root), {})
+                    with self.assertRaises(editor.DamagedFileError) as caught:
+                        editor.save_state({"active_profile_file": "example.json"}, root)
+                    self.assertIsInstance(caught.exception, OSError)
+                    self.assertEqual(caught.exception.path, path)
+                    self.assertEqual(str(caught.exception), problem)
+                    self.assertEqual(path.read_bytes(), data)          # byte for byte
+            self.assertEqual(staging_files(root), [])
+            path.unlink()
+            path.mkdir()                                              # a folder in its place
+            self.assertIn("could not be read", editor.read_state(root)[1])
+            with self.assertRaises(editor.DamagedFileError):
+                editor.save_state({}, root)
+
+    def test_a_collections_file_with_wrong_types_is_damaged_not_fatal(self):
+        head = {"format": "fm-name-collections", "version": 1}
+        member = {"family": "club", "id": "1", "language": ""}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for body, words in (
+                    ({**head, "collections": 5}, "damaged list of collections"),
+                    ({**head, "collections": {"name": "A"}}, "damaged list of collections"),
+                    ({**head, "collections": [{"name": "A", "members": 7}]},
+                     "damaged list of members"),
+                    ({**head, "collections": [{"name": "A", "members": [
+                        dict(member, family=[])]}]}, "has a member that is not"),
+                    ({**head, "collections": [{"name": "A", "members": [
+                        dict(member, family={})]}]}, "has a member that is not"),
+                    ({**head, "collections": [{"name": 7}]}, "has no name"),
+                    ({**head, "deleted": 3}, "damaged list of deleted")):
+                with self.subTest(body=body):
+                    (root / "collections.json").write_text(json.dumps(body), encoding="utf-8")
+                    with self.assertRaises(ValueError) as caught:
+                        editor.load_collection_file(root)
+                    self.assertIn(words, str(caught.exception))
+                    self.assertIn("collections.json", str(caught.exception))
+
+
+class Session9Window(unittest.TestCase):
+    """Release 2.5, session 9: the settings file in the window, refused text in the inspector,
+    and the actions a job switches off (note 05, findings 4, 5, and 6)."""
+
+    def _roots(self, tmp) -> Path:
+        state = Path(tmp) / "state"
+        self.enterContext(mock.patch.multiple(
+            editor, STATE_ROOT=state, PROFILE_ROOT=Path(tmp) / "profiles"))
+        return state
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.show()
+        win.activateWindow()
+        QApplication.processEvents()
+        return win
+
+    def test_wrong_types_in_the_settings_file_open_with_the_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._roots(tmp)
+            state.mkdir()
+            (state / "settings.json").write_text(json.dumps({
+                "view": {"family": [], "status": {}, "tab": None, "entity_sort": 7,
+                         "entity_widths": {"club": []}, "geometry": True},
+                "saved_searches": [{"name": "Broken", "family": []},
+                                   {"name": "Odd", "status": {}},
+                                   {"name": "Cups", "family": "comp"}],
+                "active_profile_file": []}), encoding="utf-8")
+            win = self._window()
+            self.assertEqual((win.family, win.status_mode, win.tabs.currentIndex()),
+                             ("club", "all", 0))
+            self.assertEqual([search.name for search in win.saved_searches], ["Cups"])
+            self.assertEqual(win.profile_box.currentText(), "No profile")
+            self.assertTrue(win.settings_label.isHidden())   # a usable file, used as far as it can be
+
+    def test_a_damaged_settings_file_is_named_and_left_alone(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._roots(tmp)
+            state.mkdir()
+            path = state / "settings.json"
+            profile = editor.create_profile("Mine", "", editor.PROFILE_ROOT)
+            for data in (b"{broken", b'{"view": "\xff"}', b"[1, 2]"):
+                with self.subTest(data=data):
+                    path.write_bytes(data)
+                    win = self._window()
+                    self.assertFalse(win.settings_label.isHidden())
+                    self.assertEqual(win.settings_label.text(),
+                                     f"Settings not saved: {path} could not be read")
+                    self.assertIn("leaves the file as it is", win.settings_label.toolTip())
+                    # A profile chosen is used, not remembered, and the status bar says so.
+                    win.profile_box.setCurrentIndex(win.profile_box.findData(profile.path.name))
+                    self.assertEqual(win.current_profile().name, "Mine")
+                    self.assertIn("The chosen profile is not remembered",
+                                  win.statusBar().currentMessage())
+                    self.assertIn(str(path), win.statusBar().currentMessage())
+                    # A saved search is refused, with a warning naming the file.
+                    with mock.patch.object(QDialog, "exec", Session8Window._name("Kept")), \
+                            mock.patch.object(QMessageBox, "warning") as warned:
+                        win.save_search()
+                    self.assertIn("The saved searches were not changed", warned.call_args.args[2])
+                    self.assertIn(str(path), warned.call_args.args[2])
+                    self.assertEqual(win.saved_searches, [])
+                    # Closing remembers the view, but not into this file.
+                    win.remember_on_close = True
+                    win.close()
+                    self.assertEqual(path.read_bytes(), data)
+                    self.assertEqual(staging_files(state), [])
+
+    def test_a_settings_file_damaged_while_the_window_runs_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._roots(tmp)
+            profile = editor.create_profile("Mine", "", editor.PROFILE_ROOT)
+            win = self._window()
+            self.assertTrue(win.settings_label.isHidden())
+            win.profile_box.setCurrentIndex(win.profile_box.findData(profile.path.name))
+            self.assertEqual(editor.read_state(state), ({"active_profile_file": "mine.json"}, ""))
+            (state / "settings.json").write_bytes(b"{broken later")
+            win.profile_box.setCurrentIndex(0)                  # No profile
+            self.assertEqual((state / "settings.json").read_bytes(), b"{broken later")
+            self.assertFalse(win.settings_label.isHidden())
+            self.assertIn("not remembered", win.statusBar().currentMessage())
+            # Put right by hand while the window runs: this run still leaves it alone,
+            # rather than replace it with what this window holds.
+            fixed = b'{"active_profile_file": "", "saved_searches": []}\n'
+            (state / "settings.json").write_bytes(fixed)
+            win.profile_box.setCurrentIndex(win.profile_box.findData(profile.path.name))
+            win.remember_view()
+            self.assertEqual((state / "settings.json").read_bytes(), fixed)
+
+    def test_refused_text_stays_while_another_field_is_edited(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._roots(tmp)
+            win = self._window()
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, Session7Window.CLUBS)               # club 10: Alpha United, Alpha
+            self.assertTrue(win.load([str(path)]))
+            Session7Window._select(win, "10")
+            long, short = win.inspector_fields["long"], win.inspector_fields["short"]
+            code = win.inspector_fields["code"]
+            long["edit"].setText('Alpha "United"')
+            win.commit_inspector("long", long["edit"])
+            self.assertIn("double quote", long["problem"].text())
+            short["edit"].setText("Alpha FC")
+            win.commit_inspector("short", short["edit"])
+            entity = win.inspector_entity
+            self.assertEqual((entity.name_in("long"), entity.name_in("short")),
+                             ("Alpha United", "Alpha FC"))
+            self.assertEqual(win.undo_stack.count(), 1)
+            self.assertEqual(win.undo_act.text(), "Undo edit short name: Alpha FC")
+            self.assertEqual(short["marker"].text(), "Edited (Manual edit)")   # brought up to date
+
+            def assert_refused_text_kept():
+                self.assertEqual(long["edit"].text(), 'Alpha "United"')
+                self.assertTrue(long["problem"].isVisible())
+                self.assertIn("double quote", long["problem"].text())
+                self.assertEqual(long["edit"].objectName(), "invalid")
+
+            assert_refused_text_kept()
+            code["edit"].setText("ALP")                         # an added line reloads the views
+            win.commit_inspector("code", code["edit"])
+            QApplication.processEvents()                        # the reload runs from the event loop
+            self.assertEqual(code["marker"].text(), "Added (Manual edit)")
+            assert_refused_text_kept()
+            win.undo_act.trigger()                              # the added code
+            win.undo_act.trigger()                              # the short name
+            entity = win.inspector_entity
+            self.assertEqual((entity.name_in("long"), entity.name_in("short"),
+                              entity.name_in("code")), ("Alpha United", "Alpha", ""))
+            self.assertFalse(win.docs[0].dirty)
+            assert_refused_text_kept()                          # Undo took the valid edits only
+            long["edit"].setFocus()
+            QTest.keyClick(long["edit"], Qt.Key_Escape)         # Esc puts back the name in memory
+            self.assertEqual(long["edit"].text(), "Alpha United")
+            self.assertFalse(long["problem"].isVisible())
+            self.assertEqual(long["edit"].objectName(), "")
+            long["edit"].setText("")
+            win.commit_inspector("long", long["edit"])
+            self.assertIn("cannot be empty", long["problem"].text())
+            Session7Window._select(win, "30")                   # another club clears it
+            Session7Window._select(win, "10")
+            self.assertEqual(long["edit"].text(), "Alpha United")
+            self.assertFalse(long["problem"].isVisible())
+
+    def test_actions_that_write_local_files_wait_for_a_job(self):
+        import threading
+
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", False))
+        with tempfile.TemporaryDirectory() as tmp:
+            self._roots(tmp)
+            profile = editor.create_profile("Mine", "", editor.PROFILE_ROOT)
+            win = self._window()
+            win.profile_box.setCurrentIndex(win.profile_box.findData(profile.path.name))
+            actions = (win.export_act, win.new_profile_act, win.rename_profile_act,
+                       win.delete_profile_act, win.add_to_collection_menu.menuAction())
+            self.assertEqual([action.isEnabled() for action in actions], [True] * 5)
+            gate = threading.Event()
+            self.addCleanup(gate.set)       # a failed test must not leave the worker waiting
+            win.jobs.start("Waiting...", lambda: gate.wait(10), lambda _result: None)
+            self.assertEqual([action.isEnabled() for action in actions], [False] * 5)
+            gate.set()
+            self.assertTrue(win.jobs.wait(10))
+            self.assertEqual([action.isEnabled() for action in actions], [True] * 5)
 
 
 if __name__ == "__main__":
