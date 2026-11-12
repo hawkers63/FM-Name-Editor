@@ -23,14 +23,20 @@ Mark opens a session with **"Let's get started."** When you see that:
 2. Run the test suite (command below) and confirm it is green before touching anything.
 3. Find the session marked **next** in `roadmap.md`. Say in a few lines what that session will deliver, then do it. Do not pull work forward from later sessions unless it is a one-line prerequisite.
 4. Work in the order the roadmap gives: engine change, tests for it, then GUI, then documents.
-5. End the session with: tests green; `CHANGELOG.md` updated (an **Unreleased** section until the release ships); `roadmap.md` updated (this session marked done, the next one marked next, anything left over written into it); `memory.md` updated if a fact changed; one commit; one push to `origin main`.
+5. End the session with: tests green; `CHANGELOG.md` updated (an **Unreleased** section until the release ships); `roadmap.md` updated (this session marked done, the next one marked next, anything left over written into it); `memory.md` updated if a fact changed; one commit; one push to `origin main`. The exception is the session that closes a release: commit, but do not push (see **Releasing**).
 6. Close with a short summary: what shipped, what is verified, what is next.
 
 If a session cannot finish in one sitting, split it. Write the remainder into the roadmap as the next session before you stop. Never leave the working tree with failing tests at the end of a session.
 
 ### Releasing
 
-A release closes when the last session in it is done. Then, in one commit: bump `VERSION`, the launcher banner, and the three `Release / Status / Application on disk` headers; move **Unreleased** to a dated release section in `CHANGELOG.md`; refresh `README.md`; commit; tag `vX.Y`; push the branch and the tag.
+A release closes when the last session in it is done (for example, Session 8 closed Release 2.4). At that point you stop and hand over to Neal, Mark's repository and release manager. In that session:
+
+1. Finish the session as usual: tests green, the session's entries under **Unreleased** in `CHANGELOG.md`, `roadmap.md` and `memory.md` updated, and one commit. Do not push it.
+2. Leave the release itself to Neal. Do not bump `VERSION`, the launcher banner, or the three `Release / Status / Application on disk` headers; do not move **Unreleased** to a dated release section; do not create or push a `vX.Y` tag; do not push the branch.
+3. Close by telling Mark that the release's sessions are done and Neal can take over.
+
+Neal then checks the files against the repository, finalises the version headers, the dated release section in `CHANGELOG.md`, and `README.md`, runs the test suite, makes the release commit and the annotated `vX.Y` tag, and pushes the branch and the tag only once Mark confirms. The next session starts only when Mark says **"Let's get started."** again.
 
 ## Rules that do not change
 
@@ -62,4 +68,4 @@ Set `QT_QPA_PLATFORM=offscreen` when running the suite without a desktop. `pytho
 
 ## Git
 
-Remote: `https://github.com/hawkers63/FM-Name-Editor` (`origin`, branch `main`). Push with git; the credential manager holds the login. Commits end with the attribution line given in the session. Branch before experiments; `main` holds released or session-complete work only.
+Remote: `https://github.com/hawkers63/FM-Name-Editor` (`origin`, branch `main`). Push with git; the credential manager holds the login. Session commits are pushed at the end of each session, except at the end of a release, when Neal pushes (see **Releasing**). Commits end with the attribution line given in the session. Branch before experiments; `main` holds released or session-complete work only.
