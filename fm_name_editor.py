@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.3
+FM Name Editor v2.4
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -17,6 +17,10 @@ safe: one game-write check, checked fields, a disk baseline for unsaved
 state, and files replaced one at a time with a way back. Release 2.3
 adds spelling profiles that outlive Save and Deploy, a Changes view with
 one review before every write, and undo and redo for whole operations.
+Release 2.4 builds the window around that work: menus and one header row,
+a grid that answers within a second, an inspector with the text on disk
+above the proposed text, a remembered view, collections, saved searches,
+and slow work on worker threads.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -37,6 +41,9 @@ Design rules
   backup is written whole.
 * UTF-16 files, including the Greek person-name file, are written back
   in the encoding they were opened with.
+* Slow work (opening files, reading a backup, the check for a running
+  game) runs on a worker thread that touches no widget or model. Writes
+  stay on the main thread.
 """
 from __future__ import annotations
 
@@ -50,12 +57,14 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.3"
+VERSION = "2.4"
 
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
@@ -729,8 +738,16 @@ class LncDoc:
         until then its changes are written together (``grouped``): the
         backup's lines have taken the place of the file's own.
         """
+        self.apply_working(self.prepare_working(data, source))
+
+    def prepare_working(self, data: bytes, source=None) -> "PreparedLines":
+        """The first half of replace_working: parse ``data`` and match it to the disk file.
+
+        Nothing in this document changes, so a worker thread may run it: it
+        builds new lines and reads only ``baseline_bytes``, which only a
+        write replaces. Raises UnicodeError for bytes that do not decode.
+        """
         entries, encoding, has_bom, default_eol = parse_lnc_bytes(self, data)
-        _note_lines_of(self)
         for entry in entries:
             entry.orig_raw = None       # where a backup line sits on disk is not known
             if entry.kind in ROW_KINDS:
@@ -739,13 +756,19 @@ class LncDoc:
         if self.baseline_bytes:
             on_disk = parse_lnc_bytes(None, self.baseline_bytes)[0]
             removed = adopt_disk_originals(entries, on_disk)
-        self.encoding = encoding
-        self.has_bom = has_bom
-        self.default_eol = default_eol
-        self.entries = entries
-        self.removed_rows = removed
+        return PreparedLines(entries, encoding, has_bom, default_eol, removed,
+                             Path(source) if source is not None else None)
+
+    def apply_working(self, prepared: "PreparedLines") -> None:
+        """The second half of replace_working: take the prepared lines. GUI thread only."""
+        _note_lines_of(self)
+        self.encoding = prepared.encoding
+        self.has_bom = prepared.has_bom
+        self.default_eol = prepared.default_eol
+        self.entries = prepared.entries
+        self.removed_rows = prepared.removed
         self.restore_pending = True
-        self.restored_from = Path(source) if source is not None else None
+        self.restored_from = prepared.source
         self.whole_excluded = False
         self.touch()
 
@@ -833,6 +856,20 @@ class LncDoc:
         self.entries.append(e)
         self.touch()
         return e
+
+
+class PreparedLines:
+    """Lines read for a document by LncDoc.prepare_working, waiting for apply_working."""
+
+    __slots__ = ("entries", "encoding", "has_bom", "default_eol", "removed", "source")
+
+    def __init__(self, entries, encoding, has_bom, default_eol, removed, source):
+        self.entries = entries
+        self.encoding = encoding
+        self.has_bom = has_bom
+        self.default_eol = default_eol
+        self.removed = removed
+        self.source = source
 
 
 def payload_lines(doc: LncDoc, include) -> list:
@@ -3238,24 +3275,29 @@ class Profile:
         return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def profile_name_problem(name: str, existing=(), own=None) -> str:
-    """Why ``name`` cannot name a profile, or "" when it can.
+def label_problem(name: str, existing=(), own=None, kind: str = "profile") -> str:
+    """Why ``name`` cannot name a profile, collection, or saved search; "" when it can.
 
-    ``existing`` lists the profiles there are; a name must differ from
-    theirs, ignoring case. ``own`` is the profile being renamed, which may
-    keep its name.
+    ``existing`` holds things with a ``name``; a name must differ from
+    theirs, ignoring case. ``own`` is the one being renamed, which may keep
+    its name. ``kind`` words the message.
     """
     cleaned = name.strip()
     if not cleaned:
-        return "Give the profile a name."
+        return f"Give the {kind} a name."
     if len(cleaned) > 80:
         return "Keep the name to 80 characters or fewer."
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
-        return "A profile name cannot contain control characters."
+        return f"A {kind} name cannot contain control characters."
     for other in existing:
         if other is not own and other.name.casefold() == cleaned.casefold():
-            return f"There is already a profile called {other.name}."
+            return f"There is already a {kind} called {other.name}."
     return ""
+
+
+def profile_name_problem(name: str, existing=(), own=None) -> str:
+    """Why ``name`` cannot name a profile, or "" when it can (see label_problem)."""
+    return label_problem(name, existing, own, "profile")
 
 
 def _check_profile_row(where: str, raw) -> dict:
@@ -3629,6 +3671,279 @@ def save_state(state: dict, root) -> None:
     write_file_atomically(root / STATE_FILE, text.encode("utf-8"))
 
 
+# ---- collections, saved searches, and the remembered view (Session 8) ------
+
+COLLECTIONS_FILE = "collections.json"
+COLLECTIONS_FORMAT = "fm-name-collections"
+COLLECTIONS_VERSION = 1
+# The entity grid's status filters. The keys are what the settings file stores.
+STATUS_FILTERS = {
+    "all": "All",
+    "edited": "Edited",
+    "missing_short": "No short-name override",
+    "missing_code": "No code override",
+}
+# The All lines columns, as the line model and the settings file name them.
+LINE_COLUMNS = ("section", "type", "id", "name", "lang", "file", "status")
+
+
+def _entity_columns(family: str) -> tuple:
+    return ("section", "id", *(slot for slot, _label, _cmd in FAMILY_FIELDS[family]),
+            *(("lang",) if family == "award" else ()), "status")
+
+
+def entity_key(entity: NameEntity) -> tuple:
+    """(family, id, language): how a collection names an entity."""
+    return (entity.family, entity.id, entity.lang)
+
+
+def _key_order(key: tuple):
+    return (key[0], _id_number(key[1]), key[1], key[2])
+
+
+class Collection:
+    """A set of entities the user named, such as "My save" or "Names to review".
+
+    Collections are kept in ``state\\collections.json``, never in the name
+    files, and the window lists them apart from file sections, which are
+    only the comment headings in the files.
+    """
+
+    __slots__ = ("name", "keys", "created", "updated")
+
+    def __init__(self, name: str, keys=(), created: str = "", updated: str = ""):
+        self.name = name
+        self.keys: set = set(keys)
+        self.created = created or datetime.now().isoformat(timespec="seconds")
+        self.updated = updated or self.created
+
+    def add(self, keys) -> int:
+        """Add entity keys. Returns how many were not in the collection already."""
+        new = set(keys) - self.keys
+        if new:
+            self.keys |= new
+            self.updated = datetime.now().isoformat(timespec="seconds")
+        return len(new)
+
+    def remove(self, keys) -> int:
+        """Take entity keys out. Returns how many were in the collection."""
+        gone = self.keys & set(keys)
+        if gone:
+            self.keys -= gone
+            self.updated = datetime.now().isoformat(timespec="seconds")
+        return len(gone)
+
+    def count_in(self, family: str) -> int:
+        return sum(1 for key in self.keys if key[0] == family)
+
+    def to_json(self) -> dict:
+        return {
+            "name": self.name,
+            "created": self.created,
+            "updated": self.updated,
+            "members": [{"family": family, "id": id_, "language": lang}
+                        for family, id_, lang in sorted(self.keys, key=_key_order)],
+        }
+
+
+class CollectionFile:
+    """What ``state\\collections.json`` holds: the collections in name order, and the
+    deleted ones, kept so they can be recovered by hand."""
+
+    def __init__(self, collections=(), deleted=()):
+        self.collections: list[Collection] = sorted(collections, key=lambda c: fold(c.name))
+        self.deleted: list[dict] = list(deleted)
+
+    def find(self, name: str):
+        for collection in self.collections:
+            if collection.name.casefold() == name.casefold():
+                return collection
+        return None
+
+    def add(self, collection: Collection) -> None:
+        self.collections.append(collection)
+        self.collections.sort(key=lambda c: fold(c.name))
+
+    def delete(self, collection: Collection) -> None:
+        """Move a collection into the deleted list, with the time it went."""
+        self.collections.remove(collection)
+        kept = collection.to_json()
+        kept["deleted"] = datetime.now().isoformat(timespec="seconds")
+        self.deleted.append(kept)
+
+    def to_bytes(self) -> bytes:
+        data = {
+            "format": COLLECTIONS_FORMAT,
+            "version": COLLECTIONS_VERSION,
+            "collections": [c.to_json() for c in sorted(self.collections,
+                                                         key=lambda c: fold(c.name))],
+            "deleted": self.deleted,
+        }
+        return (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def collection_name_problem(name: str, store: CollectionFile, own=None) -> str:
+    return label_problem(name, store.collections, own, "collection")
+
+
+def load_collection_file(root) -> CollectionFile:
+    """Read ``collections.json``. A missing file is an empty one.
+
+    Raises:
+        ValueError: the file cannot be read or is not a collections file;
+            the message names the file and, where it can, the collection.
+            The window then leaves the file alone.
+    """
+    path = Path(root) / COLLECTIONS_FILE
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return CollectionFile()
+    except OSError as exc:
+        raise ValueError(f"{path} could not be read: {exc}") from exc
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError(f"{path} is not readable JSON: {exc}") from exc
+    if (not isinstance(data, dict) or data.get("format") != COLLECTIONS_FORMAT
+            or data.get("version") != COLLECTIONS_VERSION):
+        raise ValueError(f"{path} is not a version {COLLECTIONS_VERSION} collections file.")
+    found = []
+    for number, item in enumerate(data.get("collections") or [], 1):
+        where = f"{path}, collection {number}"
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise ValueError(f"{where} has no name.")
+        name = item["name"].strip()
+        problem = label_problem(name, found, None, "collection")
+        if problem:
+            raise ValueError(f"{where}: {problem}")
+        keys = []
+        for member in item.get("members") or []:
+            family = member.get("family") if isinstance(member, dict) else None
+            id_ = member.get("id") if isinstance(member, dict) else None
+            lang = member.get("language", "") if isinstance(member, dict) else None
+            if (family not in FAMILY_FIELDS or not isinstance(id_, str) or not id_is_legal(id_)
+                    or not isinstance(lang, str) or not field_is_legal(lang)):
+                raise ValueError(f"{where} ({name}) has a member that is not a family, "
+                                 f"an ID, and a language: {member!r}")
+            keys.append((family, id_, lang))
+        found.append(Collection(name, keys, str(item.get("created") or ""),
+                                str(item.get("updated") or "")))
+    deleted = data.get("deleted") or []
+    if not isinstance(deleted, list) or not all(isinstance(item, dict) for item in deleted):
+        raise ValueError(f"{path} has a damaged list of deleted collections.")
+    return CollectionFile(found, deleted)
+
+
+def save_collection_file(store: CollectionFile, root) -> None:
+    """Write ``collections.json`` through write_file_atomically. The same collections
+    write the same bytes."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    write_file_atomically(root / COLLECTIONS_FILE, store.to_bytes())
+
+
+class SavedSearch:
+    """A named entity search: the family, the words, the status filter, and the file
+    section or collection shown. Kept in the settings file under "saved_searches"."""
+
+    __slots__ = ("name", "family", "text", "status", "section", "collection")
+    FIELDS = ("family", "text", "status", "section", "collection")
+
+    def __init__(self, name: str, family: str = "club", text: str = "", status: str = "all",
+                 section: str = "", collection: str = ""):
+        self.name = name
+        self.family = family
+        self.text = text
+        self.status = status
+        self.section = section
+        self.collection = collection
+
+    def to_json(self) -> dict:
+        return {"name": self.name, **{field: getattr(self, field) for field in self.FIELDS}}
+
+
+def clean_saved_searches(raw) -> list[SavedSearch]:
+    """The saved searches in the settings file that the window can use, in their order.
+
+    One with a name that is empty, too long, or already used, an unknown
+    family or status filter, or text that is not text is left out. A
+    missing field takes its default (Clubs, All, no words).
+    """
+    found: list[SavedSearch] = []
+    defaults = {"family": "club", "text": "", "status": "all", "section": "", "collection": ""}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            continue
+        name = item["name"].strip()
+        values = {field: item.get(field, defaults[field]) for field in SavedSearch.FIELDS}
+        if (label_problem(name, found, None, "saved search")
+                or values["family"] not in FAMILY_FIELDS
+                or values["status"] not in STATUS_FILTERS
+                or not all(isinstance(values[field], str)
+                           for field in ("text", "section", "collection"))):
+            continue
+        found.append(SavedSearch(name, **values))
+    return found
+
+
+def _clean_sort(raw, allowed) -> dict | None:
+    if (isinstance(raw, dict) and isinstance(raw.get("key"), str)
+            and isinstance(raw.get("descending"), bool)
+            and (raw["key"] == "" or raw["key"] in allowed)):
+        return {"key": raw["key"], "descending": raw["descending"]}
+    return None
+
+
+def _clean_widths(raw, allowed) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    return {key: width for key, width in raw.items()
+            if key in allowed and isinstance(width, int) and not isinstance(width, bool)
+            and 20 <= width <= 2000}
+
+
+def clean_view(raw) -> dict:
+    """The remembered view from the settings file, keeping only what the window can use.
+
+    Keys: "tab", "family", "status", "entity_sort" and "line_sort" (key and
+    descending), "entity_widths" (per family, per column key), "line_widths",
+    and "geometry", "window_state", and "splitter" (base64 text from Qt). A
+    value of the wrong type or out of range is dropped, so an older or
+    hand-edited settings file cannot stop the window opening.
+    """
+    view: dict = {}
+    if not isinstance(raw, dict):
+        return view
+    tab = raw.get("tab")
+    if isinstance(tab, int) and not isinstance(tab, bool) and 0 <= tab <= 2:
+        view["tab"] = tab
+    if raw.get("family") in FAMILY_FIELDS:
+        view["family"] = raw["family"]
+    if raw.get("status") in STATUS_FILTERS:
+        view["status"] = raw["status"]
+    every_entity_column = {key for family in FAMILY_FIELDS for key in _entity_columns(family)}
+    for name, allowed in (("entity_sort", every_entity_column), ("line_sort", LINE_COLUMNS)):
+        sort = _clean_sort(raw.get(name), allowed)
+        if sort is not None:
+            view[name] = sort
+    entity_widths = raw.get("entity_widths")
+    if isinstance(entity_widths, dict):
+        kept = {family: _clean_widths(widths, _entity_columns(family))
+                for family, widths in entity_widths.items() if family in FAMILY_FIELDS}
+        kept = {family: widths for family, widths in kept.items() if widths}
+        if kept:
+            view["entity_widths"] = kept
+    line_widths = _clean_widths(raw.get("line_widths"), LINE_COLUMNS)
+    if line_widths:
+        view["line_widths"] = line_widths
+    for name in ("geometry", "window_state", "splitter"):
+        text = raw.get(name)
+        if isinstance(text, str) and text.isascii() and 0 < len(text) < 20000:
+            view[name] = text
+    return view
+
+
 def list_archives(archive_root: Path) -> list[Path]:
     """Timestamped backup folders, newest name first."""
     if not archive_root.is_dir():
@@ -3758,33 +4073,49 @@ def restore_into(doc: LncDoc, archive_file: Path) -> None:
     which copy they came from. A bad backup raises before anything in
     memory changes.
     """
+    doc.apply_working(prepare_restore(doc, archive_file))
+
+
+def prepare_restore(doc: LncDoc, archive_file: Path) -> PreparedLines:
+    """Read and parse a backup for ``doc`` without changing it: the slow half of a
+    restore, which a worker thread may run. restore_into does both halves."""
+    archive_file = Path(archive_file)
     if not archive_file.is_file():
         raise FileNotFoundError(archive_file)
-    doc.replace_working(archive_file.read_bytes(), archive_file)
+    return doc.prepare_working(archive_file.read_bytes(), archive_file)
 
 
 # --------------------------------------------------------------------------
 # GUI
 # --------------------------------------------------------------------------
 
+# Slow work (opening files, reading a backup, the check for a running game)
+# runs on a worker thread; see run_gui's Jobs. The tests set this so a job
+# runs at once on the calling thread instead: the window behaves the same,
+# minus the thread. Tests of the threads themselves set it back.
+JOBS_INLINE = False
+
+
 def run_gui(paths):
-    from PySide6.QtCore import (QAbstractTableModel, QItemSelectionModel, QModelIndex,
-                                QSortFilterProxyModel, Qt, QTimer, Signal)
-    from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QKeySequence,
-                               QUndoCommand, QUndoStack)
+    from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEventLoop,
+                                QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
+                                QSize, QSortFilterProxyModel, Qt, QTimer, Signal)
+    from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QKeySequence, QPainter,
+                               QPen, QUndoCommand, QUndoStack)
     from PySide6.QtWidgets import (
         QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
         QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
         QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
         QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
-        QSplitter, QStyledItemDelegate, QTableView, QTableWidget, QTableWidgetItem,
-        QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+        QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableView,
+        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
         "A copy of each existing game file is stored under backups first. Files are "
         "replaced one at a time; if one fails, the files already replaced are put back "
         "from that copy.")
+    GAME_CHECK = "Checking whether Football Manager is running..."
     DISPLAY, EDIT, FONT = Qt.DisplayRole, Qt.EditRole, Qt.FontRole
     FOREGROUND, TOOLTIP = Qt.ForegroundRole, Qt.ToolTipRole
     # State text in the grids, coloured as well as worded. Lighter than the
@@ -3863,6 +4194,46 @@ def run_gui(paths):
             self.operation.undo()
             self.window.after_undo(self.operation, "Undone")
 
+    class TickDelegate(QStyledItemDelegate):
+        """An include tick drawn plainly: a box with a light border, filled with the accent
+        and ticked when the row is in.
+
+        The style's own box takes its border from the panel colour, which on the
+        slate theme is nearly black. The box sits where the style puts it, so a
+        click toggles it as before.
+        """
+
+        def paint(self, painter, option, index):
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            widget = opt.widget
+            style = widget.style() if widget is not None else QApplication.style()
+            if not opt.features & QStyleOptionViewItem.HasCheckIndicator:
+                super().paint(painter, option, index)
+                return
+            box = style.subElementRect(QStyle.SE_ItemViewItemCheckIndicator, opt, widget)
+            checked = opt.checkState == Qt.Checked
+            opt.features = opt.features & ~QStyleOptionViewItem.HasCheckIndicator
+            style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+            side = max(10.0, min(box.width(), box.height(), 16) - 1.0)
+            square = QRectF(box.center().x() - side / 2 + 0.5, box.center().y() - side / 2 + 0.5,
+                            side, side)
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(QColor("#a78bfa" if checked else "#8a94a6"), 1.2))
+            painter.setBrush(QColor("#8b5cf6" if checked else "#13151b"))
+            painter.drawRoundedRect(square, 3, 3)
+            if checked:
+                tick = QPen(QColor("white"), max(1.6, side / 8))
+                tick.setCapStyle(Qt.RoundCap)
+                tick.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(tick)
+                x, y, s = square.x(), square.y(), square.width()
+                painter.drawPolyline([QPointF(x + s * 0.24, y + s * 0.52),
+                                      QPointF(x + s * 0.43, y + s * 0.71),
+                                      QPointF(x + s * 0.77, y + s * 0.31)])
+            painter.restore()
+
     def report_write_failure(parent, operation: str, exc: Exception) -> None:
         """Tell the user why a write stopped and where each file stands."""
         if isinstance(exc, ExternalChangeError):
@@ -3882,7 +4253,7 @@ def run_gui(paths):
         """
 
         COLS = ["File section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
-        KEYS = ["section", "type", "id", "name", "lang", "file", "status"]
+        KEYS = list(LINE_COLUMNS)
         NAME_COL = 3
         STATUS_COL = 6
         operation_done = Signal(object)     # an edit made here, for the undo stack
@@ -4149,6 +4520,7 @@ def run_gui(paths):
                                  (self.missing_model, "Not in current files")):
                 view = QTableView()
                 view.setModel(model)
+                view.setItemDelegateForColumn(0, TickDelegate(view))   # the Use tick
                 view.setSelectionBehavior(QTableView.SelectRows)
                 view.setAlternatingRowColors(True)
                 view.verticalHeader().setVisible(False)
@@ -4266,6 +4638,12 @@ def run_gui(paths):
     QLabel#edited { color: #a78bfa; background: transparent; }
     QLabel#added { color: #10b981; background: transparent; }
     QLabel#title { background: transparent; font-weight: bold; font-size: 15px; }
+    QPushButton#small { padding: 1px 8px; }
+    QPushButton:focus, QToolBar QToolButton:focus { border-color: #06b6d4; }
+    QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus,
+    QListWidget:focus, QTableView:focus, QTableWidget:focus { border: 1px solid #06b6d4; }
+    QCheckBox:focus, QRadioButton:focus { color: #67e8f9; }
+    QTabBar::tab:focus { color: #67e8f9; }
     QLineEdit#invalid { border: 1px solid #f59e0b; }
     QFrame#rule { background: #2a3040; max-height: 1px; border: 0; }
     QLabel#heading { background: transparent; font-weight: bold; }
@@ -4451,20 +4829,24 @@ def run_gui(paths):
             self.words: list[str] = []
             self.section = ""
             self.mode = "all"
+            self.keys = None                    # a collection's members, or None for all
             self.setDynamicSortFilter(False)
 
-        def configure(self, text: str, section: str, mode: str) -> None:
+        def configure(self, text: str, section: str, mode: str, keys=None) -> None:
             """Set the filter without running it: a model reset that follows runs it once."""
             self.words = fold(text).split()
             self.section = section
             self.mode = mode
+            self.keys = keys
 
-        def set_filter(self, text: str, section: str, mode: str) -> None:
-            self.configure(text, section, mode)
+        def set_filter(self, text: str, section: str, mode: str, keys=None) -> None:
+            self.configure(text, section, mode, keys)
             self.invalidate()
 
         def filterAcceptsRow(self, row, parent):
             entity = self.sourceModel().rows[row]
+            if self.keys is not None and entity_key(entity) not in self.keys:
+                return False
             if self.section and entity.section != self.section:
                 return False
             if self.mode == "edited" and not entity.changed():
@@ -4676,7 +5058,18 @@ def run_gui(paths):
             target = row["path"]
             if row["state"] == "disabled":
                 target = target.with_name(target.name + ".disabled")
-            preflight = game_write_preflight(f"{verb} a licensing file", [target])
+            jobs = getattr(self.parent(), "jobs", None)
+            if jobs is None:
+                self.finish_toggle(row, verb, target, football_manager_running())
+            else:
+                jobs.start(GAME_CHECK, football_manager_running,
+                           lambda found: self.finish_toggle(row, verb, target, found),
+                           lambda _error: self.finish_toggle(row, verb, target, None))
+
+        def finish_toggle(self, row: dict, verb: str, target: Path, found) -> None:
+            """The game check is back: confirm, then rename the file."""
+            preflight = game_write_preflight(
+                f"{verb} a licensing file", [target], check=lambda: found)
             if not confirm_game_write(
                     self, preflight, f"This will {verb} the file below.",
                     "A copy is stored in the backups folder first. The file is renamed "
@@ -4837,6 +5230,7 @@ def run_gui(paths):
             ):
                 view = QTableView()
                 view.setModel(model)
+                view.setItemDelegateForColumn(0, TickDelegate(view))   # the Use tick
                 view.setSelectionBehavior(QTableView.SelectRows)
                 view.setAlternatingRowColors(True)
                 view.verticalHeader().setVisible(False)
@@ -4859,14 +5253,15 @@ def run_gui(paths):
             self.accept()
 
     class ProfileDialog(QDialog):
-        """Name a spelling profile and give it a note.
+        """Name a spelling profile and give it a note; or, with ``note=None``, name a
+        collection or a saved search, which have no note.
 
         ``check`` returns why a name cannot be used, or "". The problem is
         shown under the fields and the dialog stays open, so the text the
         user typed is never thrown away.
         """
 
-        def __init__(self, parent, title: str, check, name: str = "", note: str = ""):
+        def __init__(self, parent, title: str, check, name: str = "", note: str | None = ""):
             super().__init__(parent)
             self.setWindowTitle(title)
             self.check = check
@@ -4874,10 +5269,11 @@ def run_gui(paths):
             form = QFormLayout()
             self.name_edit = QLineEdit(name)
             self.name_edit.setMaxLength(80)
-            self.note_edit = QLineEdit(note)
+            self.note_edit = QLineEdit(note or "")
             self.note_edit.setPlaceholderText("Optional, for example: traditional English names")
             form.addRow("Name", self.name_edit)
-            form.addRow("Note", self.note_edit)
+            if note is not None:
+                form.addRow("Note", self.note_edit)
             lay.addLayout(form)
             self.problem = QLabel("")
             self.problem.setObjectName("warning")
@@ -4934,6 +5330,7 @@ def run_gui(paths):
             self.table.horizontalHeader().setStretchLastSection(True)
             lay.addWidget(self.table, 1)
             box = QDialogButtonBox(QDialogButtonBox.Close)
+            self.close_btn = box.button(QDialogButtonBox.Close)
             self.restore_btn = QPushButton("Restore into open file")
             self.restore_btn.setEnabled(False)
             box.addButton(self.restore_btn, QDialogButtonBox.ActionRole)
@@ -5101,13 +5498,30 @@ def run_gui(paths):
                 QMessageBox.Yes | QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
-            operation = Operation(f"restore {doc.path.name} from {path.parent.name}")
-            try:
-                with operation:
-                    restore_into(doc, path)
-            except (OSError, UnicodeError) as exc:
-                QMessageBox.critical(self, APP_NAME, f"Could not restore:\n{exc}")
+            jobs = getattr(self.parent(), "jobs", None)
+            if jobs is None:
+                try:
+                    prepared = prepare_restore(doc, path)
+                except (OSError, UnicodeError) as exc:
+                    self.restore_failed(exc)
+                    return
+                self.finish_restore(doc, path, prepared)
                 return
+            # Reading and parsing the copy is the slow part: a worker does it, and
+            # the dialog's buttons wait. The lines are taken on the GUI thread.
+            for button in (self.restore_btn, self.close_btn):
+                button.setEnabled(False)
+            self.summary.setText(f"Reading {path.name}...")
+            jobs.start(f"Reading {path.name} from {path.parent.name}...",
+                       lambda: prepare_restore(doc, path),
+                       lambda prepared: self.finish_restore(doc, path, prepared),
+                       self.restore_failed)
+
+        def finish_restore(self, doc, path: Path, prepared) -> None:
+            self.close_btn.setEnabled(True)
+            operation = Operation(f"restore {doc.path.name} from {path.parent.name}")
+            with operation:
+                doc.apply_working(prepared)
             parent = self.parent()
             if parent is not None:
                 parent.push_operation(operation)
@@ -5116,6 +5530,14 @@ def run_gui(paths):
             self.show_diff()
             self.summary.setText(
                 f"Restored {path.name} into the open file. Save or Deploy to write it.")
+
+        def restore_failed(self, exc: Exception) -> None:
+            self.close_btn.setEnabled(True)
+            self.restore_btn.setEnabled(True)
+            if not isinstance(exc, (OSError, UnicodeError)):
+                raise exc
+            QMessageBox.critical(self, APP_NAME, f"Could not restore:\n{exc}")
+            self.summary.setText("Nothing was restored. The open file is unchanged.")
 
     # ---------------- changes and the review before a write ----------------
     def show_lines(parent, title: str, intro: str, lines: list[str],
@@ -5310,6 +5732,7 @@ def run_gui(paths):
         view.verticalHeader().setDefaultSectionSize(24)
         view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         view.setItemDelegateForColumn(ChangeModel.DEST, MiddleElide(view))
+        view.setItemDelegateForColumn(ChangeModel.INCLUDE, TickDelegate(view))
         header = view.horizontalHeader()
         header.setStretchLastSection(True)
         header.setResizeContentsPrecision(200)
@@ -5360,6 +5783,8 @@ def run_gui(paths):
         def __init__(self, parent, review: WriteReview):
             super().__init__(parent)
             self.review = review
+            self.jobs = getattr(parent, "jobs", None)   # the window's worker, for the check at Write
+            self.cancelled = False
             self.setWindowTitle(review.title)
             screen = self.screen().availableGeometry() if self.screen() else None
             width, height = 1180, 740
@@ -5501,14 +5926,37 @@ def run_gui(paths):
                 not problems and (not unknown or self.closed_box.isChecked()))
 
         def try_write(self) -> None:
-            """Look for a running game once more, then close the dialog to write."""
-            self.review.recheck()
+            """Look for a running game once more, on a worker, then close the dialog to write.
+
+            Without a game file in the write there is nothing to look for.
+            """
+            if not any(item.game for item in self.review.to_write):
+                self.finish_write([])
+                return
+            if self.jobs is None:
+                self.finish_write(football_manager_running())
+                return
+            self.write_btn.setEnabled(False)
+            self.note.setText(GAME_CHECK)
+            # A check that breaks is a check that could not be made: unknown, not closed.
+            self.jobs.start(GAME_CHECK, football_manager_running, self.finish_write,
+                            lambda _error: self.finish_write(None))
+
+        def finish_write(self, found) -> None:
+            """The check at Write is back: write, or say why not."""
+            if self.cancelled:
+                return
+            self.review.recheck(lambda: found)
             self.update_state()
             if self.review.preflight.blocked:
                 QMessageBox.warning(self, APP_NAME, self.review.preflight.blocked_message())
                 return
             if self.write_btn.isEnabled():
                 self.accept()
+
+        def reject(self) -> None:
+            self.cancelled = True           # a check still running then writes nothing
+            super().reject()
 
         def show_problem_lines(self) -> None:
             show_lines(self, "Problem lines",
@@ -5563,6 +6011,72 @@ def run_gui(paths):
                 return
             super().keyPressEvent(event)
 
+    class Jobs(QObject):
+        """Slow work on a worker thread, with its answer handed back on the GUI thread.
+
+        ``work`` must not touch a widget or a model: it reads files or runs a
+        process and returns a value. ``done(result)``, or ``failed(error)``
+        when it raised, runs on the GUI thread through a queued signal.
+        ``busy(True, text)`` runs when the first job starts, and
+        ``busy(False, "")`` when the last one ends, before its ``done`` or
+        ``failed``, so whatever those open finds the window ready again. A
+        write never runs here: it is short, and it settles the documents the
+        views show. With JOBS_INLINE (the tests) a job runs at once on the
+        calling thread, in the same order.
+        """
+
+        finished = Signal(int, object, object)
+
+        def __init__(self, parent, busy):
+            super().__init__(parent)
+            self.busy = busy
+            self.pending: dict[int, tuple] = {}
+            self.serial = 0
+            self.finished.connect(self._finish, type=Qt.QueuedConnection)
+
+        def start(self, text: str, work, done, failed=None) -> int:
+            self.serial += 1
+            number = self.serial
+            self.pending[number] = (done, failed)
+            if len(self.pending) == 1:
+                self.busy(True, text)
+            if JOBS_INLINE:
+                self._run(number, work, inline=True)
+            else:
+                threading.Thread(target=self._run, args=(number, work), daemon=True,
+                                 name=f"{APP_NAME} job {number}").start()
+            return number
+
+        def _run(self, number: int, work, inline: bool = False) -> None:
+            try:
+                result, error = work(), None
+            except Exception as exc:            # handed to failed() on the GUI thread
+                result, error = None, exc
+            if inline:
+                self._finish(number, result, error)
+            else:
+                self.finished.emit(number, result, error)
+
+        def _finish(self, number: int, result, error) -> None:
+            done, failed = self.pending.pop(number)
+            if not self.pending:
+                self.busy(False, "")
+            if error is None:
+                done(result)
+            elif failed is not None:
+                failed(error)
+            else:
+                raise error
+
+        def wait(self, timeout: float = 30.0) -> bool:
+            """Run the event loop until no job is pending, or the time is up. True when idle."""
+            deadline = time.monotonic() + timeout
+            while self.pending and time.monotonic() < deadline:
+                QApplication.processEvents(QEventLoop.AllEvents, 50)
+                if self.pending:
+                    time.sleep(0.005)
+            return not self.pending
+
     class MainWindow(QMainWindow):
         CHANGES_TAB = 2
 
@@ -5577,10 +6091,19 @@ def run_gui(paths):
             self.inspector_edits: dict = {}
             self._filling = False
             self._updating = False
+            self._sizing = False
             self._inspector_family = ""
             self.state = load_state(STATE_ROOT)
+            self.saved_view = clean_view(self.state.get("view"))
+            self.saved_searches = clean_saved_searches(self.state.get("saved_searches"))
+            self.entity_widths = {family: dict(widths) for family, widths
+                                  in self.saved_view.get("entity_widths", {}).items()}
+            self.line_widths = dict(self.saved_view.get("line_widths", {}))
+            self.collection_filter = ""
+            self.remember_on_close = True       # the tests switch this off (see close_window)
             self.profiles: list[Profile] = []
-            self.resize(1280, 820)
+            self.resize(self.default_size())
+            self.jobs = Jobs(self, self.set_busy)
 
             self.undo_stack = QUndoStack(self)
             self.line_model = EntryModel()
@@ -5639,13 +6162,30 @@ def run_gui(paths):
             self.change_view.doubleClicked.connect(self.go_to_change)
             self.tabs.currentChanged.connect(lambda _index: self.refresh_status())
             self.profile_box.currentIndexChanged.connect(lambda _index: self.on_profile_chosen())
+            self.entity_view.horizontalHeader().sectionResized.connect(self.on_entity_resized)
+            self.line_view.horizontalHeader().sectionResized.connect(self.on_line_resized)
+            self.collection_list.currentItemChanged.connect(
+                lambda _cur, _prev: self.on_collection())
+            self.section_search.textChanged.connect(lambda _text: self.filter_sections())
+            self.entity_view.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.entity_view.customContextMenuRequested.connect(self.show_grid_menu)
 
-            for button in self.family_buttons:
-                button.setChecked(button.property("family") == "club")
-            for button in self.status_buttons:
-                button.setChecked(button.property("mode") == "all")
+            self.busy_actions = [
+                self.open_act, self.quick_load_act, self.save_act, self.deploy_act,
+                self.review_act, self.import_act, self.licensing_act, self.undo_act,
+                self.redo_act, self.undo_tool, self.redo_tool, self.edit_cell_act,
+                self.revert_act, self.replace_act, self.bulk_act, self.import_pack_act,
+                self.backups_act, self.record_act, self.apply_profile_act,
+                self.new_collection_act, self.rename_collection_act,
+                self.delete_collection_act, self.remove_from_collection_act]
+            self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
+            self._enabled_before: dict = {}
+
+            self.restore_view()
             self.refresh_versions()
+            self.load_collections()
             self.apply_family()
+            self.tabs.setCurrentIndex(self.saved_view.get("tab", 0))
             self.refresh_status()
             self.refresh_profiles()
 
@@ -5740,6 +6280,22 @@ def run_gui(paths):
             self.shortcuts_act = a("Keyboard shortcuts", self.show_shortcuts,
                                    QKeySequence.HelpContents, "List the keys the editor knows")
 
+            # Collections: sets of entities you name, kept in state\collections.json.
+            self.add_to_collection_menu = QMenu("Add selected to", self)
+            self.add_to_collection_menu.setToolTipsVisible(True)
+            self.add_to_collection_menu.aboutToShow.connect(self.fill_add_to_menu)
+            self.remove_from_collection_act = a(
+                "Remove selected from this collection", self.remove_selected_from_collection, (),
+                "Take the selected rows out of the collection shown. The names are not changed.")
+            self.new_collection_act = a(
+                "New collection...", lambda _checked=False: self.new_collection(), (),
+                "Make an empty collection; add rows to it from the grid")
+            self.rename_collection_act = a("Rename collection...", self.rename_collection)
+            self.delete_collection_act = a(
+                "Delete collection...", self.delete_collection, (),
+                "Delete the collection shown. It is kept in collections.json, so it can be "
+                "recovered by hand. The names are not changed.")
+
             # Toolbar-only actions. Their text stays short and fixed, and they carry
             # no shortcut: the menu actions own Ctrl+S, Ctrl+Z, and Ctrl+Y.
             self.review_act = a(
@@ -5788,6 +6344,10 @@ def run_gui(paths):
             self.profiles_menu = menu(
                 "P&rofiles", self.record_act, self.apply_profile_act, None,
                 self.new_profile_act, self.rename_profile_act, self.delete_profile_act)
+            self.collections_menu = menu(
+                "&Collections", self.add_to_collection_menu.menuAction(),
+                self.remove_from_collection_act, None, self.new_collection_act,
+                self.rename_collection_act, self.delete_collection_act)
             self.help_menu = menu("&Help", self.shortcuts_act)
 
         def build_toolbar(self) -> None:
@@ -5860,15 +6420,18 @@ def run_gui(paths):
                 "Search names, IDs, and file sections (accents ignored). Ctrl+F")
             self.entity_search.setClearButtonEnabled(True)
             status_row.addWidget(self.entity_search, 1)
+            self.searches_btn = QPushButton("Saved searches")
+            self.searches_btn.setToolTip(
+                "Keep this search (family, words, filter, and file section or collection) "
+                "under a name, and come back to it")
+            self.searches_menu = QMenu(self.searches_btn)
+            self.searches_menu.aboutToShow.connect(self.fill_searches_menu)
+            self.searches_btn.setMenu(self.searches_menu)
+            status_row.addWidget(self.searches_btn)
             self.status_group = QButtonGroup(self)
             self.status_group.setExclusive(True)
             self.status_buttons = []
-            for mode, label in (
-                ("all", "All"),
-                ("edited", "Edited"),
-                ("missing_short", "No short-name override"),
-                ("missing_code", "No code override"),
-            ):
+            for mode, label in STATUS_FILTERS.items():
                 button = QPushButton(label)
                 button.setCheckable(True)
                 button.setProperty("mode", mode)
@@ -5878,12 +6441,41 @@ def run_gui(paths):
             entity_lay.addLayout(status_row)
 
             splitter = QSplitter()
+            self.entity_splitter = splitter
             left = QWidget()
             left_lay = QVBoxLayout(left)
             left_lay.setContentsMargins(0, 0, 0, 0)
-            left_lay.addWidget(QLabel("File sections"))
+            heading = QHBoxLayout()
+            heading.addWidget(QLabel("Collections"))
+            heading.addStretch(1)
+            new_button = QPushButton("New...")
+            new_button.setObjectName("small")
+            new_button.setToolTip(self.new_collection_act.toolTip())
+            new_button.clicked.connect(lambda _checked=False: self.new_collection())
+            self.new_collection_btn = new_button
+            heading.addWidget(new_button)
+            left_lay.addLayout(heading)
+            self.collection_list = QListWidget()
+            self.collection_list.setObjectName("collections")
+            self.collection_list.setToolTip(
+                "Sets of names you made. They live in your settings, not in the name files, "
+                "and are not file sections.")
+            self.collection_list.setMaximumHeight(118)
+            left_lay.addWidget(self.collection_list)
+            self.collection_hint = QLabel("")
+            self.collection_hint.setObjectName("muted")
+            self.collection_hint.setWordWrap(True)
+            left_lay.addWidget(self.collection_hint)
+            left_lay.addSpacing(6)
+            label = QLabel("File sections")
+            label.setToolTip(FILE_SECTION_HINT)
+            left_lay.addWidget(label)
+            self.section_search = QLineEdit()
+            self.section_search.setPlaceholderText("Search file sections")
+            self.section_search.setClearButtonEnabled(True)
+            left_lay.addWidget(self.section_search)
             self.section_list = QListWidget()
-            left_lay.addWidget(self.section_list)
+            left_lay.addWidget(self.section_list, 1)
             splitter.addWidget(left)
 
             self.entity_view = QTableView()
@@ -5981,10 +6573,11 @@ def run_gui(paths):
                 return
             paths, _ = QFileDialog.getOpenFileNames(self, "Open .lnc files", "", FILTER)
             if paths:
-                self.load(paths)
+                self.load_in_background(paths)
 
         def load(self, paths) -> bool:
-            """Open the files as the new workspace.
+            """Open the files as the new workspace, here and now (files dropped on the
+            launcher, and the tests). Open and Quick load use load_in_background.
 
             Every file is read and decoded first. If any one fails, a message
             names it and the files that were already open are left alone.
@@ -5996,21 +6589,46 @@ def run_gui(paths):
             try:
                 docs = open_documents(paths)
             except LoadError as exc:
-                QMessageBox.critical(
-                    self, APP_NAME,
-                    f"{exc}\n\nNothing was opened. The current files are unchanged.")
+                self.load_failed(exc)
                 return False
+            self.adopt_documents(docs)
+            return True
+
+        def load_in_background(self, paths) -> None:
+            """Open files with the reading and parsing on a worker thread.
+
+            The window stays drawn, with everything that could change files
+            switched off, until the files are in; a failure leaves the files
+            that were open as they were.
+            """
+            paths = list(paths)
+            if not paths:
+                return
+            names = ", ".join(Path(path).name for path in paths)
+            self.jobs.start(f"Opening {names}...", lambda: open_documents(paths),
+                            self.adopt_documents, self.load_failed)
+
+        def load_failed(self, exc: Exception) -> None:
+            reason = str(exc) if isinstance(exc, LoadError) else f"Could not open the files:\n{exc}"
+            QMessageBox.critical(
+                self, APP_NAME, f"{reason}\n\nNothing was opened. The current files are unchanged.")
+
+        def adopt_documents(self, docs) -> None:
+            """Make freshly read documents the workspace, with a new history.
+
+            The family shown stays (it is part of the remembered view); the
+            file section, collection, and status filter start again at all.
+            """
             self.docs.clear()
             self.docs.extend(docs)
             self.undo_stack.clear()     # its steps belong to the files that were open
-            self.family = "club"
             self.section_filter = ""
+            self.collection_filter = ""
             self.status_mode = "all"
             for button in self.status_buttons:
                 button.setChecked(button.property("mode") == "all")
             self.reload_views(keep_place=False)
             self.tabs.setCurrentIndex(0)
-            return True
 
         def save(self):
             """Write every document with changes back to its own file, after a review.
@@ -6026,14 +6644,32 @@ def run_gui(paths):
                 return
             self.review_and_write("Save", [(doc, doc.path) for doc in dirty], GAME_DB_ROOT)
 
-        def review_and_write(self, operation: str, pairs, game_root, left_alone=()) -> bool:
-            """Show the Review changes dialog for a Save or Deploy, then write.
+        def review_and_write(self, operation: str, pairs, game_root, left_alone=()) -> None:
+            """Check for a running game on a worker, then review the Save or Deploy and write.
+
+            The check is made only when a game file is among the destinations;
+            the window waits with its actions off until it comes back.
+            """
+            pairs = list(pairs)
+            if any(game_root is None or under_game_tree(Path(dest), game_root)
+                   for _doc, dest in pairs):
+                self.jobs.start(GAME_CHECK, football_manager_running,
+                                lambda found: self.open_review(
+                                    operation, pairs, game_root, left_alone, found),
+                                lambda _error: self.open_review(   # unknown, not closed
+                                    operation, pairs, game_root, left_alone, None))
+            else:
+                self.open_review(operation, pairs, game_root, left_alone, [])
+
+        def open_review(self, operation: str, pairs, game_root, left_alone, found) -> bool:
+            """Show the Review changes dialog, then write. ``found`` is the game check's answer.
 
             A running game refuses the write before the review opens, with
             the same message for Save and Deploy. Returns True when files
             were written.
             """
-            review = WriteReview(operation, pairs, game_root, left_alone=left_alone)
+            review = WriteReview(operation, pairs, game_root, check=lambda: found,
+                                 left_alone=left_alone)
             if review.preflight.blocked:
                 QMessageBox.warning(self, APP_NAME, review.preflight.blocked_message())
                 return False
@@ -6113,11 +6749,118 @@ def run_gui(paths):
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
             if r == QMessageBox.Save:
                 self.save()
+                self.jobs.wait()            # the review may be waiting for the game check
                 return not any(d.dirty for d in self.docs)
             return r == QMessageBox.Discard
 
         def closeEvent(self, event):
-            event.accept() if self.confirm_discard() else event.ignore()
+            self.jobs.wait(15)              # let a job end before the window goes
+            if not self.confirm_discard():
+                event.ignore()
+                return
+            if self.remember_on_close:
+                self.remember_view()
+            event.accept()
+
+        def set_busy(self, busy: bool, text: str) -> None:
+            """A job started, or the last one ended: switch off, or back on, what it could clash with.
+
+            While a job runs, the grids, the inspector, the database and
+            profile choices, and every action that opens, changes, or writes
+            files are off, so nothing can change under it. Afterwards each
+            action is as it was; Undo and Redo follow the undo stack again.
+            """
+            if busy:
+                self._enabled_before = {action: action.isEnabled()
+                                        for action in self.busy_actions}
+                for action in self.busy_actions:
+                    action.setEnabled(False)
+                for widget in self.busy_widgets:
+                    widget.setEnabled(False)
+                QApplication.setOverrideCursor(Qt.BusyCursor)
+                self.statusBar().showMessage(text)
+                return
+            for action, enabled in self._enabled_before.items():
+                action.setEnabled(enabled)
+            for widget in self.busy_widgets:
+                widget.setEnabled(True)
+            QApplication.restoreOverrideCursor()
+            self.statusBar().clearMessage()
+
+        @staticmethod
+        def default_size() -> QSize:
+            """1280 by 820, or less to fit the screen's free area with room for the title bar.
+
+            At 150% scaling a 1920 by 1080 screen is 1280 by 720 to Qt, and a
+            window 820 tall would run off its bottom.
+            """
+            screen = QApplication.primaryScreen()
+            if screen is None:
+                return QSize(1280, 820)
+            free = screen.availableGeometry()
+            return QSize(min(1280, free.width()), min(820, free.height() - 48))
+
+        # ----- the remembered view -----
+        def restore_view(self) -> None:
+            """Put back the view kept in the settings file (see clean_view)."""
+            view = self.saved_view
+            self.family = view.get("family", "club")
+            self.status_mode = view.get("status", "all")
+            for button in self.family_buttons:
+                button.setChecked(button.property("family") == self.family)
+            for button in self.status_buttons:
+                button.setChecked(button.property("mode") == self.status_mode)
+            for name, model in (("entity_sort", self.entity_model),
+                                ("line_sort", self.line_model)):
+                if name in view:
+                    model.sort_key = view[name]["key"]
+                    model.sort_descending = view[name]["descending"]
+            for name, restore in (("geometry", self.restoreGeometry),
+                                  ("window_state", self.restoreState),
+                                  ("splitter", self.entity_splitter.restoreState)):
+                if name in view:
+                    restore(QByteArray.fromBase64(view[name].encode("ascii")))
+
+        def remember_view(self) -> None:
+            """Keep the view in the settings file for next time. The window calls it on close."""
+            def text(data) -> str:
+                return data.toBase64().data().decode("ascii")
+
+            self.state["view"] = clean_view({
+                "tab": self.tabs.currentIndex(),
+                "family": self.family,
+                "status": self.status_mode,
+                "entity_sort": {"key": self.entity_model.sort_key,
+                                "descending": self.entity_model.sort_descending},
+                "line_sort": {"key": self.line_model.sort_key,
+                              "descending": self.line_model.sort_descending},
+                "entity_widths": self.entity_widths,
+                "line_widths": self.line_widths,
+                "geometry": text(self.saveGeometry()),
+                "window_state": text(self.saveState()),
+                "splitter": text(self.entity_splitter.saveState()),
+            })
+            try:
+                save_state(self.state, STATE_ROOT)
+            except OSError:
+                pass        # the window is closing: the next run starts with the view before
+
+        def on_entity_resized(self, column: int, _old: int, new: int) -> None:
+            """Remember a width the user gave a grid column, per family."""
+            header = self.entity_view.horizontalHeader()
+            keys = self.entity_model.columns()
+            if (self._sizing or new <= 0 or not 0 <= column < len(keys)
+                    or header.sectionResizeMode(column) != QHeaderView.Interactive
+                    or self.entity_view.isColumnHidden(column)):
+                return
+            self.entity_widths.setdefault(self.family, {})[keys[column]] = new
+
+        def on_line_resized(self, column: int, _old: int, new: int) -> None:
+            header = self.line_view.horizontalHeader()
+            if (self._sizing or new <= 0 or not 0 <= column < len(EntryModel.KEYS)
+                    or header.sectionResizeMode(column) != QHeaderView.Interactive):
+                return
+            self.line_widths[EntryModel.KEYS[column]] = new
 
         # ----- actions -----
         def apply_filter(self):
@@ -6132,8 +6875,8 @@ def run_gui(paths):
             self.refresh_status()
 
         def apply_entity_filter(self):
-            self.entity_proxy.set_filter(
-                self.entity_search.text(), self.section_filter, self.status_mode)
+            self.entity_proxy.set_filter(self.entity_search.text(), self.section_filter,
+                                         self.status_mode, self.collection_keys())
             self.refresh_status()
 
         def import_old(self):
@@ -6397,21 +7140,33 @@ def run_gui(paths):
                 if column != EntryModel.NAME_COL
             }
             texts[EntryModel.STATUS_COL] = {"Added", "Edited"}
-            fit_columns(self.line_view, texts, {0: 240})
+            self._sizing = True                 # these widths are the program's, not the user's
+            try:
+                fit_columns(self.line_view, texts, {0: 240})
+                for column, key in enumerate(EntryModel.KEYS):
+                    if key in self.line_widths and column != EntryModel.NAME_COL:
+                        self.line_view.setColumnWidth(column, self.line_widths[key])
+            finally:
+                self._sizing = False
 
         def apply_family(self) -> None:
-            """Show the chosen family: its file sections, its rows, its columns, its inspector."""
+            """Show the chosen family: its sections and collections, rows, columns, inspector."""
             if self._inspector_family != self.family:
                 self.rebuild_inspector()
                 self._inspector_family = self.family
             rows = [entity for entity in self.all_entities if entity.family == self.family]
             self.refill_sections()
-            self.entity_proxy.configure(
-                self.entity_search.text(), self.section_filter, self.status_mode)
-            self.entity_model.set_family_rows(self.family, rows)
-            self.show_columns()
-            self.show_sort(self.entity_view, self.entity_model)
-            self._size_entity_columns()
+            self.refill_collections()
+            self.entity_proxy.configure(self.entity_search.text(), self.section_filter,
+                                        self.status_mode, self.collection_keys())
+            self._sizing = True
+            try:
+                self.entity_model.set_family_rows(self.family, rows)
+                self.show_columns()
+                self.show_sort(self.entity_view, self.entity_model)
+                self._size_entity_columns()
+            finally:
+                self._sizing = False
             self.show_inspector(None)
 
         def _size_entity_columns(self) -> None:
@@ -6432,6 +7187,10 @@ def run_gui(paths):
                     texts[column] = {entity_text(entity, key) for entity in rows}
                 caps[column] = 200 if key in ("section", "lang") else 280
             fit_columns(self.entity_view, texts, caps)
+            for column, key in enumerate(columns):      # widths the user set win
+                width = self.entity_widths.get(self.family, {}).get(key)
+                if width and key not in (stretch, "id"):
+                    self.entity_view.setColumnWidth(column, width)
 
         def refill_sections(self) -> None:
             rows = [entity for entity in self.all_entities if entity.family == self.family]
@@ -6454,16 +7213,333 @@ def run_gui(paths):
                 self.section_filter = ""
             self.section_list.setCurrentRow(chosen)
             self.section_list.blockSignals(False)
+            self.filter_sections()          # the search box still applies to the new list
 
         def on_section(self) -> None:
             if self._updating:
                 return
             item = self.section_list.currentItem()
-            self.section_filter = item.data(Qt.UserRole) if item is not None else ""
-            if self.section_filter is None:
-                self.section_filter = ""
+            self.section_filter = (item.data(Qt.UserRole) if item is not None else "") or ""
+            if self.collection_filter:          # a file section and a collection do not mix
+                self.collection_filter = ""
+                self.collection_list.blockSignals(True)
+                self.collection_list.setCurrentRow(-1)
+                self.collection_list.blockSignals(False)
+                self.update_collection_actions()
             self.show_columns()
             self.apply_entity_filter()
+
+        def filter_sections(self) -> None:
+            """Show only the file sections whose names hold the words typed (accents ignored)."""
+            words = fold(self.section_search.text()).split()
+            for row in range(self.section_list.count()):
+                item = self.section_list.item(row)
+                section = item.data(Qt.UserRole) or ""
+                item.setHidden(bool(words and section)
+                               and not all(word in fold(section) for word in words))
+
+        # ----- collections -----
+        def load_collections(self) -> None:
+            """Read collections.json. A damaged file is named and left alone, with
+            collections off until it is put right or moved."""
+            try:
+                self.collections = load_collection_file(STATE_ROOT)
+                self.collections_problem = ""
+            except ValueError as exc:
+                self.collections = CollectionFile()
+                self.collections_problem = str(exc)
+
+        def shown_collection(self):
+            if not self.collection_filter:
+                return None
+            return self.collections.find(self.collection_filter)
+
+        def collection_keys(self):
+            collection = self.shown_collection()
+            return frozenset(collection.keys) if collection is not None else None
+
+        def refill_collections(self) -> None:
+            """List the collections, each with how many of the family shown it holds."""
+            self.collection_list.blockSignals(True)
+            self.collection_list.clear()
+            chosen = -1
+            family = FAMILY_LABELS[self.family].lower()
+            for collection in self.collections.collections:
+                count = collection.count_in(self.family)
+                item = QListWidgetItem(f"★ {collection.name} ({count:,})")
+                item.setData(Qt.UserRole, collection.name)
+                item.setForeground(QColor("#06b6d4"))
+                item.setToolTip(f"Collection {collection.name}: {count:,} {family} of "
+                                f"{len(collection.keys):,} in all. Collections are yours; "
+                                "they are not file sections.")
+                self.collection_list.addItem(item)
+                if collection.name == self.collection_filter:
+                    chosen = self.collection_list.count() - 1
+            if chosen < 0:
+                self.collection_filter = ""
+            self.collection_list.setCurrentRow(chosen)
+            self.collection_list.blockSignals(False)
+            self.collection_list.setVisible(bool(self.collections.collections))
+            if self.collections_problem:
+                set_level(self.collection_hint,
+                          f"{self.collections_problem} The file is left alone, and "
+                          "collections are off until it is put right or moved.", "warning")
+            elif not self.collections.collections:
+                set_level(self.collection_hint,
+                          "None yet. Select rows in the grid, then Collections > Add selected "
+                          "to, or press New.", "muted")
+            else:
+                set_level(self.collection_hint, "", "muted")
+            self.collection_hint.setVisible(bool(self.collection_hint.text()))
+            self.update_collection_actions()
+
+        def update_collection_actions(self) -> None:
+            usable = not self.collections_problem
+            shown = self.shown_collection() is not None
+            for item in (self.new_collection_act, self.new_collection_btn,
+                         self.add_to_collection_menu):
+                item.setEnabled(usable)
+            for action in (self.rename_collection_act, self.delete_collection_act,
+                           self.remove_from_collection_act):
+                action.setEnabled(usable and shown)
+
+        def on_collection(self) -> None:
+            if self._updating:
+                return
+            item = self.collection_list.currentItem()
+            self.collection_filter = (item.data(Qt.UserRole) if item is not None else "") or ""
+            if self.collection_filter:          # a collection replaces the file section
+                self.section_filter = ""
+                self.section_list.blockSignals(True)
+                self.section_list.setCurrentRow(0)
+                self.section_list.blockSignals(False)
+            self.update_collection_actions()
+            self.show_columns()
+            self.apply_entity_filter()
+
+        def selected_entities(self) -> list[NameEntity]:
+            rows = {self.entity_proxy.mapToSource(index).row()
+                    for index in self.entity_view.selectionModel().selectedRows()}
+            return [self.entity_model.rows[row] for row in sorted(rows)]
+
+        def store_collections(self, done: str) -> bool:
+            """Write collections.json and show the result. A failed write puts the
+            collections back as the file has them."""
+            try:
+                save_collection_file(self.collections, STATE_ROOT)
+            except OSError as exc:
+                QMessageBox.critical(
+                    self, APP_NAME,
+                    f"Could not write the collections file:\n{exc}\n\nNothing was changed.")
+                self.load_collections()
+                done = ""
+            self.refill_collections()
+            self.apply_entity_filter()
+            if done:
+                self.statusBar().showMessage(done, 8000)
+            return bool(done)
+
+        def fill_add_to_menu(self) -> None:
+            menu = self.add_to_collection_menu
+            menu.clear()
+            chosen = bool(self.selected_entities())
+            for collection in self.collections.collections:
+                action = menu.addAction(collection.name)
+                action.setEnabled(chosen)
+                action.triggered.connect(
+                    lambda _checked=False, name=collection.name: self.add_selected_to(name))
+            if self.collections.collections:
+                menu.addSeparator()
+            new = menu.addAction("New collection with the selection...")
+            new.setEnabled(chosen)
+            new.triggered.connect(lambda _checked=False: self.new_collection(True))
+
+        def add_selected_to(self, name: str) -> None:
+            collection = self.collections.find(name)
+            entities = self.selected_entities()
+            if collection is None or not entities or self.collections_problem:
+                return
+            added = collection.add(entity_key(entity) for entity in entities)
+            if not added:
+                self.statusBar().showMessage(
+                    f"The selected rows are in {collection.name} already.", 6000)
+                return
+            self.store_collections(
+                f"Added {added:,} to {collection.name}, which now holds "
+                f"{len(collection.keys):,}.")
+
+        def remove_selected_from_collection(self) -> None:
+            collection = self.shown_collection()
+            entities = self.selected_entities()
+            if collection is None or not entities or self.collections_problem:
+                return
+            removed = collection.remove(entity_key(entity) for entity in entities)
+            self.store_collections(
+                f"Took {removed:,} out of {collection.name}, which now holds "
+                f"{len(collection.keys):,}. The names are not changed.")
+
+        def new_collection(self, with_selection: bool = False) -> bool:
+            if self.collections_problem:
+                return False
+            dialog = ProfileDialog(
+                self, "New collection",
+                lambda name: collection_name_problem(name, self.collections), note=None)
+            if not dialog.exec():
+                return False
+            name, _note = dialog.values()
+            collection = Collection(name)
+            if with_selection:
+                collection.add(entity_key(entity) for entity in self.selected_entities())
+            self.collections.add(collection)
+            return self.store_collections(
+                f"Made the collection {collection.name}, holding {len(collection.keys):,}.")
+
+        def rename_collection(self) -> None:
+            collection = self.shown_collection()
+            if collection is None or self.collections_problem:
+                return
+            old = collection.name
+            dialog = ProfileDialog(
+                self, "Rename collection",
+                lambda name: collection_name_problem(name, self.collections, own=collection),
+                old, note=None)
+            if not dialog.exec():
+                return
+            collection.name = dialog.values()[0]
+            self.collections.collections.sort(key=lambda item: fold(item.name))
+            self.collection_filter = collection.name
+            if (self.store_collections(f"Renamed the collection {old} to {collection.name}.")
+                    and any(search.collection == old for search in self.saved_searches)):
+                searches = []
+                for search in self.saved_searches:     # saved searches follow the new name
+                    kept = SavedSearch(search.name, *(getattr(search, field)
+                                                      for field in SavedSearch.FIELDS))
+                    if kept.collection == old:
+                        kept.collection = collection.name
+                    searches.append(kept)
+                self.store_searches(searches, "")
+
+        def delete_collection(self) -> None:
+            collection = self.shown_collection()
+            if collection is None or self.collections_problem:
+                return
+            answer = QMessageBox.question(
+                self, APP_NAME,
+                f"Delete the collection {collection.name} ({len(collection.keys):,} in all)?"
+                f"\n\nIt is kept under \"deleted\" in {STATE_ROOT / COLLECTIONS_FILE}, so it "
+                "can be recovered by hand. The name files are not changed.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            self.collections.delete(collection)
+            self.collection_filter = ""
+            self.store_collections(f"Deleted the collection {collection.name}.")
+
+        def grid_menu(self) -> QMenu:
+            """The grid's right-click menu: collections, Edit cell, and Revert."""
+            menu = QMenu(self)
+            menu.addMenu(self.add_to_collection_menu)
+            menu.addAction(self.remove_from_collection_act)
+            menu.addSeparator()
+            menu.addAction(self.edit_cell_act)
+            menu.addAction(self.revert_act)
+            return menu
+
+        def show_grid_menu(self, point) -> None:
+            self.grid_menu().exec(self.entity_view.viewport().mapToGlobal(point))
+
+        # ----- saved searches -----
+        def describe_search(self, search: SavedSearch) -> str:
+            parts = [FAMILY_LABELS[search.family]]
+            if search.text:
+                parts.append(f"words: {search.text}")
+            if search.status != "all":
+                parts.append(f"filter: {STATUS_FILTERS[search.status]}")
+            if search.collection:
+                parts.append(f"collection: {search.collection}")
+            elif search.section:
+                parts.append(f"file section: {search.section}")
+            return "; ".join(parts)
+
+        def fill_searches_menu(self) -> None:
+            menu = self.searches_menu
+            menu.clear()
+            menu.setToolTipsVisible(True)
+            for search in self.saved_searches:
+                action = menu.addAction(search.name)
+                action.setToolTip(self.describe_search(search))
+                action.triggered.connect(
+                    lambda _checked=False, chosen=search: self.apply_saved_search(chosen))
+            if self.saved_searches:
+                menu.addSeparator()
+            keep = menu.addAction("Save this search...")
+            keep.triggered.connect(lambda _checked=False: self.save_search())
+            if self.saved_searches:
+                forget = menu.addMenu("Delete a saved search")
+                for search in self.saved_searches:
+                    action = forget.addAction(search.name)
+                    action.triggered.connect(
+                        lambda _checked=False, chosen=search: self.delete_saved_search(chosen))
+
+        def store_searches(self, searches: list, done: str) -> bool:
+            state = dict(self.state)
+            state["saved_searches"] = [search.to_json() for search in searches]
+            try:
+                save_state(state, STATE_ROOT)
+            except OSError as exc:
+                QMessageBox.warning(self, APP_NAME,
+                                    f"Could not write the settings file:\n{exc}")
+                return False
+            self.state = state
+            self.saved_searches = searches
+            if done:
+                self.statusBar().showMessage(done, 8000)
+            return True
+
+        def save_search(self) -> None:
+            dialog = ProfileDialog(
+                self, "Save this search",
+                lambda name: label_problem(name, self.saved_searches, None, "saved search"),
+                note=None)
+            if not dialog.exec():
+                return
+            search = SavedSearch(dialog.values()[0], self.family,
+                                 self.entity_search.text().strip(), self.status_mode,
+                                 self.section_filter, self.collection_filter)
+            self.store_searches([*self.saved_searches, search],
+                                f"Saved the search {search.name}: {self.describe_search(search)}.")
+
+        def delete_saved_search(self, search: SavedSearch) -> None:
+            answer = QMessageBox.question(
+                self, APP_NAME, f"Delete the saved search {search.name}?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                self.store_searches([s for s in self.saved_searches if s is not search],
+                                    f"Deleted the saved search {search.name}.")
+
+        def apply_saved_search(self, search: SavedSearch) -> None:
+            """Show a saved search: its family, filter, words, and file section or collection."""
+            self.collection_filter = (search.collection
+                                      if self.collections.find(search.collection) else "")
+            self.section_filter = "" if self.collection_filter else search.section
+            if search.family != self.family:
+                self.family = search.family
+                for button in self.family_buttons:
+                    button.setChecked(button.property("family") == self.family)
+            self.status_mode = search.status
+            for button in self.status_buttons:
+                button.setChecked(button.property("mode") == self.status_mode)
+            self.entity_search.blockSignals(True)
+            self.entity_search.setText(search.text)
+            self.entity_search.blockSignals(False)
+            self.entity_timer.stop()
+            self.apply_family()             # sections, collections, rows, and the filter
+            self.refresh_status()
+            missing = search.section and search.section != self.section_filter
+            self.statusBar().showMessage(
+                f"{search.name}: {self.entity_proxy.rowCount():,} shown."
+                + (f" The file section {search.section} is not in the open files."
+                   if missing else ""), 8000)
 
         def on_family_clicked(self, button) -> None:
             if self._updating:
@@ -6825,7 +7901,7 @@ def run_gui(paths):
                     "No FM27 name files were found in the selected database folder.\n"
                     f"Looked under {GAME_DB_ROOT}")
                 return
-            self.load([str(path) for path in name_paths(version)])
+            self.load_in_background([str(path) for path in name_paths(version)])
 
         def deploy(self) -> None:
             if not self.docs:

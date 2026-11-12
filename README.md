@@ -1,14 +1,14 @@
 # FM Name Editor
 
-Release: 2.3
+Release: 2.4
 Status: released
-Application on disk: 2.3
+Application on disk: 2.4
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. It lets you change club, competition, stadium, and related spellings, carry edits across from an older game's files by database ID, and write the file back without disturbing lines you did not touch.
 
 This project is a personal tool. It is not affiliated with Sports Interactive or Sega.
 
-The program you can run today is **2.3**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
+The program you can run today is **2.4**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
 
 ## Run it
 
@@ -27,9 +27,21 @@ python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 
 Requires Python 3.11 or later and PySide6. No other packages.
 
+## What 2.4 adds
+
+- **A window that answers at once.** With both FM27 name files open, opening them took about ten seconds, and so did every Save, Deploy, restore, bulk step, or added field. Now opening takes under a second, an edit or an undo under a tenth, and a Save, review included, about half a second. Opening files, reading a backup, and the check for a running game run in the background, so the window stays drawn while they work.
+- **Menus and one top row.** File, Edit, View, Packs, Backups, Profiles, Collections, and Help hold every action, with its keys beside it (**Help > Keyboard shortcuts**, or F1, lists them all). The top row keeps the database, the profile with **Record edits** and **Apply...**, **Quick load**, **Undo**, **Redo**, and **Review changes**, which shows how many changes are pending and opens the review before a Save (Ctrl+S).
+- **Names get the room.** The grid is sorted by long name; click a heading to sort by it. The ID column has moved to the panel on the right, and the File section column hides while one section is chosen.
+- **The panel on the right shows both spellings.** For each field: the text on disk above the text to write, whether it is unchanged, edited, or added and by which tool, and the file and line. Text that cannot be a name stays where you typed it with the reason beside it; Esc puts back the name.
+- **Your own collections.** Select rows and choose **Collections > Add selected to** (or right-click) to keep sets such as "My save" or "Names to review". They are listed above the file sections, starred, and live in the local `state` folder, never in the name files.
+- **Saved searches and a section search.** **Saved searches** keeps a search under a name. A box above the file sections narrows that long list as you type.
+- **It remembers how you left it.** Window size and place, tab, family, filter, sort, the column widths you set, and the panes come back next time.
+- **Fits 125% and 150% scaling.** The window opens smaller when the screen is, the include ticks are clear boxes, and keyboard focus shows as a cyan outline.
+- Keys: F2 edits a cell, Ctrl+Shift+C goes to Changes, Ctrl+Z and Ctrl+Y undo and redo. Double-click a change to see its line.
+
 ## What 2.3 adds
 
-- **Spelling profiles.** A profile keeps your preferred spellings in the local `profiles` folder, each with the name the game file had when you recorded it. Save and Deploy never change a profile. When the game's files change, **Apply...** offers your spellings again and ticks only those whose name the game has not changed since. The profile selector, **Record edits**, **Apply...**, and **Manage** sit in the row under the toolbar.
+- **Spelling profiles.** A profile keeps your preferred spellings in the local `profiles` folder, each with the name the game file had when you recorded it. Save and Deploy never change a profile. When the game's files change, **Apply...** offers your spellings again and ticks only those whose name the game has not changed since. Since 2.4 the profile selector, **Record edits**, and **Apply...** sit in the top row, and New, Rename, and Delete are in the **Profiles** menu.
 - **The Changes tab** lists every difference between the open files and the files on disk: the text on disk, the text to write, whether the line is edited, added, restored, or removed, which tool changed it, and the file and line. Each change has a tick.
 - **Review changes before every write.** Save and Deploy both show the changes, where each file goes, the backup folder, whether the game is running, and any file that changed on disk since the editor read it. An unticked change is left out of the write and stays pending. A file whose bytes would not change is not written. Save into the game folder is the same operation as Deploy, and the review says so.
 - **Undo and Redo** for whole operations: Ctrl+Z and Ctrl+Y, or the **Edit** menu, which names the step. A bulk tool, a name pack, a profile, a restore, or a Revert undoes as one step, and undo goes back past a Save or Deploy. Undo changes memory only; the next Save or Deploy writes the result.
@@ -56,11 +68,11 @@ Requires Python 3.11 or later and PySide6. No other packages.
 
 - **Entities** is the first tab. A club or competition is one row: long name, short name, and code. **All lines** keeps the original table.
 - Search ignores accents. Filter by file section, type, edited rows, **No short-name override**, or **No code override**. An absent override is not an error; the game may supply that name itself.
-- Double-click a cell to edit it. Filling an empty short name or code adds one line next to its sibling.
-- **Quick load FM27** opens the two UTF-8 name files in the selected database folder (`2700` on this PC).
-- **Deploy to FM27** writes those files into `lnc\all` after copying the current game files into `backups`. Save of a file outside the game tree still writes a `.bak` beside it.
-- **Licensing** can rename the four name-mask files to `.disabled`, or restore them. It does not edit their contents. Other licensing files are listed and left alone.
-- **Bulk tools** preview an affix strip, a competition sponsor clean, or title casing, then apply the preview in memory.
+- Double-click a cell to edit it, or press F2. Filling an empty short name or code adds one line next to its sibling.
+- **Quick load** opens the two UTF-8 name files in the selected database folder (`2700` on this PC).
+- **File > Deploy to FM27** writes those files into `lnc\all` after copying the current game files into `backups`. Save of a file outside the game tree still writes a `.bak` beside it.
+- **File > Licensing files** can rename the four name-mask files to `.disabled`, or restore them. It does not edit their contents. Other licensing files are listed and left alone.
+- **Edit > Bulk tools** preview an affix strip, a competition sponsor clean, or title casing, then apply the preview in memory.
 - Import older edits matched on command, database ID, and language. A stock rename between versions is not ticked for you.
 
 Close Football Manager before Save into the game folder, Deploy, or a licensing toggle. The editor refuses while `fm.exe` is running. It does not close the game for you.
@@ -73,11 +85,11 @@ On this PC the FM27 name files are:
 
 `D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db\2700\lnc\all\`
 
-Use **Quick load FM27**, Open, or drop `.lnc` files onto the launcher. Quick load still opens the two UTF-8 name files in `lnc\all`. Open `lnc\greek\person_name_changes.lnc` yourself when you want the Greek ending rules. That file is UTF-16 and the editor keeps it that way.
+Use **Quick load**, **File > Open files**, or drop `.lnc` files onto the launcher. Quick load still opens the two UTF-8 name files in `lnc\all`. Open `lnc\greek\person_name_changes.lnc` yourself when you want the Greek ending rules. That file is UTF-16 and the editor keeps it that way.
 
 ## Publish
 
-The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, and 2.3 are published there. Game data and backups do not belong in that repository.
+The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, 2.3, and 2.4 are published there. Game data and backups do not belong in that repository.
 
 ## Licence
 

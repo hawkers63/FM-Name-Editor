@@ -1,14 +1,14 @@
 # Changelog
 
-Release: 2.3
+Release: 2.4
 Status: released
-Application on disk: 2.3
+Application on disk: 2.4
 
-The program on disk reports `VERSION = "2.3"`. The launcher banner says v2.3.
+The program on disk reports `VERSION = "2.4"`. The launcher banner says v2.4.
 
-## Unreleased - Release 2.4 in progress
+## 2.4 (12 November 2026)
 
-Not released. `VERSION` still reads 2.3. Release 2.4 is the interface around the workflow: Session 7 (layout, menus, grid, inspector, and grid speed; done) and Session 8 (view state, collections, background work).
+Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. The window is rebuilt around the way the editor is used: fewer, grouped actions, names given the room, a panel that shows both spellings, a remembered view, your own collections, and no more waiting on a frozen window. This is Stage 3 of the review of 2.1, built in sessions 7 and 8.
 
 Session 7 — layout, menus, grid, and inspector:
 
@@ -20,6 +20,16 @@ Session 7 — layout, menus, grid, and inspector:
 - **Keys.** F2 edits the selected cell (the name, when the row is selected whole), Ctrl+Shift+C goes to the Changes tab, Ctrl+1 and Ctrl+2 to Entities and All lines, Ctrl+H opens Replace, and F1 lists every key. Double-clicking a row on the Changes tab shows its line on All lines, clearing the All lines filters when they would hide it.
 - **States in words and colour.** Edited, Added, and Duplicate read as words and in their own colours, in the grids and in the inspector.
 - Tests: 116, up from 106. New cover for the reason a name is refused, what the inspector shows for unchanged, edited, added, absent, and repeated fields, the sort orders, the menus and their keys (no key on two actions), the top row at 1280 by 820 with no overflow, the grid's sort and hidden columns, a refused inspector value kept in view, F2, Ctrl+Shift+C, double-clicking a change, and a timing check on copies of both FM27 files: open, refresh, edit, undo, add a field, undo and redo it, and Save, each within a second. One window test changed for the larger Edit menu. Twenty-one single-line breaks of the new rules each fail at least one test.
+
+Session 8 — the remembered view, collections, and background work:
+
+- **The window remembers how you left it.** Its size and place, the tab, the family, the status filter, the sort of both tables, the column widths you set yourself, and the panes of the Entities tab come back next time, from the local `state\settings.json`. A value the window cannot use is ignored, so a damaged settings file cannot stop it opening. Opening files keeps the family you were looking at; the file section, collection, and status filter start again.
+- **Saved searches.** **Saved searches**, beside the search box, keeps the family, the words, the status filter, and the file section or collection under a name, brings them back in one click, and deletes them.
+- **Search the file sections.** A box above the list of file sections narrows it as you type, ignoring accents and capitals. All sections stays at the top.
+- **Collections.** Name your own sets of clubs, competitions, and the rest, such as "My save" or "Names to review": select rows, then **Collections > Add selected to**, or right-click the grid. Collections are listed above the file sections, starred and in their own colour, each with how many of the family shown it holds; click one to show only those. **Remove selected from this collection**, **Rename**, and **Delete** are in the same menu. They are kept in `state\collections.json`, never in the name files. A deleted collection stays in that file under "deleted", so it can be recovered by hand, and a damaged file is named in the panel and left alone.
+- **Slow work no longer holds the window.** Opening files (**Open** and **Quick load**), reading a backup to restore it, and the check for a running copy of Football Manager, which can take up to ten seconds, run in the background. The window stays drawn, with everything that could open, change, or write files switched off until the work is done, and a failure leaves the open files as they were. A game check that breaks counts as "could not be made", never as "closed". Writes themselves stay where they were: they take a few hundredths of a second and settle the files the window shows.
+- **At 125% and 150% scaling.** The window opens at 1280 by 820, or smaller to fit the screen: at 150%, a 1920 by 1080 screen leaves about 1280 by 688. The include ticks in the Changes tab, the review, and the pack, profile, and older-file previews are now clear boxes, filled and ticked when a row is in; the empty box was nearly invisible on the dark panels. Keyboard focus shows as a cyan outline; it did not show at all.
+- Tests: 128, up from 116. New cover for a restore read on a worker thread and taken as one undo step, the collections file (round trip, same bytes, deleted collections kept, damaged files refused), saved searches and the remembered view keeping only what the window can use, the view remembered between two windows, saved searches and the section search in the window, collections in the window, the tick and focus colours as drawn, opening files, the game check, and a restore on worker threads with the window's actions off meanwhile, a game check that breaks, and the window at 125% and 150% scaling (each in a process of its own). The window tests now run on an offscreen screen shaped like this PC's desktop, and jobs run at once in all but the worker tests. A message box that opens without a stand-in now fails its test instead of hanging the run. Twenty-six single-line breaks of the new rules each fail at least one test.
 
 ## 2.3 (11 November 2026)
 

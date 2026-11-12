@@ -1,7 +1,7 @@
 @echo off
 SETLOCAL EnableExtensions DisableDelayedExpansion
 :: ==============================================================
-::  FM Name Editor.bat  v2.3  -  launcher for fm_name_editor.py
+::  FM Name Editor.bat  v2.4  -  launcher for fm_name_editor.py
 ::  Checks Python and PySide6, offers to install PySide6 if it
 ::  is missing, then starts the app. Drag .lnc files onto this
 ::  file to open them straight away.

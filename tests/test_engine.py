@@ -14,7 +14,18 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Offscreen windows get a screen shaped like this PC's desktop (1920 x 1040 free
+# at 100% scaling), so the main window opens at the size it opens at there; the
+# default offscreen screen is 800 x 800. Qt reads the file from a relative path:
+# a path with a drive letter would be cut at its colon.
+_SCREEN = Path(__file__).with_name("offscreen_screen.json")
+if os.environ.get("QT_QPA_PLATFORM", "offscreen") == "offscreen":
+    try:
+        _relative = os.path.relpath(_SCREEN)
+    except ValueError:                  # the tests are on another drive
+        _relative = ""
+    os.environ["QT_QPA_PLATFORM"] = (f"offscreen:configfile={_relative}"
+                                     if _relative and ":" not in _relative else "offscreen")
 # Without real fonts, offscreen Qt guesses text widths and the window comes up
 # far wider than it is on the desktop, so size checks would mean nothing.
 if Path(r"C:\Windows\Fonts").is_dir():
@@ -38,12 +49,20 @@ def setUpModule():
         patcher = mock.patch.object(editor, name, root / name.split("_")[0].lower())
         patcher.start()
         _SANDBOX.append(patcher)
+    # Jobs (opening files, the game check, reading a backup) run at once on the
+    # calling thread, so a test sees their result straight after the call. The
+    # tests of the worker threads switch this off again.
+    inline = mock.patch.object(editor, "JOBS_INLINE", True)
+    inline.start()
+    _SANDBOX.append(inline)
     # A dialog that opens without a stand-in would wait for a click that never
     # comes, and the run would hang. Make it fail the test instead.
     try:
-        from PySide6.QtWidgets import QDialog
+        from PySide6.QtWidgets import QApplication, QDialog
     except ImportError:
         return
+    # Made here, once, so it gets the screen set above whatever a test sets later.
+    _SANDBOX.append(QApplication.instance() or QApplication([]))
 
     def unattended(dialog):
         raise AssertionError(f"The dialog {dialog.windowTitle()!r} opened without a stand-in.")
@@ -51,13 +70,27 @@ def setUpModule():
     guard = mock.patch.object(QDialog, "exec", unattended)
     guard.start()
     _SANDBOX.append(guard)
+    # QMessageBox's static calls build their box in C++, past the guard above.
+    # Unpatched, one waits for ever; with these it fails its test instead. A
+    # job that ends after its test (a worker test that failed part-way) then
+    # fails too, instead of hanging the run.
+    from PySide6.QtWidgets import QMessageBox
+
+    for name in ("critical", "warning", "information", "question"):
+        def refuse(*args, _name=name, **_kwargs):
+            text = args[2] if len(args) > 2 else ""
+            raise AssertionError(f"QMessageBox.{_name} opened without a stand-in: {text!r}")
+
+        box_guard = mock.patch.object(QMessageBox, name, refuse)
+        box_guard.start()
+        _SANDBOX.append(box_guard)
 
 
 def tearDownModule():
     for item in reversed(_SANDBOX):
         if isinstance(item, tempfile.TemporaryDirectory):
             item.cleanup()
-        else:
+        elif hasattr(item, "stop"):
             item.stop()
     _SANDBOX.clear()
 
@@ -87,6 +120,8 @@ def close_window(win) -> None:
 
     for doc in win.docs:
         doc.mark_clean()
+    win.jobs.wait(10)
+    win.remember_on_close = False   # one test's view must not reach the next test's window
     win.close()
     win.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
@@ -3164,7 +3199,8 @@ class Session7Window(unittest.TestCase):
 
         win = self._window()
         self.assertEqual([menu.title().replace("&", "") for menu in win.menus],
-                         ["File", "Edit", "View", "Packs", "Backups", "Profiles", "Help"])
+                         ["File", "Edit", "View", "Packs", "Backups", "Profiles",
+                          "Collections", "Help"])             # Collections since Session 8
         self.assertEqual([action.text() for action in win.file_menu.actions() if action.text()],
                          ["Open files...", "Quick load", "Save...", "Deploy to FM27...",
                           "Import older edits...", "Problem lines...", "Licensing files...",
@@ -3398,6 +3434,659 @@ class Session7Window(unittest.TestCase):
             self.assertEqual(win.tabs.currentIndex(), 2)
             self.assertIn("next Save or Deploy takes it out", win.statusBar().currentMessage())
             self.assertEqual(path.read_bytes().decode("utf-8-sig"), self.CLUBS)  # memory only
+
+
+class Session8Engine(unittest.TestCase):
+    """Release 2.4, session 8: a restore read off the GUI thread, collections, and the
+    remembered view."""
+
+    TEXT = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Bravo"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Charlie"\t""\n'
+    )
+
+    def test_a_restore_can_be_read_off_the_gui_thread(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, self.TEXT)
+            copy = Path(tmp) / "backups" / "20261111-120000" / "mine.lnc"
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.TEXT.replace("Bravo", "Bravo Two").replace(
+                '"CLUB_NAME_CHANGE"\t3\t"Charlie"\t""\n', ""))
+            doc = editor.LncDoc(path)
+            lines, before = doc.entries, doc.to_bytes()
+            found = []
+            worker = threading.Thread(target=lambda: found.append(editor.prepare_restore(doc, copy)))
+            worker.start()
+            worker.join(10)
+            prepared = found[0]
+            # Reading it changed nothing: the same lines, the same bytes, nothing pending.
+            self.assertIs(doc.entries, lines)
+            self.assertEqual(doc.to_bytes(), before)
+            self.assertFalse(doc.dirty or doc.restore_pending)
+            with editor.Operation("restore") as operation:
+                doc.apply_working(prepared)
+            other = editor.LncDoc(path)
+            editor.restore_into(other, copy)
+            self.assertEqual(doc.to_bytes(), other.to_bytes())
+            self.assertEqual(doc.to_bytes(), copy.read_bytes())
+            self.assertEqual([row.name for row in doc.removed_rows], ["Charlie"])
+            self.assertEqual((doc.restore_pending, doc.restored_from), (True, copy))
+            operation.undo()                                   # one step, as before
+            self.assertEqual(doc.to_bytes(), before)
+            self.assertFalse(doc.restore_pending)
+            bad = copy.with_name("bad.lnc")
+            bad.write_bytes(b"\xff\xfe\x00\xd8")              # UTF-16 with a broken surrogate
+            with self.assertRaises(UnicodeError):
+                editor.prepare_restore(doc, bad)
+            with self.assertRaises(FileNotFoundError):
+                editor.prepare_restore(doc, copy.with_name("gone.lnc"))
+            self.assertEqual(doc.to_bytes(), before)
+
+    def test_collections_file_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            self.assertEqual(editor.load_collection_file(root).collections, [])   # no file yet
+            store = editor.CollectionFile()
+            mine = editor.Collection("My save")
+            self.assertEqual(mine.add([("club", "740", ""), ("comp", "11", "")]), 2)
+            self.assertEqual(mine.add([("club", "740", "")]), 0)
+            store.add(editor.Collection("names to review", [("club", "3", "")]))
+            store.add(mine)
+            self.assertEqual([c.name for c in store.collections], ["My save", "names to review"])
+            self.assertEqual(editor.collection_name_problem("MY SAVE", store),
+                             "There is already a collection called My save.")
+            self.assertEqual(editor.collection_name_problem("My save", store, own=mine), "")
+            editor.save_collection_file(store, root)
+            first = (root / "collections.json").read_bytes()
+            editor.save_collection_file(store, root)
+            self.assertEqual((root / "collections.json").read_bytes(), first)  # same bytes
+            loaded = editor.load_collection_file(root)
+            self.assertEqual([(c.name, c.keys) for c in loaded.collections],
+                             [("My save", {("club", "740", ""), ("comp", "11", "")}),
+                              ("names to review", {("club", "3", "")})])
+            mine = loaded.find("my save")
+            self.assertEqual((mine.count_in("club"), mine.count_in("comp")), (1, 1))
+            self.assertEqual(mine.remove([("comp", "11", ""), ("comp", "99", "")]), 1)
+            loaded.delete(loaded.find("names to review"))
+            editor.save_collection_file(loaded, root)
+            again = editor.load_collection_file(root)
+            self.assertEqual([c.name for c in again.collections], ["My save"])
+            self.assertEqual([item["name"] for item in again.deleted], ["names to review"])
+            self.assertIn("deleted", again.deleted[0])        # kept, so it can be recovered
+            for text, words in (
+                ("{not json", "not readable JSON"),
+                ('{"format": "fm-name-pack", "version": 1}', "not a version 1 collections file"),
+                (json.dumps({"format": "fm-name-collections", "version": 1, "collections": [
+                    {"name": "Odd", "members": [{"family": "player", "id": "1"}]}]}),
+                 "(Odd) has a member"),
+                (json.dumps({"format": "fm-name-collections", "version": 1, "collections": [
+                    {"name": "Twice", "members": []}, {"name": "twice", "members": []}]}),
+                 "already a collection called Twice"),
+            ):
+                (root / "collections.json").write_text(text, encoding="utf-8")
+                with self.assertRaises(ValueError) as caught:
+                    editor.load_collection_file(root)
+                self.assertIn(words, str(caught.exception))
+                self.assertIn("collections.json", str(caught.exception))
+
+    def test_saved_searches_and_the_view_keep_what_the_window_can_use(self):
+        searches = editor.clean_saved_searches([
+            {"name": "Welsh clubs", "family": "club", "text": "", "status": "all",
+             "section": "Wales", "collection": ""},
+            {"name": "welsh CLUBS", "family": "club"},                 # name taken
+            {"name": "Players", "family": "player"},                   # no such family
+            {"name": "Odd", "status": "unknown"},                      # no such filter
+            {"name": "Numbers", "text": 42},                           # not text
+            "not a search",
+            {"name": "  Cups to check  ", "family": "comp", "text": "cup", "status": "edited"},
+        ])
+        self.assertEqual([s.to_json() for s in searches], [
+            {"name": "Welsh clubs", "family": "club", "text": "", "status": "all",
+             "section": "Wales", "collection": ""},
+            {"name": "Cups to check", "family": "comp", "text": "cup", "status": "edited",
+             "section": "", "collection": ""},
+        ])
+        self.assertEqual(editor.clean_saved_searches("nothing"), [])
+        view = editor.clean_view({
+            "tab": 2, "family": "comp", "status": "missing_code",
+            "entity_sort": {"key": "short", "descending": True},
+            "line_sort": {"key": "bogus", "descending": False},
+            "entity_widths": {"club": {"short": 180, "bogus": 90, "code": 5, "status": True},
+                              "player": {"short": 100}},
+            "line_widths": {"type": 150, "name": 9999},
+            "geometry": "AdnQywADAAA=", "splitter": "café", "window_state": 3,
+            "extra": "ignored",
+        })
+        self.assertEqual(view, {
+            "tab": 2, "family": "comp", "status": "missing_code",
+            "entity_sort": {"key": "short", "descending": True},
+            "entity_widths": {"club": {"short": 180}},
+            "line_widths": {"type": 150},
+            "geometry": "AdnQywADAAA=",
+        })
+        self.assertEqual(editor.clean_view({"tab": True, "family": "player"}), {})
+        self.assertEqual(editor.clean_view(None), {})
+        self.assertEqual(editor.label_problem("", kind="saved search"),
+                         "Give the saved search a name.")
+        self.assertEqual(editor.profile_name_problem("", []), "Give the profile a name.")
+
+
+class Session8Window(unittest.TestCase):
+    """Release 2.4, session 8: the remembered view, saved searches, section search, and
+    collections."""
+
+    # Lines: 1 #England, 2-3 Zulu (30), 4 Alpha (10), 5 #Wales, 6 Mike (20),
+    # 7 #Northern Ireland, 8 Linfield (40), 9 a competition.
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t30\t"Zulu Town"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t30\t"Zulu"\t""\n'
+        '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+        "#Wales\n"
+        '"CLUB_NAME_CHANGE"\t20\t"Mike Rovers"\t""\n'
+        "#Northern Ireland\n"
+        '"CLUB_NAME_CHANGE"\t40\t"Linfield"\t""\n'
+        '"COMP_LONG_NAME_CHANGE"\t1\t"Irish Premiership"\t""\n'
+    )
+
+    def _window(self, tmp):
+        from PySide6.QtWidgets import QApplication
+
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        win.show()
+        QApplication.processEvents()
+        return win
+
+    def _roots(self, tmp) -> Path:
+        state = Path(tmp) / "state"
+        self.enterContext(mock.patch.multiple(
+            editor, STATE_ROOT=state, PROFILE_ROOT=Path(tmp) / "profiles"))
+        return state
+
+    def _open(self, win, tmp) -> Path:
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, self.CLUBS)
+        self.assertTrue(win.load([str(path)]))
+        return path
+
+    @staticmethod
+    def _shown(win) -> list[str]:
+        proxy = win.entity_proxy
+        return [win.entity_model.rows[proxy.mapToSource(proxy.index(n, 0)).row()].id
+                for n in range(proxy.rowCount())]
+
+    @staticmethod
+    def _name(name: str, problems: list | None = None):
+        """A stand-in for QDialog.exec: type a name into the name dialog and press OK."""
+        def run(dialog):
+            dialog.name_edit.setText(name)
+            dialog.try_accept()
+            if problems is not None:
+                problems.append(dialog.problem.text())
+            return dialog.result()
+        return run
+
+    @staticmethod
+    def _select(win, *ids) -> None:
+        from PySide6.QtCore import QItemSelectionModel
+
+        model, proxy = win.entity_model, win.entity_proxy
+        selection = win.entity_view.selectionModel()
+        selection.clearSelection()
+        for id_ in ids:
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == id_)
+            index = proxy.mapFromSource(model.index(row, 2))
+            selection.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+    @staticmethod
+    def _section(win, name: str) -> None:
+        from PySide6.QtCore import Qt
+
+        row = next(n for n in range(win.section_list.count())
+                   if win.section_list.item(n).data(Qt.UserRole) == name)
+        win.section_list.setCurrentRow(row)
+
+    def test_the_view_is_remembered_between_runs(self):
+        from PySide6.QtCore import Qt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._roots(tmp)
+            first = self._window(tmp)
+            self.assertEqual((first.width(), first.height()), (1280, 820))   # the default
+            path = self._open(first, tmp)
+            first.resize(1100, 700)
+            header = first.entity_view.horizontalHeader()
+            short = first.entity_model.columns().index("short")
+            header.setSortIndicator(short, Qt.DescendingOrder)
+            header.resizeSection(short, 150)                    # as a drag on the header would
+            next(b for b in first.status_buttons if b.property("mode") == "missing_code").click()
+            first.entity_splitter.setSizes([150, 800, 320])
+            first.line_view.horizontalHeader().setSortIndicator(3, Qt.AscendingOrder)
+            next(b for b in first.family_buttons if b.property("family") == "comp").click()
+            first.tabs.setCurrentIndex(1)
+            first.remember_on_close = True
+            first.close()
+            view = editor.load_state(state)["view"]
+            self.assertEqual((view["tab"], view["family"], view["status"]), (1, "comp", "missing_code"))
+            self.assertEqual(view["entity_sort"], {"key": "short", "descending": True})
+            self.assertEqual(view["line_sort"], {"key": "name", "descending": False})
+            self.assertEqual(view["entity_widths"], {"club": {"short": 150}})
+            second = self._window(tmp)
+            self.assertEqual((second.width(), second.height()), (1100, 700))
+            self.assertEqual(second.tabs.currentIndex(), 1)
+            self.assertEqual(second.entity_splitter.sizes()[0], 150)
+            self.assertTrue(next(b for b in second.status_buttons
+                                 if b.property("mode") == "missing_code").isChecked())
+            self.assertTrue(second.load([str(path)]))
+            self.assertEqual(second.family, "comp")             # opening files keeps the family
+            header = second.entity_view.horizontalHeader()
+            self.assertEqual((header.sortIndicatorSection(), header.sortIndicatorOrder()),
+                             (short, Qt.DescendingOrder))
+            next(b for b in second.family_buttons if b.property("family") == "club").click()
+            self.assertEqual(second.entity_view.columnWidth(short), 150)   # the club width
+            self.assertEqual([e.name for e in second.line_model.rows][:2],
+                             ["Alpha United", "Irish Premiership"])          # name, A to Z
+            # A broken view in the settings file is ignored, not fatal.
+            editor.save_state({"view": {"tab": "two", "family": 7, "geometry": ["x"]}}, state)
+            third = self._window(tmp)
+            self.assertEqual((third.width(), third.height(), third.family), (1280, 820, "club"))
+
+    def test_saved_searches_and_the_section_search(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._roots(tmp)
+            win = self._window(tmp)
+            self._open(win, tmp)
+            win.section_search.setText("IRELAND")                # accents and capitals ignored
+            shown = [win.section_list.item(n).data(Qt.UserRole)
+                     for n in range(win.section_list.count())
+                     if not win.section_list.item(n).isHidden()]
+            self.assertEqual(shown, ["", "Northern Ireland"])   # All sections always shows
+            win.section_search.clear()
+            self._section(win, "Wales")
+            win.entity_search.setText("rovers")
+            win.apply_entity_filter()
+            with mock.patch.object(QDialog, "exec", self._name("Welsh rovers")):
+                win.save_search()
+            self.assertEqual(editor.load_state(state)["saved_searches"], [
+                {"name": "Welsh rovers", "family": "club", "text": "rovers", "status": "all",
+                 "section": "Wales", "collection": ""}])
+            problems = []
+            with mock.patch.object(QDialog, "exec", self._name("WELSH rovers", problems)):
+                win.save_search()                               # the name is taken
+            self.assertEqual(problems, ["There is already a saved search called Welsh rovers."])
+            self.assertEqual(len(win.saved_searches), 1)
+            next(b for b in win.family_buttons if b.property("family") == "comp").click()
+            win.entity_search.clear()
+            win.apply_entity_filter()                   # the box itself waits 200 ms for typing
+            self.assertEqual(self._shown(win), ["1"])
+            win.fill_searches_menu()
+            named = {action.text(): action for action in win.searches_menu.actions()}
+            self.assertIn("Clubs; words: rovers; file section: Wales",
+                          named["Welsh rovers"].toolTip())
+            named["Welsh rovers"].trigger()
+            self.assertEqual((win.family, win.section_filter, win.entity_search.text()),
+                             ("club", "Wales", "rovers"))
+            self.assertEqual(self._shown(win), ["20"])
+            self.assertIn("Welsh rovers: 1 shown.", win.statusBar().currentMessage())
+            win.fill_searches_menu()
+            forget = next(a for a in win.searches_menu.actions()
+                          if a.text() == "Delete a saved search").menu()
+            with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                forget.actions()[0].trigger()
+            self.assertEqual(editor.load_state(state)["saved_searches"], [])
+
+    def test_collections_in_the_window(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._roots(tmp)
+            win = self._window(tmp)
+            self._open(win, tmp)
+            self.assertFalse(win.collection_list.isVisible())
+            self.assertIn("None yet", win.collection_hint.text())
+            self.assertFalse(win.remove_from_collection_act.isEnabled())
+            self._select(win, "10", "30")
+            win.fill_add_to_menu()
+            make = win.add_to_collection_menu.actions()[-1]
+            self.assertEqual(make.text(), "New collection with the selection...")
+            with mock.patch.object(QDialog, "exec", self._name("My save")):
+                make.trigger()
+            self.assertEqual(win.collection_list.item(0).text(), "★ My save (2)")
+            self.assertTrue(win.collection_list.isVisible())
+            self.assertEqual(editor.load_collection_file(state).find("My save").keys,
+                             {("club", "10", ""), ("club", "30", "")})
+            win.collection_list.setCurrentRow(0)                # show the collection
+            self.assertEqual(self._shown(win), ["10", "30"])
+            self.assertEqual(win.section_filter, "")
+            self.assertTrue(win.remove_from_collection_act.isEnabled())
+            self._select(win, "30")
+            win.remove_from_collection_act.trigger()
+            self.assertEqual(self._shown(win), ["10"])
+            self.assertIn("Took 1 out of My save, which now holds 1.",
+                          win.statusBar().currentMessage())
+            self._section(win, "Wales")                         # a file section replaces it
+            self.assertEqual((win.collection_filter, self._shown(win)), ("", ["20"]))
+            win.collection_list.setCurrentRow(0)
+            with mock.patch.object(QDialog, "exec", self._name("Names to review")):
+                win.rename_collection_act.trigger()
+            self.assertEqual(win.collection_list.item(0).text(), "★ Names to review (1)")
+            self.assertEqual([action.text() for action in win.grid_menu().actions()],
+                             ["Add selected to", "Remove selected from this collection",
+                              "", "Edit cell", "Revert selected"])
+            with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as asked:
+                win.delete_collection_act.trigger()
+            self.assertIn("recovered by hand", asked.call_args.args[2])
+            stored = editor.load_collection_file(state)
+            self.assertEqual((stored.collections, [item["name"] for item in stored.deleted]),
+                             ([], ["Names to review"]))
+            self.assertEqual(self._shown(win), ["10", "40", "20", "30"])   # every club again
+            # A damaged collections file is named and left alone.
+            (state / "collections.json").write_text("{bad", encoding="utf-8")
+            again = self._window(tmp)
+            self.assertIn("not readable JSON", again.collection_hint.text())
+            self.assertFalse(again.new_collection_act.isEnabled())
+            self.assertFalse(again.new_collection())
+            self.assertEqual((state / "collections.json").read_text(encoding="utf-8"), "{bad")
+
+    def test_ticks_and_keyboard_focus_can_be_seen(self):
+        """The scaling pass found the include box and keyboard focus nearly invisible."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QApplication
+
+        def near(colour: QColor, wanted: str) -> bool:
+            target = QColor(wanted)
+            return all(abs(a - b) <= 24 for a, b in ((colour.red(), target.red()),
+                                                    (colour.green(), target.green()),
+                                                    (colour.blue(), target.blue())))
+
+        def colours(image, rect) -> list:
+            return [image.pixelColor(x, y) for x in range(rect.left(), rect.right())
+                    for y in range(rect.top(), rect.bottom())]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._roots(tmp)
+            win = self._window(tmp)
+            self._open(win, tmp)
+            for entry in win.docs[0].names()[:2]:
+                editor.try_set_name(entry, entry.name + " Renamed")
+            win.reload_views()
+            win.show_changes_tab()
+            changes = win.change_model
+            changes.setData(changes.index(1, changes.INCLUDE), Qt.Unchecked, Qt.CheckStateRole)
+            QApplication.processEvents()
+            image = win.change_view.viewport().grab().toImage()
+            proxy = win.change_proxy
+            ticked = colours(image, win.change_view.visualRect(proxy.index(0, changes.INCLUDE)))
+            unticked = colours(image, win.change_view.visualRect(proxy.index(1, changes.INCLUDE)))
+            self.assertTrue(any(near(colour, "#8b5cf6") for colour in ticked))   # accent fill
+            self.assertTrue(any(near(colour, "#ffffff") for colour in ticked))   # the tick
+            self.assertTrue(any(near(colour, "#8a94a6") for colour in unticked))  # a clear border
+            button = next(b for b in win.family_buttons if b.property("family") == "comp")
+            button.setFocus(Qt.TabFocusReason)
+            QApplication.processEvents()
+            image = button.grab().toImage()
+            self.assertTrue(any(near(colour, "#06b6d4") for colour in colours(image, button.rect())))
+
+
+class Session8Workers(unittest.TestCase):
+    """Release 2.4, session 8: opening files, the game check, and reading a backup run on
+    worker threads; the window's conflicting actions are off until each ends."""
+
+    TEXT = '"CLUB_NAME_CHANGE"\t1\t"Club 1"\t""\n"CLUB_NAME_CHANGE"\t2\t"Club 2"\t""\n'
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", False))
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        try:
+            _app, win = editor.run_gui([])
+        except Exception as exc:
+            self.skipTest(f"Qt window could not be created: {exc}")
+        self.addCleanup(close_window, win)
+        win.show()
+        QApplication.processEvents()
+        return win
+
+    def assert_busy(self, win, busy: bool) -> None:
+        for action in (win.open_act, win.quick_load_act, win.save_act, win.deploy_act,
+                       win.backups_act, win.bulk_act):
+            self.assertEqual(action.isEnabled(), not busy, action.text())
+        self.assertEqual(win.centralWidget().isEnabled(), not busy)
+        self.assertEqual(bool(win.jobs.pending), busy)
+
+    def test_a_load_on_a_worker_that_fails_leaves_the_workspace_unchanged(self):
+        import threading
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            good, other, bad = (Path(tmp) / name for name in ("good.lnc", "other.lnc", "bad.lnc"))
+            write_lnc(good, self.TEXT)
+            write_lnc(other, self.TEXT.replace("Club", "Team"))
+            bad.write_bytes(b"\xff\xfe\x00\xd8")          # UTF-16 with a broken surrogate
+            self.assertTrue(win.load([str(good)]))
+            docs = list(win.docs)
+            gate, threads = threading.Event(), []
+            self.addCleanup(gate.set)       # a failed test must not leave the worker waiting
+            real = editor.open_documents
+
+            def slow(paths):
+                threads.append(threading.current_thread())
+                gate.wait(10)
+                return real(paths)
+
+            with mock.patch.object(editor, "open_documents", slow), \
+                    mock.patch.object(QMessageBox, "critical") as told:
+                win.load_in_background([str(other), str(bad)])
+                self.assert_busy(win, True)                 # drawn, with its actions off
+                self.assertEqual(win.statusBar().currentMessage(),
+                                 "Opening other.lnc, bad.lnc...")
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+            self.assertIsNot(threads[0], threading.main_thread())
+            self.assertIn("bad.lnc", told.call_args.args[2])
+            self.assertIn("The current files are unchanged", told.call_args.args[2])
+            self.assertEqual(win.docs, docs)
+            self.assertEqual([e.name for e in win.line_model.rows], ["Club 1", "Club 2"])
+            self.assert_busy(win, False)
+            win.load_in_background([str(other)])            # a good one replaces the workspace
+            self.assertTrue(win.jobs.wait(10))
+            self.assertEqual([doc.path for doc in win.docs], [other])
+            self.assertEqual([e.name for e in win.line_model.rows], ["Team 1", "Team 2"])
+            # The actions come back as they were, then follow the new files: an
+            # edit made before a load cannot be undone after it.
+            model = win.entity_model
+            self.assertTrue(model.setData(model.index(0, 2), "Team One"))
+            self.assertTrue(win.undo_act.isEnabled())
+            win.load_in_background([str(good)])
+            self.assertTrue(win.jobs.wait(10))
+            self.assertFalse(win.undo_act.isEnabled() or win.undo_tool.isEnabled())
+
+    def test_a_game_check_that_breaks_counts_as_unknown(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            club = root / "db" / "2700" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            club.parent.mkdir(parents=True)
+            write_lnc(club, self.TEXT)
+            self.enterContext(mock.patch.multiple(
+                editor, GAME_DB_ROOT=root / "db", BACKUP_ROOT=root / "backups"))
+            self.assertTrue(win.load([str(club)]))
+            editor.try_set_name(win.docs[0].names()[0], "Club One")
+            seen = []
+
+            def look(dialog):
+                seen.append((dialog.game_label.text(), dialog.closed_box.isVisibleTo(dialog),
+                             dialog.write_btn.isEnabled()))
+                return 0
+
+            with mock.patch.object(editor, "football_manager_running",
+                                   side_effect=RuntimeError("tasklist broke")), \
+                    mock.patch.object(QDialog, "exec", look):
+                win.save()
+                self.assertTrue(win.jobs.wait(10))
+            text, box_shown, write_on = seen[0]
+            self.assertIn("could not be made", text)        # unknown, never "closed"
+            self.assertTrue(box_shown)
+            self.assertFalse(write_on)
+            self.assertEqual(club.read_bytes().decode("utf-8-sig"), self.TEXT)
+
+    def test_the_game_check_runs_on_a_worker_while_the_window_waits(self):
+        import threading
+        from PySide6.QtWidgets import QDialog
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            club = root / "db" / "2700" / "lnc" / "all" / "FM27_Club_Names.lnc"
+            club.parent.mkdir(parents=True)
+            write_lnc(club, self.TEXT)
+            self.enterContext(mock.patch.multiple(
+                editor, GAME_DB_ROOT=root / "db", BACKUP_ROOT=root / "backups"))
+            self.assertTrue(win.load([str(club)]))
+            editor.try_set_name(win.docs[0].names()[0], "Club One")
+            win.reload_views()
+            gate, threads, dialogs = threading.Event(), [], []
+            self.addCleanup(gate.set)       # a failed test must not leave the worker waiting
+
+            def check():
+                threads.append(threading.current_thread())
+                gate.wait(10)
+                return []
+
+            def press(dialog):
+                dialogs.append(dialog)
+                dialog.try_write()                          # the check at Write, on a worker too
+                self.assertFalse(dialog.write_btn.isEnabled())
+                win.jobs.wait(10)
+                return dialog.result()
+
+            with mock.patch.object(editor, "football_manager_running", check), \
+                    mock.patch.object(QDialog, "exec", press):
+                win.save()
+                self.assertEqual(dialogs, [])               # the review waits for the check
+                self.assert_busy(win, True)
+                self.assertEqual(win.statusBar().currentMessage(),
+                                 "Checking whether Football Manager is running...")
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+            self.assertEqual(len(dialogs), 1)
+            self.assertEqual(len(threads), 2)               # when the review opened, and at Write
+            self.assertTrue(all(thread is not threading.main_thread() for thread in threads))
+            self.assertIn(b'"Club One"', club.read_bytes())
+            self.assertFalse(win.docs[0].dirty)
+            self.assert_busy(win, False)
+
+    def test_a_backup_is_read_on_a_worker_and_restored_as_one_step(self):
+        import threading
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        win = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, self.TEXT)
+            backups = Path(tmp) / "backups"
+            copy = backups / "20261111-120000" / "mine.lnc"
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.TEXT.replace("Club 2", "Club Two"))
+            self.enterContext(mock.patch.object(editor, "BACKUP_ROOT", backups))
+            self.assertTrue(win.load([str(path)]))
+            threads = []
+            real = editor.prepare_restore
+
+            def recorded(doc, archive):
+                threads.append(threading.current_thread())
+                return real(doc, archive)
+
+            def restore(dialog):
+                with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                    dialog.restore()
+                self.assertFalse(dialog.close_btn.isEnabled())     # waiting for the worker
+                self.assertTrue(win.jobs.wait(10))
+                self.assertTrue(dialog.close_btn.isEnabled())
+                return 0
+
+            with mock.patch.object(editor, "prepare_restore", recorded), \
+                    mock.patch.object(QDialog, "exec", restore):
+                win.open_backups()
+            self.assertIsNot(threads[0], threading.main_thread())
+            self.assertTrue(win.docs[0].restore_pending)
+            self.assertEqual(win.undo_act.text(), "Undo restore mine.lnc from 20261111-120000")
+            win.undo_act.trigger()
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertEqual(path.read_bytes().decode("utf-8-sig"), self.TEXT)  # memory only
+
+
+class Session8Scaling(unittest.TestCase):
+    """Release 2.4, session 8: at 125% and 150% Windows scaling on a 1920 x 1080 screen the
+    window fits the screen's free area and its top row does not overflow.
+
+    Each scale needs its own Qt screen, so each runs in a process of its own.
+    """
+
+    SCRIPT = (
+        "import json, sys, tempfile\n"
+        "from pathlib import Path\n"
+        "from unittest import mock\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import fm_name_editor as editor\n"
+        "root = Path(tempfile.mkdtemp())\n"
+        "for name in ('BACKUP_ROOT', 'PROFILE_ROOT', 'STATE_ROOT'):\n"
+        "    mock.patch.object(editor, name, root / name).start()\n"
+        "from PySide6.QtWidgets import QApplication, QToolButton\n"
+        "app, win = editor.run_gui([])\n"
+        "QApplication.processEvents()\n"
+        "free = app.primaryScreen().availableGeometry()\n"
+        "overflow = win.toolbar.findChild(QToolButton, 'qt_toolbar_ext_button')\n"
+        "print(json.dumps({'free': [free.width(), free.height()],\n"
+        "                  'window': [win.width(), win.height()],\n"
+        "                  'toolbar': [win.toolbar.sizeHint().width(), win.toolbar.width()],\n"
+        "                  'overflow': bool(overflow is not None and overflow.isVisible()),\n"
+        "                  'ratio': app.primaryScreen().devicePixelRatio()}))\n"
+        "win.close()\n"
+    )
+
+    def test_the_window_fits_at_125_and_150_percent(self):
+        import subprocess
+        import sys
+
+        project = str(Path(__file__).resolve().parent.parent)
+        # A 1920 x 1080 screen with the taskbar taken off, in Qt's logical pixels.
+        for ratio, width, height in ((1.25, 1536, 824), (1.5, 1280, 688)):
+            with self.subTest(ratio=ratio), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "screen.json").write_text(json.dumps({"screens": [{
+                    "name": "Desktop", "x": 0, "y": 0, "width": width, "height": height,
+                    "logicalDpi": 96, "logicalBaseDpi": 96, "dpr": ratio}]}), encoding="utf-8")
+                (Path(tmp) / "probe.py").write_text(self.SCRIPT, encoding="utf-8")
+                env = dict(os.environ, QT_QPA_PLATFORM="offscreen:configfile=screen.json")
+                run = subprocess.run([sys.executable, "probe.py", project], cwd=tmp, env=env,
+                                     capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                found = json.loads(run.stdout.strip().splitlines()[-1])
+                self.assertEqual((found["free"], found["ratio"]), ([width, height], ratio))
+                window_width, window_height = found["window"]
+                self.assertLessEqual(window_width, width)
+                self.assertLessEqual(window_height + 40, height)   # room for the title bar
+                self.assertLessEqual(found["toolbar"][0], found["toolbar"][1])
+                self.assertFalse(found["overflow"])
 
 
 @unittest.skipUnless(all((LIVE_DIR / name).is_file() for name in editor.NAME_FILES),
