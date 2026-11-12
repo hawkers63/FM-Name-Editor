@@ -1,18 +1,18 @@
 # Changelog
 
-Release: 2.4
+Release: 2.5
 Status: released
-Application on disk: 2.4
+Application on disk: 2.5
 
-The program on disk reports `VERSION = "2.4"`. The launcher banner says v2.4.
+The program on disk reports `VERSION = "2.5"`. The launcher banner says v2.5.
 
-## Unreleased - Release 2.5 in progress
+## 2.5 (12 November 2026)
 
-Not released. `VERSION` still reads 2.4. Release 2.5 is a corrective release built from the review of 2.4 (note 5). Session 9 fixes the six faults that review found, before the update migration of Release 3.0 builds on the same parts. It adds nothing new beyond what those repairs need.
+Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. A corrective release built from the review of 2.4 (note 5). Session 9 fixes the six faults that review found, before the update migration of Release 3.0 builds on the same parts. It adds nothing new beyond what those repairs need. It is a release of its own so that the licensing safety fix does not wait for 3.0. The fixes were checked offscreen, not yet on the real desktop.
 
 Session 9 — corrections from the review of 2.4:
 
-- **Licensing looks for a running game again after you answer.** The licensing toggle checked for Football Manager before its question. On Yes it renamed the file without looking again, so a game started while the question was open did not stop it. Now it checks once more after Yes, in the background, and refuses with "Nothing was renamed" if the game is running. If that second check cannot be made, it asks again whether you have closed the game, with No as the default, and does not reuse your earlier answer. A check that breaks counts as "could not be made", never as "closed".
+- **Licensing looks for a running game again after you answer.** The licensing toggle checked for Football Manager before its question. On Yes it renamed the file without looking again, so a game started while the question was open did not stop it. Now it checks once more after Yes, in the background, the same as Save and Deploy, and refuses with "Nothing was renamed" if the game is running. If that second check cannot be made, it asks again whether you have closed the game, with No as the default, and does not reuse your earlier answer. A check that breaks counts as "could not be made", never as "closed".
 - **One licensing toggle at a time, and none after the window closes.** Toggle could be pressed again while the first check was still running. A toggle that was still waiting carried on after the Licensing window was closed: it could ask its question afterwards and rename a file. Now Toggle is off until the current toggle is over. Closing the window by Close, Esc, or its title-bar button drops a toggle that is still waiting. The rename does what you confirmed, disable or restore. If the file changed in between, for example because it was renamed by hand, the toggle stops with "Nothing was renamed" and the list shows the folder as it is now. Before, the file was renamed back the other way.
 - **Profile Apply looks at every line of a repeated key.** A command, ID, and language can be on more than one line. Apply checked only the last of those lines before ticking the row, then wrote the profile's spelling into all of them. So a ticked row could overwrite an earlier line that the game had changed since, that had an unsaved edit, or that another profile had set. Now every line Apply would change counts, in any order and across both files. Any one of those problems leaves the row unticked, and the note names its file and line. Identical lines that still read the recorded name stay ticked, and lines that already read the profile's spelling are left as they are.
 - **A value of the wrong type in the settings file no longer stops the window opening.** A list or an object where the settings file expects a word (a family or a status filter, in the remembered view or in a saved search) made the window fail to start. Now such a value is ignored and the window opens with its defaults, as the 2.4 notes promised. The collections file is treated the same way: a number or a list in the wrong place makes it a damaged file, named in the Collections panel and left alone, instead of stopping the window at start-up.

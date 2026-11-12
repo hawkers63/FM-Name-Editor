@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.4
+FM Name Editor v2.5
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -20,7 +20,10 @@ one review before every write, and undo and redo for whole operations.
 Release 2.4 builds the window around that work: menus and one header row,
 a grid that answers within a second, an inspector with the text on disk
 above the proposed text, a remembered view, collections, saved searches,
-and slow work on worker threads.
+and slow work on worker threads. Release 2.5 corrects six faults found
+in 2.4: licensing looks for the game again after its question, profile
+Apply checks every line it would change, and a damaged settings file is
+named and left alone.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -64,7 +67,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.4"
+VERSION = "2.5"
 
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
