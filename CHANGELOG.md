@@ -1,12 +1,12 @@
 # Changelog
 
-Release: 2.6
+Release: 2.6.1
 Status: released
-Application on disk: 2.6
+Application on disk: 2.6.1
 
-The program on disk reports `VERSION = "2.6"`. The launcher banner says v2.6.
+The program on disk reports `VERSION = "2.6.1"`. The launcher banner says v2.6.1.
 
-## Unreleased
+## 2.6.1 (17 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 2.6.1 is a small follow-up to 2.6: the application points at the public repository from its own windows, the status bar, and the README. The editing workflow is unchanged.
 

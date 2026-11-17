@@ -1,14 +1,14 @@
 # FM Name Editor
 
-Release: 2.6
+Release: 2.6.1
 Status: released
-Application on disk: 2.6
+Application on disk: 2.6.1
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. It lets you change club, competition, stadium, and related spellings, carry edits across from an older game's files by database ID, and write the file back without disturbing lines you did not touch.
 
 This project is a personal tool. It is not affiliated with Sports Interactive or Sega.
 
-The program you can run today is **2.6**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
+The program you can run today is **2.6.1**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
 
 ## Run it
 
@@ -46,6 +46,14 @@ It finds `python` on PATH (with the same fallback as the launcher), runs PyInsta
 The exe stands on its own: the backups, profiles, and state folders sit beside it, so it works wherever it is unpacked. PyInstaller is a build tool only; the runtime still needs only PySide6.
 
 `/build/` and `/dist/` are kept out of the repository; the exe itself is never committed. Each release's exe is attached to its GitHub Release.
+
+## What 2.6.1 adds
+
+2.6.1 is a small follow-up to 2.6. The editing workflow is unchanged.
+
+- **A link to the repository.** **Help > About FM Name Editor** shows https://github.com/hawkers63/FM-Name-Editor directly beneath the copyright line; click it to open the page in your browser.
+- **The status-bar tooltip names it too.** Hovering the short copyright shows the full copyright, the repository address, and the LICENSE pointer.
+- **A steadier speed test.** The one-second timing check re-measures once after a single slow step caused by a busy PC, so a passing spike no longer fails the suite. A real slowdown still fails.
 
 ## What 2.6 adds
 
@@ -130,7 +138,7 @@ Use **Quick load**, **File > Open files**, or drop `.lnc` files onto the launche
 
 ## Publish
 
-The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, and 2.6 are published there. Game data and backups do not belong in that repository.
+The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, and 2.6.1 are published there. Game data and backups do not belong in that repository.
 
 ## Licence
 
