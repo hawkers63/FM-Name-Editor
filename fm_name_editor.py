@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.5
+FM Name Editor v2.6
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -23,7 +23,9 @@ above the proposed text, a remembered view, collections, saved searches,
 and slow work on worker threads. Release 2.5 corrects six faults found
 in 2.4: licensing looks for the game again after its question, profile
 Apply checks every line it would change, and a damaged settings file is
-named and left alone.
+named and left alone. Release 2.6 makes the editor ready to publish:
+the copyright in Help > About and the status bar, its own icon, and a
+Windows executable built for each release.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -67,7 +69,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.5"
+VERSION = "2.6"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

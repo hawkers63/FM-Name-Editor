@@ -1,12 +1,12 @@
 # Changelog
 
-Release: 2.5
+Release: 2.6
 Status: released
-Application on disk: 2.5
+Application on disk: 2.6
 
-The program on disk reports `VERSION = "2.5"`. The launcher banner says v2.5.
+The program on disk reports `VERSION = "2.6"`. The launcher banner says v2.6.
 
-## Unreleased
+## 2.6 (17 November 2026)
 
 Shipped in `fm_name_editor.py`, `FM Name Editor.bat`, `FM Name Editor.spec`, and `build_exe.bat`. Release 2.6 is the public-ready step: a copyright notice inside the editor, its own icon on every window, and a reproducible Windows executable. The editing workflow is unchanged.
 

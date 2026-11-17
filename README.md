@@ -1,14 +1,14 @@
 # FM Name Editor
 
-Release: 2.5
+Release: 2.6
 Status: released
-Application on disk: 2.5
+Application on disk: 2.6
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. It lets you change club, competition, stadium, and related spellings, carry edits across from an older game's files by database ID, and write the file back without disturbing lines you did not touch.
 
 This project is a personal tool. It is not affiliated with Sports Interactive or Sega.
 
-The program you can run today is **2.5**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
+The program you can run today is **2.6**. Version notes are in [CHANGELOG.md](CHANGELOG.md). The roadmap and the working notes stay on this PC and are not part of the public repository.
 
 ## Run it
 
@@ -46,6 +46,15 @@ It finds `python` on PATH (with the same fallback as the launcher), runs PyInsta
 The exe stands on its own: the backups, profiles, and state folders sit beside it, so it works wherever it is unpacked. PyInstaller is a build tool only; the runtime still needs only PySide6.
 
 `/build/` and `/dist/` are kept out of the repository; the exe itself is never committed. Each release's exe is attached to its GitHub Release.
+
+## What 2.6 adds
+
+2.6 gets the editor ready for a public repository. The editing workflow is unchanged; it adds the copyright notice inside the program, its own icon, and a Windows executable for each release.
+
+- **About FM Name Editor.** **Help > About FM Name Editor** shows the version and the copyright: "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved." The software is proprietary, not open source; see [LICENSE](LICENSE).
+- **The copyright in the status bar.** A short "(c) 2026 Mark Hawksworth" sits beside the metrics, with the full line and the LICENSE pointer in its tooltip.
+- **Its own icon.** The football icon, in sizes from 16 to 256 pixels, is on every window and dialog and on the exe.
+- **A Windows executable.** From 2.6, each GitHub Release carries `FM Name Editor.exe`, a one-file windowed build that needs no Python install. Its backups, profiles, and state folders sit beside the exe, so give it a folder of its own. See **Build a Windows executable** above to build it yourself.
 
 ## What 2.5 changes
 
@@ -121,7 +130,7 @@ Use **Quick load**, **File > Open files**, or drop `.lnc` files onto the launche
 
 ## Publish
 
-The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, 2.3, 2.4, and 2.5 are published there. Game data and backups do not belong in that repository.
+The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, and 2.6 are published there. Game data and backups do not belong in that repository.
 
 ## Licence
 
