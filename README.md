@@ -51,8 +51,8 @@ The exe stands on its own: the backups, profiles, and state folders sit beside i
 
 2.6 gets the editor ready for a public repository. The editing workflow is unchanged; it adds the copyright notice inside the program, its own icon, and a Windows executable for each release.
 
-- **About FM Name Editor.** **Help > About FM Name Editor** shows the version and the copyright: "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved." The software is proprietary, not open source; see [LICENSE](LICENSE).
-- **The copyright in the status bar.** A short "(c) 2026 Mark Hawksworth" sits beside the metrics, with the full line and the LICENSE pointer in its tooltip.
+- **About FM Name Editor.** **Help > About FM Name Editor** shows the version and the copyright: "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved." Directly beneath it, a clickable link to the public repository at <https://github.com/hawkers63/FM-Name-Editor> opens in the default browser. The software is proprietary, not open source; see [LICENSE](LICENSE).
+- **The copyright in the status bar.** A short "(c) 2026 Mark Hawksworth" sits beside the metrics, with the full line, the repository URL, and the LICENSE pointer in its tooltip.
 - **Its own icon.** The football icon, in sizes from 16 to 256 pixels, is on every window and dialog and on the exe.
 - **A Windows executable.** From 2.6, each GitHub Release carries `FM Name Editor.exe`, a one-file windowed build that needs no Python install. Its backups, profiles, and state folders sit beside the exe, so give it a folder of its own. See **Build a Windows executable** above to build it yourself.
 
@@ -134,4 +134,4 @@ The public repository is https://github.com/hawkers63/FM-Name-Editor. Releases 2
 
 ## Licence
 
-Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved. This is proprietary software, not open source. See [LICENSE](LICENSE) for the terms.
+Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved. This is proprietary software, not open source. See [LICENSE](LICENSE) for the terms. The public repository is at <https://github.com/hawkers63/FM-Name-Editor>; **Help > About FM Name Editor** shows the same link in the editor.

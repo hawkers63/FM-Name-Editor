@@ -75,6 +75,7 @@ COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")
 COPYRIGHT_NOTE = "Proprietary software, not open source. See LICENSE."
 COPYRIGHT_SHORT = "(c) 2026 Mark Hawksworth"
+REPOSITORY_URL = "https://github.com/hawkers63/FM-Name-Editor"
 
 
 def project_root() -> Path:
@@ -6356,7 +6357,8 @@ def run_gui(paths):
             self.statusBar().addPermanentWidget(self.metrics)
             self.copyright_label = QLabel(COPYRIGHT_SHORT)
             self.copyright_label.setObjectName("metrics")
-            self.copyright_label.setToolTip(f"{COPYRIGHT_FULL}\n{COPYRIGHT_NOTE}")
+            self.copyright_label.setToolTip(
+                f"{COPYRIGHT_FULL}\n{REPOSITORY_URL}\n{COPYRIGHT_NOTE}")
             self.statusBar().addPermanentWidget(self.copyright_label)
             self.pending_label = QLabel("")
             self.pending_label.setObjectName("warning")
@@ -8168,13 +8170,23 @@ def run_gui(paths):
             copyright_line.setWordWrap(True)
             copyright_line.setTextInteractionFlags(Qt.TextSelectableByMouse)
             lay.addWidget(copyright_line)
+            # The repository link sits directly beneath the copyright line, as a
+            # clickable link that opens in the default browser.
+            self.about_repo_label = QLabel(
+                f'<a href="{REPOSITORY_URL}">{REPOSITORY_URL}</a>')
+            self.about_repo_label.setObjectName("repository")
+            self.about_repo_label.setTextFormat(Qt.RichText)
+            self.about_repo_label.setOpenExternalLinks(True)
+            self.about_repo_label.setTextInteractionFlags(
+                Qt.TextBrowserInteraction)
+            lay.addWidget(self.about_repo_label)
             lay.addWidget(QLabel(COPYRIGHT_NOTE))
             lay.addWidget(QLabel(
                 "See the LICENSE file beside the application for the full terms."))
             box = QDialogButtonBox(QDialogButtonBox.Close)
             box.rejected.connect(dialog.reject)
             lay.addWidget(box)
-            dialog.resize(480, 220)
+            dialog.resize(480, 240)
             dialog.exec()
 
         def show_shortcuts(self) -> None:

@@ -6,6 +6,18 @@ Application on disk: 2.6
 
 The program on disk reports `VERSION = "2.6"`. The launcher banner says v2.6.
 
+## Unreleased
+
+Shipped in `fm_name_editor.py`. Release 2.6.1 is a small follow-up to 2.6: the application points at the public repository from its own windows, the status bar, and the README. The editing workflow is unchanged.
+
+Session 11 — a link to the public repository, and a more patient speed test:
+
+- **About names the public repository.** **Help > About FM Name Editor** shows <https://github.com/hawkers63/FM-Name-Editor> as a clickable link directly beneath the copyright line; clicking it opens the page in the default browser. The URL is held in one constant, `REPOSITORY_URL`, beside the copyright constants.
+- **The status-bar copyright tooltip names the repository too.** Hovering the short copyright shows the full copyright, then the repository URL, then the proprietary-software and LICENSE pointer.
+- **The README mentions the repository.** The "What 2.6 adds" and "Licence" sections now name the same URL the application shows.
+- **The 1-second cap on `Session7Speed` absorbs single spikes.** The timing check on the live files still fails every step that takes a second or more — the cap itself is unchanged — but a single breach from CPU contention on a loaded machine is now re-measured in a fresh temporary folder before the test fails. A real regression breaches both runs and still fails.
+- Tests: 160, up from 156. New cover for `REPOSITORY_URL` as a single constant; the status-bar tooltip listing the full copyright, the URL, and the proprietary line in that order; the About dialog carrying the URL directly beneath the copyright, as rich text with `setOpenExternalLinks(True)`, and ending with the proprietary line and the LICENSE pointer; and the README itself naming the URL.
+
 ## 2.6 (17 November 2026)
 
 Shipped in `fm_name_editor.py`, `FM Name Editor.bat`, `FM Name Editor.spec`, and `build_exe.bat`. Release 2.6 is the public-ready step: a copyright notice inside the editor, its own icon on every window, and a reproducible Windows executable. The editing workflow is unchanged.
