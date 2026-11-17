@@ -27,6 +27,26 @@ python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 
 Requires Python 3.11 or later and PySide6. No other packages.
 
+## Build a Windows executable
+
+A tracked PyInstaller spec and launcher build a one-file, windowed `FM Name Editor.exe` from the source. Install PyInstaller once:
+
+```
+python -m pip install pyinstaller
+```
+
+Then double-click `build_exe.bat`, or run it from a terminal:
+
+```
+build_exe.bat
+```
+
+It finds `python` on PATH (with the same fallback as the launcher), runs PyInstaller against `FM Name Editor.spec`, and prints where the exe landed. The result is `dist\FM Name Editor.exe`: a windowed (no console) build that carries `icon\football.ico` and a Windows version resource (product name, file and product version from `VERSION`, LegalCopyright with the notice at the foot of this file).
+
+The exe stands on its own: the backups, profiles, and state folders sit beside it, so it works wherever it is unpacked. PyInstaller is a build tool only; the runtime still needs only PySide6.
+
+`/build/` and `/dist/` are kept out of the repository; the exe itself is never committed. Each release's exe is attached to its GitHub Release.
+
 ## What 2.5 changes
 
 2.5 is a corrective release. Nothing new to learn; it puts right six faults found in 2.4, and it ships on its own so that the licensing safety fix does not wait for 3.0.

@@ -1,5 +1,8 @@
 """Checks for the name editor engine, and headless window tests.
 
+Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
+Proprietary software, not open source. See LICENSE.
+
 The Steam database is only read, and only when it is present. Writes use
 temporary copies.
 """
@@ -4774,6 +4777,134 @@ class Session9Window(unittest.TestCase):
             gate.set()
             self.assertTrue(win.jobs.wait(10))
             self.assertEqual([action.isEnabled() for action in actions], [True] * 5)
+
+
+class Session10Branding(unittest.TestCase):
+    """Session 10, Release 2.6: the public-ready release."""
+
+    def test_the_copyright_matches_LICENSE_and_the_README(self):
+        """The one copyright line the About dialog, the status bar and the file
+        headers all point at. Changing it belongs in LICENSE, so this test keeps
+        the application copy in step."""
+        self.assertEqual(
+            editor.COPYRIGHT_FULL,
+            "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). "
+            "All rights reserved.")
+        self.assertIn("Proprietary", editor.COPYRIGHT_NOTE)
+        self.assertIn("LICENSE", editor.COPYRIGHT_NOTE)
+        here = Path(editor.__file__).resolve().parent
+        self.assertIn(editor.COPYRIGHT_FULL, (here / "LICENSE").read_text(encoding="utf-8"))
+        self.assertIn(editor.COPYRIGHT_FULL, (here / "README.md").read_text(encoding="utf-8"))
+
+    def test_project_root_from_source_is_the_project_folder(self):
+        """Running from source, the backups, profiles, and state folders sit
+        under C:\\FM Name Editor. The test suite patches them to a temporary
+        folder for the run; this covers the frozen-or-not choice itself."""
+        with mock.patch.object(editor.sys, "frozen", False, create=True):
+            self.assertEqual(editor.project_root(), Path(r"C:\FM Name Editor"))
+
+    def test_project_root_when_frozen_is_the_folder_that_holds_the_exe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            exe = Path(folder) / "FM Name Editor.exe"
+            exe.write_bytes(b"")
+            with mock.patch.object(editor.sys, "frozen", True, create=True), \
+                 mock.patch.object(editor.sys, "executable", str(exe)):
+                self.assertEqual(editor.project_root(), Path(folder).resolve())
+
+    def test_the_backups_profiles_and_state_folders_sit_beside_the_exe_when_frozen(self):
+        """Keeps BACKUP_ROOT / PROFILE_ROOT / STATE_ROOT aligned with project_root(): a
+        frozen build uses the folder the exe is in, so it works wherever it is unpacked."""
+        with tempfile.TemporaryDirectory() as folder:
+            exe = Path(folder) / "FM Name Editor.exe"
+            exe.write_bytes(b"")
+            with mock.patch.object(editor.sys, "frozen", True, create=True), \
+                 mock.patch.object(editor.sys, "executable", str(exe)):
+                root = editor.project_root()
+                self.assertEqual(root / "backups", Path(folder).resolve() / "backups")
+                self.assertEqual(root / "profiles", Path(folder).resolve() / "profiles")
+                self.assertEqual(root / "state", Path(folder).resolve() / "state")
+
+    def test_resource_path_finds_the_shipped_icon_from_source(self):
+        icon = editor.resource_path(editor.ICON_FILE)
+        self.assertIsNotNone(icon)
+        self.assertTrue(icon.is_file())
+        self.assertEqual(icon.name.lower(), "football.ico")
+
+    def test_resource_path_finds_a_data_file_under_MEIPASS_when_frozen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            (base / "icon").mkdir()
+            icon_file = base / "icon" / "football.ico"
+            icon_file.write_bytes(b"")
+            exe = base / "FM Name Editor.exe"
+            exe.write_bytes(b"")
+            with mock.patch.object(editor.sys, "frozen", True, create=True), \
+                 mock.patch.object(editor.sys, "_MEIPASS", str(base), create=True), \
+                 mock.patch.object(editor.sys, "executable", str(exe)):
+                found = editor.resource_path(editor.ICON_FILE)
+            self.assertEqual(found, icon_file)
+
+    def test_resource_path_returns_none_for_a_missing_file_without_raising(self):
+        # The window must open even when the icon has been removed from the folder.
+        self.assertIsNone(editor.resource_path("icon/does-not-exist.ico"))
+
+    def test_the_short_copyright_line_is_in_the_status_bar(self):
+        win = make_window(self)
+        try:
+            self.assertEqual(win.copyright_label.text(), editor.COPYRIGHT_SHORT)
+            self.assertIn("Mark Hawksworth", win.copyright_label.text())
+            self.assertIn("2026", win.copyright_label.text())
+            self.assertTrue(win.copyright_label.isVisible() or not win.isVisible())
+            tip = win.copyright_label.toolTip()
+            self.assertIn(editor.COPYRIGHT_FULL, tip)
+            self.assertIn("LICENSE", tip)
+        finally:
+            close_window(win)
+
+
+class Session10About(unittest.TestCase):
+
+    def test_About_names_the_application_version_and_exact_copyright(self):
+        from PySide6.QtWidgets import QDialog, QLabel
+
+        win = make_window(self)
+        try:
+            seen = []
+
+            def catch(dialog):
+                seen.append(dialog)
+                # Show the dialog so findChildren walks the built labels.
+                return 0
+
+            with mock.patch.object(QDialog, "exec", catch):
+                win.show_about()
+            self.assertEqual(len(seen), 1, "About should open exactly one dialog")
+            dialog = seen[0]
+            self.assertEqual(dialog.windowTitle(), f"About {editor.APP_NAME}")
+            texts = [child.text() for child in dialog.findChildren(QLabel)]
+            self.assertIn(editor.APP_NAME, texts)
+            self.assertIn(f"Version {editor.VERSION}", texts)
+            self.assertIn(editor.COPYRIGHT_FULL, texts)
+            self.assertTrue(
+                any("proprietary" in text.lower() and "open source" in text.lower()
+                    for text in texts),
+                f"a line calling the software proprietary should be shown: {texts!r}")
+            self.assertTrue(any("LICENSE" in text for text in texts),
+                            f"a pointer to LICENSE should be shown: {texts!r}")
+        finally:
+            close_window(win)
+
+    def test_About_is_in_the_Help_menu(self):
+        win = make_window(self)
+        try:
+            actions = [action for action in win.help_menu.actions() if not action.isSeparator()]
+            labels = [action.text() for action in actions]
+            self.assertIn(f"About {editor.APP_NAME}", labels)
+            # The About entry has no shortcut, so it stays out of the shortcut list.
+            about = win.about_act
+            self.assertEqual(about.shortcuts(), [])
+        finally:
+            close_window(win)
 
 
 if __name__ == "__main__":

@@ -69,11 +69,55 @@ from pathlib import Path
 APP_NAME = "FM Name Editor"
 VERSION = "2.5"
 
+COPYRIGHT_FULL = (
+    "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")
+COPYRIGHT_NOTE = "Proprietary software, not open source. See LICENSE."
+COPYRIGHT_SHORT = "(c) 2026 Mark Hawksworth"
+
+
+def project_root() -> Path:
+    """The folder that holds this application's own files.
+
+    Running from source on this PC it is the project folder; when the
+    .exe built by build_exe.bat runs, it is the folder that holds the
+    .exe, so the backups, profiles, and state folders sit beside the
+    exe and the build works wherever it is unpacked.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(r"C:\FM Name Editor")
+
+
+def resource_path(name: str) -> "Path | None":
+    """The path of a file shipped with the application (an icon, say).
+
+    Works from source and from a PyInstaller build. When frozen, it
+    looks first under ``sys._MEIPASS`` (where PyInstaller unpacks its
+    data) and then beside the exe. Returns ``None`` when nothing has
+    the file, so the window still opens without one.
+    """
+    bases: list[Path] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bases.append(Path(meipass))
+        bases.append(Path(sys.executable).resolve().parent)
+    else:
+        bases.append(Path(__file__).resolve().parent)
+    for base in bases:
+        candidate = base / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 GAME_DB_ROOT = Path(
     r"D:\Steam\steamapps\common\Football Manager 27\shared\data\database\db")
-BACKUP_ROOT = Path(r"C:\FM Name Editor\backups")
-PROFILE_ROOT = Path(r"C:\FM Name Editor\profiles")
-STATE_ROOT = Path(r"C:\FM Name Editor\state")
+PROJECT_ROOT = project_root()
+BACKUP_ROOT = PROJECT_ROOT / "backups"
+PROFILE_ROOT = PROJECT_ROOT / "profiles"
+STATE_ROOT = PROJECT_ROOT / "state"
+ICON_FILE = "icon/football.ico"
 NAME_FILES = ("FM27_Club_Names.lnc", "FM27_Fix.lnc")
 
 # --------------------------------------------------------------------------
@@ -4187,8 +4231,8 @@ def run_gui(paths):
     from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEventLoop,
                                 QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
                                 QSize, QSortFilterProxyModel, Qt, QTimer, Signal)
-    from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QKeySequence, QPainter,
-                               QPen, QUndoCommand, QUndoStack)
+    from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence,
+                               QPainter, QPen, QUndoCommand, QUndoStack)
     from PySide6.QtWidgets import (
         QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
         QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
@@ -6308,6 +6352,10 @@ def run_gui(paths):
             self.metrics = QLabel()
             self.metrics.setObjectName("metrics")
             self.statusBar().addPermanentWidget(self.metrics)
+            self.copyright_label = QLabel(COPYRIGHT_SHORT)
+            self.copyright_label.setObjectName("metrics")
+            self.copyright_label.setToolTip(f"{COPYRIGHT_FULL}\n{COPYRIGHT_NOTE}")
+            self.statusBar().addPermanentWidget(self.copyright_label)
             self.pending_label = QLabel("")
             self.pending_label.setObjectName("warning")
             self.statusBar().addPermanentWidget(self.pending_label)
@@ -6455,6 +6503,9 @@ def run_gui(paths):
 
             self.shortcuts_act = a("Keyboard shortcuts", self.show_shortcuts,
                                    QKeySequence.HelpContents, "List the keys the editor knows")
+            self.about_act = a(
+                f"About {APP_NAME}", self.show_about, (),
+                "Version, copyright, and the licence this software ships under")
 
             # Collections: sets of entities you name, kept in state\collections.json.
             self.add_to_collection_menu = QMenu("Add selected to", self)
@@ -6524,7 +6575,7 @@ def run_gui(paths):
                 "&Collections", self.add_to_collection_menu.menuAction(),
                 self.remove_from_collection_act, None, self.new_collection_act,
                 self.rename_collection_act, self.delete_collection_act)
-            self.help_menu = menu("&Help", self.shortcuts_act)
+            self.help_menu = menu("&Help", self.shortcuts_act, None, self.about_act)
 
         def build_toolbar(self) -> None:
             """One row under the menus: the product, the database, the profile, the
@@ -8102,6 +8153,28 @@ def run_gui(paths):
             ])
             return rows
 
+        def show_about(self) -> None:
+            """Name, version, and the copyright notice, matching LICENSE and the README."""
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"About {APP_NAME}")
+            lay = QVBoxLayout(dialog)
+            name = QLabel(APP_NAME)
+            name.setObjectName("title")
+            lay.addWidget(name)
+            lay.addWidget(QLabel(f"Version {VERSION}"))
+            copyright_line = QLabel(COPYRIGHT_FULL)
+            copyright_line.setWordWrap(True)
+            copyright_line.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lay.addWidget(copyright_line)
+            lay.addWidget(QLabel(COPYRIGHT_NOTE))
+            lay.addWidget(QLabel(
+                "See the LICENSE file beside the application for the full terms."))
+            box = QDialogButtonBox(QDialogButtonBox.Close)
+            box.rejected.connect(dialog.reject)
+            lay.addWidget(box)
+            dialog.resize(480, 220)
+            dialog.exec()
+
         def show_shortcuts(self) -> None:
             rows = self.shortcut_rows()
             dialog = QDialog(self)
@@ -8550,6 +8623,9 @@ def run_gui(paths):
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_QSS)
+    icon_path = resource_path(ICON_FILE)
+    if icon_path is not None:
+        app.setWindowIcon(QIcon(str(icon_path)))
     win = MainWindow()
     if paths:
         win.load(paths)

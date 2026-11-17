@@ -6,6 +6,20 @@ Application on disk: 2.5
 
 The program on disk reports `VERSION = "2.5"`. The launcher banner says v2.5.
 
+## Unreleased
+
+Shipped in `fm_name_editor.py`, `FM Name Editor.bat`, `FM Name Editor.spec`, and `build_exe.bat`. Release 2.6 is the public-ready step: a copyright notice inside the editor, its own icon on every window, and a reproducible Windows executable. The editing workflow is unchanged.
+
+Session 10 — copyright, icon, and the Windows exe:
+
+- **About shows the version and the copyright.** **Help > About FM Name Editor** names the editor, the version from `VERSION`, the exact copyright line that LICENSE and the README carry ("Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved."), a line saying the software is proprietary and not open source, and a pointer to the LICENSE file beside the application.
+- **The short copyright sits in the status bar.** A permanent "(c) 2026 Mark Hawksworth" label sits beside the metrics, with the full copyright and the LICENSE pointer in its tooltip. It fits at 100%, 125%, and 150% scaling.
+- **The application carries its own icon.** `icon\football.ico` is the icon on every window and dialog. The file is found through one helper that works both from source and from a PyInstaller build (`sys._MEIPASS` when frozen); a missing icon opens the window without one, instead of failing.
+- **A Windows executable for each release.** `FM Name Editor.spec` and `build_exe.bat` build a one-file, windowed `FM Name Editor.exe` with `icon\football.ico` and a Windows version resource (product name, file and product version from `VERSION`, LegalCopyright carrying the copyright above). PyInstaller is a build tool only; the runtime still needs only PySide6. `/build/` and `/dist/` are gitignored; the exe is never committed. Neal builds it after tagging and attaches it to the GitHub Release.
+- **A frozen build works wherever it is unpacked.** `BACKUP_ROOT`, `PROFILE_ROOT`, and `STATE_ROOT` sit under `C:\FM Name Editor\` when the editor runs from source here, but under the folder that holds the exe when frozen. Tests still point them at temporary folders.
+- **Copyright headers.** `tests/test_engine.py`, `tests/__init__.py`, and `FM Name Editor.bat` (kept CRLF) carry the notice and the "proprietary, not open source, see LICENSE" pointer. LICENSE is unchanged.
+- Tests: 156, up from 146. New cover for the exact copyright line matching LICENSE and the README; the About dialog showing the application name, its version, the exact copyright, the "proprietary, not open source" line, and a pointer to LICENSE; the About entry in the Help menu; the short copyright label in the status bar; `project_root()` from source and when frozen (the exe folder); the backups, profiles, and state folders sitting beside the exe when frozen; `resource_path()` finding the shipped icon from source, finding a data file under `sys._MEIPASS` when frozen, and returning `None` for a missing file without raising.
+
 ## 2.5 (12 November 2026)
 
 Shipped in `fm_name_editor.py` and `FM Name Editor.bat`. A corrective release built from the review of 2.4 (note 5). Session 9 fixes the six faults that review found, before the update migration of Release 3.0 builds on the same parts. It adds nothing new beyond what those repairs need. It is a release of its own so that the licensing safety fix does not wait for 3.0. The fixes were checked offscreen, not yet on the real desktop.

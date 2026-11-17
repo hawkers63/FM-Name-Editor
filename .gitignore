@@ -13,3 +13,8 @@ backups/
 # Local settings. They stay on this PC.
 /profiles/
 /state/
+
+# Output of build_exe.bat. The exe itself is never committed; Neal
+# builds it after tagging and attaches it to the GitHub Release.
+/build/
+/dist/

@@ -36,7 +36,7 @@ A release closes when the last session in it is done (for example, Session 8 clo
 2. Leave the release itself to Neal. Do not bump `VERSION`, the launcher banner, or the three `Release / Status / Application on disk` headers; do not move **Unreleased** to a dated release section; do not create or push a `vX.Y` tag; do not push the branch.
 3. Close by telling Mark that the release's sessions are done and Neal can take over.
 
-Neal then checks the files against the repository, finalises the version headers, the dated release section in `CHANGELOG.md`, and `README.md`, runs the test suite, makes the release commit and the annotated `vX.Y` tag, and pushes the branch and the tag only once Mark confirms. The next session starts only when Mark says **"Let's get started."** again.
+Neal then checks the files against the repository, finalises the version headers, the dated release section in `CHANGELOG.md`, and `README.md`, runs the test suite, makes the release commit and the annotated `vX.Y` tag, pushes the branch and the tag only once Mark confirms, then builds `FM Name Editor.exe` with `build_exe.bat` (see the README) and attaches `dist\FM Name Editor.exe` to the GitHub Release. The exe itself is never committed. The next session starts only when Mark says **"Let's get started."** again.
 
 ## Rules that do not change
 

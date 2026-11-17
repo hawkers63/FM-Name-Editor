@@ -2,6 +2,11 @@
 SETLOCAL EnableExtensions DisableDelayedExpansion
 :: ==============================================================
 ::  FM Name Editor.bat  v2.5  -  launcher for fm_name_editor.py
+::
+::  Copyright (c) 2026 onwards Mark Hawksworth (hawkers63).
+::  All rights reserved. Proprietary software, not open source.
+::  See LICENSE.
+::
 ::  Checks Python and PySide6, offers to install PySide6 if it
 ::  is missing, then starts the app. Drag .lnc files onto this
 ::  file to open them straight away.
