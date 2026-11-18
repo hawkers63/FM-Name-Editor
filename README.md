@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v2.6.1](https://img.shields.io/badge/Release-v2.6.1-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.0](https://img.shields.io/badge/Release-v3.0-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-181%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-202%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 2.6.1
+Release: 3.0
 Status: released
-Application on disk: 2.6.1
+Application on disk: 3.0
 </sub>
 
 </div>
@@ -175,6 +175,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.0) | 18&nbsp;Nov&nbsp;2026 | 🔄 Carry a profile's spellings forward when the game's database updates; an override inspector, review hints, saved rules, and a sharper icon |
 | [**2.6.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.6.1) | 17&nbsp;Nov&nbsp;2026 | 🔗 The public repository link in **Help > About** and the status bar; a steadier speed test |
 | [**2.6**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.6) | 17&nbsp;Nov&nbsp;2026 | 🏷️ Public-ready: copyright inside the editor, its own icon, a Windows `.exe` with each release |
 | [**2.5**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.5) | 12&nbsp;Nov&nbsp;2026 | 🩹 Corrective: six faults from the review of 2.4 put right, including a licensing safety fix |
@@ -185,6 +186,21 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.0 adds</b> &nbsp;·&nbsp; 18&nbsp;Nov&nbsp;2026</summary>
+
+3.0 begins the update-migration workflow: when Football Manager releases a new database, a profile can carry its spellings forward, and the database selector names the version it is looking at.
+
+- **Database identity in the selector.** The **Database** list reads the version folder's own XML and labels it, for example, "FM27 27.0.0 (2700)". A folder without that file, or with a malformed one, is shown by its folder name as before.
+- **Migrate from new files.** **Profiles > Migrate from new files...** compares every spelling in the chosen profile against the files you have just loaded from a new version of Football Manager. Rows that still match the recorded baseline are pre-ticked; a name the game has changed since, a key that is no longer there, or an unsaved edit is left unticked, with a note. Applying the ticked migration is one step, so Undo takes it back, and the writes go through Review changes as usual.
+- **Show overrides across files.** Right-click a row and choose **Show overrides across files...** to list every matching name line in the database folder's `.lnc` files. Lines for the same type and language are marked as agreeing or disagreeing. The list does not claim a load order.
+- **Review hints.** An amber note appears under a field the editor has flagged. The first is club 740, "Wolverhamption". It is a note only; nothing is applied.
+- **Saved Bulk-tools rules.** The sponsor box in **Edit > Bulk tools...** starts from `state\rules.json`, and **Save as default rules** keeps what you typed. A damaged file is named in the status bar and left as it is.
+- **A quicker Import older edits.** Reading and comparing now runs in the background (about three quarters of a second with both FM27 files), so the window stays responsive.
+- **A sharper icon.** The application icon is now rendered from the vector artwork at 16 to 256 pixels.
+
+</details>
 
 <details>
 <summary><b>What 2.6.1 adds</b> &nbsp;·&nbsp; 17&nbsp;Nov&nbsp;2026</summary>
@@ -291,8 +307,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Release 3.0:** carrying your spellings across Football Manager database updates, a conflict inspector, and saved rules.
-- **Release 3.1:** a visual pass.
+- **Release 3.1:** a visual pass, and the rest of the saved Bulk-tools rules (the affix set, casing, scope, per-key exceptions, and a tick per row in the Bulk preview).
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 

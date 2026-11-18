@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v2.6.1
-=====================
+FM Name Editor v3.0
+===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
 reverse engineering, sublicensing or commercial use without prior written
@@ -27,6 +27,12 @@ named and left alone. Release 2.6 makes the editor ready to publish:
 the copyright in Help > About and the status bar, its own icon, and a
 Windows executable built for each release. Release 2.6.1 adds a link to
 the public repository in Help > About and the status-bar tooltip.
+Release 3.0 begins the update-migration workflow: a profile can carry
+its spellings forward when Football Manager releases a new database,
+the database selector names the version it is looking at, and a
+cross-file override inspector, review hints, and saved Bulk-tools
+rules close the release. The application icon is now rendered from
+the vector artwork at 16 to 256 pixels.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -71,7 +77,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "2.6.1"
+VERSION = "3.0"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

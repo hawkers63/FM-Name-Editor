@@ -1,12 +1,12 @@
 # Changelog
 
-Release: 2.6.1
+Release: 3.0
 Status: released
-Application on disk: 2.6.1
+Application on disk: 3.0
 
-The program on disk reports `VERSION = "2.6.1"`. The launcher banner says v2.6.1.
+The program on disk reports `VERSION = "3.0"`. The launcher banner says v3.0.
 
-## Unreleased
+## 3.0 (18 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.0 begins the update-migration workflow: when Football Manager releases a new database, a profile can carry its spellings forward, and the database selector names the version it is looking at. Session 13 closes 3.0 with a cross-file override inspector, review hints, and saved Bulk-tools rules. This is Stage 4 of the review of 2.1.
 
@@ -25,6 +25,10 @@ Session 13 — override inspector, review hints, saved rules, and a quicker Impo
 - **Saved Bulk-tools rules.** **Edit > Bulk tools...** now starts the sponsor cleanser from your own list, and **Save as default rules** keeps the list you typed for next time, in the local `stateules.json`. A missing file starts from the built-in list. A damaged file is named in the status bar ("Rules not saved") and left exactly as it is; no rules are written for the rest of that run.
 - **Import older edits no longer freezes the window.** Reading the older files and comparing them took about three quarters of a second with both FM27 files; it now runs in the background, with **Compare** switched off until it is done.
 - Tests: 202, up from 181. New cover for the review hint and its place in the inspector's field description; `find_overrides` with agreeing values, disagreeing values, separate groups for long and short names, other IDs, an unreadable file, and an unknown family; the overrides action in the grid menu and `busy_actions`, and the dialog filled from a fixture database; the rules file's defaults, round trip, byte-order mark, damaged file named and never written over, the window loading saved rules and naming a damaged file, and the Bulk tools starting from the saved list; and Import older edits comparing through the window's worker. One existing window test was updated for the larger grid menu.
+
+Also in 3.0 — a sharper application icon:
+
+- **A sharper icon.** `icon\football.ico` is rebuilt from the vector artwork, with each size rendered directly: 16, 20, 24, 32, 40, 48, 64, and 256 pixels. It replaces the earlier 256-pixel upscale of a 32×32 image.
 
 ## 2.6.1 (17 November 2026)
 
