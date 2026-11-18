@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>FM Name Editor</title>
+  <defs>
+    <radialGradient id="leather" cx="38%" cy="32%" r="75%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.6" stop-color="#f3f0fa"/>
+      <stop offset="1" stop-color="#ddd5f2"/>
+    </radialGradient>
+    <radialGradient id="patch" cx="38%" cy="30%" r="80%">
+      <stop offset="0" stop-color="#8d70db"/>
+      <stop offset="1" stop-color="#6447bf"/>
+    </radialGradient>
+    <clipPath id="ball"><circle cx="256" cy="256" r="232"/></clipPath>
+  </defs>
+  <circle cx="256" cy="256" r="232" fill="url(#leather)"/>
+  <g clip-path="url(#ball)">
+    <g stroke="#b9a9e6" stroke-width="9" stroke-linecap="round">
+    <line x1="256.0" y1="188.0" x2="256.0" y2="130.0"/>
+    <line x1="326.4" y1="239.1" x2="381.5" y2="221.2"/>
+    <line x1="299.5" y1="321.9" x2="333.6" y2="368.8"/>
+    <line x1="212.5" y1="321.9" x2="178.4" y2="368.8"/>
+    <line x1="185.6" y1="239.1" x2="130.5" y2="221.2"/>
+    </g>
+    <g fill="url(#patch)" stroke="#7859cb" stroke-width="6" stroke-linejoin="round">
+    <polygon points="256.0,188.0 326.4,239.1 299.5,321.9 212.5,321.9 185.6,239.1"/>
+    <polygon points="256.0,130.0 179.9,74.7 209.0,-14.7 303.0,-14.7 332.1,74.7"/>
+    <polygon points="381.5,221.2 410.6,131.8 504.6,131.8 533.7,221.2 457.6,276.5"/>
+    <polygon points="333.6,368.8 427.6,368.8 456.7,458.2 380.6,513.5 304.5,458.2"/>
+    <polygon points="178.4,368.8 207.5,458.2 131.4,513.5 55.3,458.2 84.4,368.8"/>
+    <polygon points="130.5,221.2 54.4,276.5 -21.7,221.2 7.4,131.8 101.4,131.8"/>
+    </g>
+  </g>
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#7859cb" stroke-width="20"/>
+</svg>
