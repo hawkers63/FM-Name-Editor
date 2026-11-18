@@ -6,6 +6,18 @@ Application on disk: 2.6.1
 
 The program on disk reports `VERSION = "2.6.1"`. The launcher banner says v2.6.1.
 
+## Unreleased
+
+Shipped in `fm_name_editor.py`. Release 3.0 begins the update-migration workflow: when Football Manager releases a new database, a profile can carry its spellings forward, and the database selector names the version it is looking at. Session 13 closes 3.0 with the conflict inspector and saved rules. This is Stage 4 of the review of 2.1.
+
+Session 12 — three-way update migration and database identity:
+
+- **Database identity in the selector.** The **Database** list reads `<folder>_fm\<folder>_fm.xml` beside each version's `lnc` folder and labels it, for example, "FM27 27.0.0 (2700)". A folder without that XML, or with a malformed one, is shown by its folder name as before; a folder without the FM27 name-file pair keeps its "(no name files)" trailer. The default choice is still the highest folder that holds both name files.
+- **Migrate from new files.** **Profiles > Migrate from new files...** compares every spelling in the chosen profile against the files you have just loaded from a new version of Football Manager. Each row is one of: *Carries forward* (the new files still have the recorded baseline; pre-ticked), *Already the new spelling* (the new files already read your preferred name; not shown, counted in the summary), *Upstream changed since recorded* (the game renamed it between versions; unticked, the note says what it now says), *Not present in the new files* (the key has gone from the new files; unticked, unless the row was recorded as a new addition you made), or unticked with a note for an unsaved edit, another profile's spelling, or a duplicate key. A repeated key is looked at line by line, in any order and across both files, so input order never decides whether an upstream change is a conflict.
+- **New keys.** A profile stores baselines only for the spellings it recorded. Without an original baseline file or a key inventory, the editor does not claim an upstream key is new; it simply does not appear in the migration. Missing overrides do not prove an entity left the game.
+- **One undo step.** Applying the ticked migration is one Operation; Undo takes it back, and the writes go through Review changes as usual.
+- Tests: 181, up from 160. New cover for `read_database_identity` with a good, missing, malformed, or incomplete XML; `short_database_name` and `version_label` for folders with and without the XML and with and without the name files; `migrate_profile` with an unchanged key pre-ticked (acceptance), a stock rename between versions unticked (acceptance), an already-preferred upstream counted and left out, a key missing from the new files, a recorded addition still ticked, an unsaved edit blocking, and a repeated key classified from every line in either order; the `describe_profile_migration` summary; applying the ticked migration as one Operation with undo and redo; the `Migrate from new files...` action in the Profiles menu, the preview opening with the right title and summary, the "open the new files first" guard, and the Migrate action belonging in `busy_actions`.
+
 ## 2.6.1 (17 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 2.6.1 is a small follow-up to 2.6: the application points at the public repository from its own windows, the status bar, and the README. The editing workflow is unchanged.

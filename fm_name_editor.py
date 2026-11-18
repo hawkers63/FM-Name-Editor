@@ -63,6 +63,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ElementTree
 import threading
 import time
 import unicodedata
@@ -1848,6 +1849,78 @@ def version_has_names(version_dir: Path) -> bool:
 def name_paths(version_dir: Path) -> list[Path]:
     folder = version_dir / "lnc" / "all"
     return [folder / name for name in NAME_FILES]
+
+
+class DatabaseIdentity:
+    """The name and version a database folder's own XML file reports.
+
+    ``<folder>\\<folder>_fm\\<folder>_fm.xml`` sits beside the ``lnc`` folder.
+    FM27 writes it as ``<string id="name" value="Football Manager 27"/>`` and
+    ``<string id="version" value="27.0.0"/>``. A missing or malformed file
+    gives ``None``; the label then falls back to the folder name.
+    """
+
+    __slots__ = ("name", "version")
+
+    def __init__(self, name: str, version: str):
+        self.name = name
+        self.version = version
+
+
+def read_database_identity(version_dir) -> "DatabaseIdentity | None":
+    """Returns ``DatabaseIdentity`` for a version folder, or ``None``.
+
+    Reads ``<folder>_fm/<folder>_fm.xml`` with the standard library's
+    ElementTree parser. Returns ``None`` when the file is missing, cannot
+    be parsed, or does not carry both a name and a version. Never raises
+    for the caller. The file is from the game's installation folder (a
+    trusted source); Python 3.7.1 onwards rejects external entities in
+    ElementTree, and the file has none anyway.
+    """
+    folder = Path(version_dir)
+    xml_path = folder / f"{folder.name}_fm" / f"{folder.name}_fm.xml"
+    try:
+        tree = ElementTree.parse(xml_path)
+    except (OSError, ElementTree.ParseError):
+        return None
+    name = version = None
+    for element in tree.getroot().findall("string"):
+        if element.get("id") == "name":
+            name = element.get("value")
+        elif element.get("id") == "version":
+            version = element.get("value")
+    if not name or not version:
+        return None
+    return DatabaseIdentity(name, version)
+
+
+def short_database_name(full: str) -> str:
+    """A compact badge for a database name.
+
+    "Football Manager 27" -> "FM27". The first letter of each word is kept;
+    digit runs are kept whole. Empty text, or text with no letters or
+    digits, gives the original back so the selector always shows something.
+    """
+    out = []
+    for token in re.findall(r"[A-Za-z]+|\d+", full):
+        out.append(token if token[0].isdigit() else token[0].upper())
+    return "".join(out) or full
+
+
+def version_label(version_dir) -> str:
+    """The database selector's label for one version folder.
+
+    Reads the XML identity when present: "FM27 27.0.0 (2700)". Falls back
+    to the folder name alone. A folder without the FM27 name-file pair
+    gets a " (no name files)" trailer, as before.
+    """
+    folder = Path(version_dir)
+    identity = read_database_identity(folder)
+    if identity is not None:
+        base = f"{short_database_name(identity.name)} {identity.version} ({folder.name})"
+    else:
+        base = folder.name
+    return base if version_has_names(folder) else f"{base} (no name files)"
 
 
 def under_game_tree(path: Path, game_root: Path | None) -> bool:
@@ -3709,6 +3782,133 @@ def describe_profile_apply(profile: Profile, stats: dict) -> str:
     ]
     if stats["review"]:
         parts.append(f"{stats['review']:,} left unticked for you to check; the note says why.")
+    if stats["elsewhere"]:
+        parts.append(
+            f"{stats['elsewhere']:,} belong to a file that is not open, so they are left out.")
+    parts.append("Nothing is written until you Save or Deploy.")
+    return " ".join(parts)
+
+
+MIGRATION_STATES = {
+    "eligible": "Carries forward",
+    "already_preferred": "Already the new spelling",
+    "conflict": "Upstream changed since recorded",
+    "missing": "Not present in the new files",
+    "blocked": "Unsaved edit or competing profile",
+}
+
+
+def migrate_profile(profile: Profile, docs):
+    """Three-way migration: compare the profile baseline, the preference, and the new files.
+
+    For each profile row (command, id, language):
+
+    - The key is not on any open line: the new files lack it. A row that
+      was recorded as a *new line* (``baseline is None``) stays an addition,
+      pre-ticked. A row that was recorded against a baseline is left
+      unticked with "Not present in the new files".
+    - All matching open lines already read the preference: counted as
+      already-preferred; nothing to do.
+    - At least one matching open line has a different name: the proposal
+      asks to replace them with the preference. It is ticked only when
+      every line Apply would change still reads the recorded baseline on
+      disk, has no unsaved edit, and is not held by another profile.
+      Otherwise it is unticked and the note says what the new files now
+      say, or which blocker (unsaved edit, competing profile, duplicate)
+      stops it; the proposal is counted as a conflict when the new files
+      disagree with the recorded baseline, or blocked when it is held by
+      a line's own state.
+
+    Rows belonging to a file that is not open are counted as elsewhere.
+    Nothing is changed yet; apply the ticked ones with
+    ``apply_profile_proposals``.
+    """
+    targets = index_all(docs)
+    by_file: dict = {}
+    for doc in docs:
+        by_file.setdefault(doc.path.name.casefold(), doc)
+    changes, missing = [], []
+    stats = dict.fromkeys(
+        ("rows", "eligible", "already_preferred", "conflict", "missing",
+         "blocked", "elsewhere"), 0)
+    stats["rows"] = len(profile.rows)
+    for row in sorted(profile.rows.values(), key=_profile_row_order):
+        cmd, id_, lang = row["command"], row["id"], row["language"]
+        preferred, recorded = row["name"], row["baseline"]
+        found = targets.get(profile_key(cmd, id_, lang), [])
+        if not found:
+            doc = by_file.get(Path(row["source"]).name.casefold())
+            if doc is None:
+                stats["elsewhere"] += 1
+                continue
+            if recorded is None:
+                stats["eligible"] += 1
+                missing.append(Proposal(
+                    cmd, id_, lang, preferred, None, "", True,
+                    "", "Added line; the new files still have no line for it", doc=doc))
+            else:
+                stats["missing"] += 1
+                missing.append(Proposal(
+                    cmd, id_, lang, preferred, None, "", False,
+                    recorded,
+                    f"Not present in the new files; when recorded it said {_shown(recorded)}",
+                    doc=doc))
+            continue
+        if all(entry.name == preferred for entry in found):
+            stats["already_preferred"] += 1
+            continue
+        changing = [entry for entry in found if entry.name != preferred]
+        current = changing[-1]
+        blockers: list[str] = []
+        drift = False
+        for entry in changing:
+            where = f" ({describe_lines([entry])})" if len(found) > 1 else ""
+            mark = entry.profile_mark
+            if mark is not None and mark[0] != profile.name and entry.name == mark[1]:
+                blockers.append(
+                    f"Competes with profile {mark[0]}, which set {mark[1]} in this session{where}")
+            elif entry.changed:
+                blockers.append(f"Unsaved edit {entry.name} would be replaced{where}")
+            on_disk = None if entry.imported else entry.orig_name
+            if on_disk != recorded:
+                drift = True
+                blockers.append(
+                    f"Upstream changed since recorded: the new files say {_shown(on_disk)}; "
+                    f"when recorded it said {_shown(recorded)}{where}")
+        ticked = not blockers
+        if len(found) > 1:
+            blockers.append(f"Duplicate id ({len(found)} rows)")
+        if ticked:
+            stats["eligible"] += 1
+            note = "Carries forward: the new files still have the recorded baseline"
+        else:
+            stats["conflict" if drift else "blocked"] += 1
+            note = "; ".join(blockers)
+        changes.append(Proposal(
+            cmd, id_, lang, preferred, current, current.section, ticked,
+            recorded or "", note, found))
+    return changes, missing, stats
+
+
+def describe_profile_migration(profile: Profile, stats: dict) -> str:
+    """The summary line for the Migrate preview."""
+    parts = [f"{stats['rows']:,} spelling(s) in {profile.name}."]
+    if stats["already_preferred"]:
+        parts.append(f"{stats['already_preferred']:,} already match the new files.")
+    parts.append(
+        f"{stats['eligible']:,} ticked to carry forward: the new files still have the "
+        "recorded baseline.")
+    if stats["conflict"]:
+        parts.append(
+            f"{stats['conflict']:,} unticked because the new files changed those spellings; "
+            "the note says what they now say.")
+    if stats["missing"]:
+        parts.append(
+            f"{stats['missing']:,} unticked because the key is not present in the new files.")
+    if stats["blocked"]:
+        parts.append(
+            f"{stats['blocked']:,} unticked because of an unsaved edit or another profile; "
+            "the note says why.")
     if stats["elsewhere"]:
         parts.append(
             f"{stats['elsewhere']:,} belong to a file that is not open, so they are left out.")
@@ -6403,8 +6603,9 @@ def run_gui(paths):
                 self.redo_act, self.undo_tool, self.redo_tool, self.edit_cell_act,
                 self.revert_act, self.replace_act, self.bulk_act, self.export_act,
                 self.import_pack_act, self.backups_act, self.record_act,
-                self.apply_profile_act, self.new_profile_act, self.rename_profile_act,
-                self.delete_profile_act, self.add_to_collection_menu.menuAction(),
+                self.apply_profile_act, self.migrate_act, self.new_profile_act,
+                self.rename_profile_act, self.delete_profile_act,
+                self.add_to_collection_menu.menuAction(),
                 self.new_collection_act, self.rename_collection_act,
                 self.delete_collection_act, self.remove_from_collection_act]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
@@ -6502,6 +6703,10 @@ def run_gui(paths):
                 "Apply...", self.apply_profile_to_files, (),
                 "Preview this profile's spellings against the open files. Nothing is written "
                 "until you Save or Deploy.")
+            self.migrate_act = a(
+                "Migrate from new files...", self.migrate_profile_to_files, (),
+                "Carry this profile's spellings forward to a new version of Football Manager. "
+                "Open the new files first, then this compares every spelling with them.")
             self.new_profile_act = a("New profile...", self.new_profile)
             self.rename_profile_act = a("Rename profile...", self.rename_current_profile)
             self.delete_profile_act = a("Delete profile...", self.delete_current_profile)
@@ -6574,7 +6779,7 @@ def run_gui(paths):
             self.packs_menu = menu("&Packs", self.export_act, self.import_pack_act)
             self.backups_menu = menu("&Backups", self.backups_act)
             self.profiles_menu = menu(
-                "P&rofiles", self.record_act, self.apply_profile_act, None,
+                "P&rofiles", self.record_act, self.apply_profile_act, self.migrate_act, None,
                 self.new_profile_act, self.rename_profile_act, self.delete_profile_act)
             self.collections_menu = menu(
                 "&Collections", self.add_to_collection_menu.menuAction(),
@@ -7286,8 +7491,10 @@ def run_gui(paths):
             chosen = None
             for path in list_version_dirs(GAME_DB_ROOT):
                 has_names = version_has_names(path)
-                self.version_box.addItem(
-                    path.name if has_names else f"{path.name} (no name files)", str(path))
+                # version_label reads <folder>_fm\<folder>_fm.xml and labels as
+                # "FM27 27.0.0 (2700)", with "(no name files)" for empty folders
+                # and a plain folder name for a missing or malformed XML.
+                self.version_box.addItem(version_label(path), str(path))
                 self.version_box.setItemData(
                     self.version_box.count() - 1, str(path), Qt.ToolTipRole)
                 if has_names:
@@ -8633,6 +8840,61 @@ def run_gui(paths):
                 self.statusBar().showMessage(
                     f"Profile {fresh.name} updated {updated} line(s) and added {len(added)}. "
                     "Nothing is written until you press Save or Deploy.", 10000)
+
+        def migrate_profile_to_files(self) -> None:
+            """Preview migrating the chosen profile into the newly loaded files.
+
+            The usual flow: the user loads the new version's name files (Open or
+            Quick load) and then picks Migrate. Each recorded preference is
+            compared with the new file's spelling, and the proposals that would
+            carry forward safely are pre-ticked. Nothing is written until Save
+            or Deploy.
+            """
+            profile = self.current_profile()
+            if profile is None:
+                QMessageBox.information(self, APP_NAME, "Choose a profile first.")
+                return
+            if not self.docs:
+                QMessageBox.information(
+                    self, APP_NAME,
+                    "Open the new files first (Quick load, or Open), then try again.")
+                return
+            try:
+                fresh = load_profile(profile.path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, APP_NAME, f"Could not read the profile:\n{exc}")
+                self.refresh_profiles()
+                return
+            changes, missing, stats = migrate_profile(fresh, self.docs)
+            if not changes and not missing:
+                if not stats["rows"]:
+                    text = f"{fresh.name} holds no spellings yet. Record some edits first."
+                else:
+                    text = (f"All {stats['already_preferred']:,} spelling(s) in {fresh.name} "
+                            "that the open files have already match. The new files need no "
+                            "migration.")
+                    if stats["elsewhere"]:
+                        text += (f" {stats['elsewhere']:,} belong to a file that is not open.")
+                QMessageBox.information(self, APP_NAME, text)
+                return
+            dialog = PackDialog(
+                self, changes, missing, describe_profile_migration(fresh, stats),
+                title=f"Migrate profile: {fresh.name}",
+                new_label="Profile spelling",
+                base_label="Baseline when recorded",
+                apply_func=lambda c, m, d: apply_profile_proposals(fresh.name, c, m, d))
+            with self.recording(f"migrate profile {fresh.name}") as operation:
+                accepted = dialog.exec()
+                if dialog.result_counts is not None:
+                    operation.label = (
+                        f"migrate profile {fresh.name}: {dialog.result_counts[0]:,} changed, "
+                        f"{len(dialog.result_counts[1]):,} added")
+            if accepted and dialog.result_counts is not None:
+                updated, added = dialog.result_counts
+                self.reload_views()
+                self.statusBar().showMessage(
+                    f"Profile {fresh.name} migrated into {updated} line(s) and added "
+                    f"{len(added)}. Nothing is written until you press Save or Deploy.", 10000)
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)

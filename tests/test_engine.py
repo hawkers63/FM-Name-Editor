@@ -3204,8 +3204,8 @@ class Session7Window(unittest.TestCase):
                           "Exit"])
         self.assertEqual([action.text() for action in win.profiles_menu.actions()
                           if action.text()],
-                         ["Record edits", "Apply...", "New profile...", "Rename profile...",
-                          "Delete profile..."])
+                         ["Record edits", "Apply...", "Migrate from new files...",
+                          "New profile...", "Rename profile...", "Delete profile..."])
         keys = {action.text(): action.shortcut().toString()
                 for menu in win.menus for action in menu.actions() if action.text()}
         self.assertEqual((keys["Save..."], keys["Edit cell"], keys["Find"], keys["Changes"],
@@ -4993,6 +4993,392 @@ class Session11Repository(unittest.TestCase):
         here = Path(editor.__file__).resolve().parent
         readme = (here / "README.md").read_text(encoding="utf-8")
         self.assertIn(self.REPOSITORY_URL, readme)
+
+
+class Session12Identity(unittest.TestCase):
+    """Session 12, Release 3.0: the database folder's own XML identity."""
+
+    XML = (
+        '<?xml version="1.0"?>\n'
+        '<record>\n'
+        '  <string id="name" value="Football Manager 27"/>\n'
+        '  <string id="version" value="27.0.0" translate="false"/>\n'
+        '  <string id="author" value="Sports Interactive"/>\n'
+        '  <string id="date" value="14/10/2026 12:30"/>\n'
+        '</record>\n'
+    )
+
+    def _version_tree(self, root: Path, folder_name: str, xml: str | None,
+                      names: bool = True) -> Path:
+        """Build a <version>/lnc/all/<FM27 files> plus <version>/<version>_fm/<version>_fm.xml."""
+        version = root / folder_name
+        (version / "lnc" / "all").mkdir(parents=True)
+        if names:
+            for name in editor.NAME_FILES:
+                (version / "lnc" / "all" / name).write_bytes(b"\xef\xbb\xbf")
+        if xml is not None:
+            fm_folder = version / f"{folder_name}_fm"
+            fm_folder.mkdir()
+            (fm_folder / f"{folder_name}_fm.xml").write_text(xml, encoding="utf-8")
+        return version
+
+    def test_short_database_name_handles_the_shapes_the_game_uses(self):
+        # "Football Manager 27" -> "FM27"; "Football Manager 2024" -> "FM2024"; and the
+        # empty-string fallback returns itself so the selector always shows something.
+        self.assertEqual(editor.short_database_name("Football Manager 27"), "FM27")
+        self.assertEqual(editor.short_database_name("Football Manager 2024"), "FM2024")
+        self.assertEqual(editor.short_database_name("Football Manager"), "FM")
+        self.assertEqual(editor.short_database_name(""), "")
+
+    def test_read_database_identity_reads_the_name_and_version_from_the_xml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), "2700", self.XML)
+            identity = editor.read_database_identity(version)
+            self.assertIsNotNone(identity)
+            self.assertEqual((identity.name, identity.version),
+                             ("Football Manager 27", "27.0.0"))
+
+    def test_read_database_identity_is_None_for_a_missing_xml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), "2730", xml=None)
+            self.assertIsNone(editor.read_database_identity(version))
+
+    def test_read_database_identity_is_None_for_a_malformed_xml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), "2740", xml="<not valid xml")
+            self.assertIsNone(editor.read_database_identity(version))
+
+    def test_read_database_identity_is_None_when_name_or_version_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(
+                Path(tmp), "2750",
+                '<record><string id="name" value="Only a Name"/></record>')
+            self.assertIsNone(editor.read_database_identity(version))
+            version = self._version_tree(
+                Path(tmp), "2760",
+                '<record><string id="version" value="99.0.0"/></record>')
+            self.assertIsNone(editor.read_database_identity(version))
+
+    def test_version_label_names_the_database_when_the_xml_is_there(self):
+        """Acceptance: 'FM27 27.0.0 (2700)' appears in the database selector."""
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), "2700", self.XML, names=True)
+            self.assertEqual(editor.version_label(version), "FM27 27.0.0 (2700)")
+
+    def test_version_label_falls_back_to_the_folder_name_without_xml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), "2700", xml=None, names=True)
+            self.assertEqual(editor.version_label(version), "2700")
+
+    def test_version_label_keeps_the_no_name_files_trailer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), "2700", self.XML, names=False)
+            self.assertEqual(editor.version_label(version), "FM27 27.0.0 (2700) (no name files)")
+            version = self._version_tree(Path(tmp), "2601", xml=None, names=False)
+            self.assertEqual(editor.version_label(version), "2601 (no name files)")
+
+
+class Session12Migration(unittest.TestCase):
+    """Session 12: three-way migration against the newly installed name files.
+
+    Reuses Session 4's profile shape: baseline (what the old files said when
+    recorded), preferred (the spelling the user wants), upstream (what the
+    newly loaded files say now).
+    """
+
+    OLD = (
+        '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+        '"CLUB_NAME_CHANGE"\t20\t"Beta Rovers"\t""\n'
+        '"CLUB_NAME_CHANGE"\t30\t"Gamma Town"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t40\t"Delta FC"\t""\n'
+    )
+
+    def _recorded(self, tmp: Path):
+        """A profile with four spellings, recorded from an OLD-content club file."""
+        work = tmp / "work"
+        work.mkdir()
+        club = work / "FM27_Club_Names.lnc"
+        write_lnc(club, self.OLD)
+        doc = editor.LncDoc(club)
+        rows = {entry.id: entry for entry in doc.names()
+                if entry.cmd == "CLUB_NAME_CHANGE"}
+        short_rows = {entry.id: entry for entry in doc.names()
+                      if entry.cmd == "CLUB_SHORT_NAME_CHANGE"}
+        editor.try_set_name(rows["10"], "Alpha United FC")         # changed; kept preferred
+        editor.try_set_name(rows["20"], "Beta Wanderers")          # changed; preferred differs from old
+        editor.try_set_name(rows["30"], "Gamma")                   # changed; preferred
+        editor.try_set_name(short_rows["40"], "Delta")             # changed
+        doc.append_entry("CLUB_3LETTER_NAME_CHANGE", "10", "ALP", "")  # recorded addition
+        profile = editor.create_profile("Mine", "", tmp / "profiles")
+        editor.record_edits(profile, [doc])
+        return profile
+
+    def _upstream_doc(self, tmp: Path, text: str) -> "editor.LncDoc":
+        """A newly loaded FM27_Club_Names.lnc for the migration to compare against."""
+        upstream = tmp / "new" / "FM27_Club_Names.lnc"
+        upstream.parent.mkdir(parents=True, exist_ok=True)
+        write_lnc(upstream, text)
+        return editor.LncDoc(upstream)
+
+    def test_unchanged_key_is_pre_ticked(self):
+        """Acceptance: an unchanged key between 'versions' is pre-ticked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # Club 10's baseline was "Alpha United"; the new files still have it.
+            upstream = self._upstream_doc(Path(tmp), self.OLD)
+            changes, missing, stats = editor.migrate_profile(profile, [upstream])
+            row = next(p for p in changes if p.id == "10")
+            self.assertTrue(row.checked)
+            self.assertIn("Carries forward", row.note)
+            # Four open lines carry forward, plus the recorded 3-letter addition
+            # for club 10 (still absent upstream), so all five rows are ticked.
+            self.assertEqual(stats["eligible"], 5)
+            self.assertEqual(stats["conflict"], 0)
+            self.assertEqual(stats["missing"], 0)
+
+    def test_stock_rename_between_versions_is_never_pre_ticked(self):
+        """Acceptance: a stock rename between the versions is never pre-ticked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # The game renames club 20 upstream; baseline "Beta Rovers" -> "Beta Athletic"
+            # (neither baseline nor our preferred "Beta Wanderers"), so this is a conflict.
+            upstream_text = self.OLD.replace("Beta Rovers", "Beta Athletic")
+            upstream = self._upstream_doc(Path(tmp), upstream_text)
+            changes, _missing, stats = editor.migrate_profile(profile, [upstream])
+            row = next(p for p in changes if p.id == "20")
+            self.assertFalse(row.checked)
+            self.assertIn("Upstream changed since recorded", row.note)
+            self.assertIn("Beta Athletic", row.note)
+            self.assertIn("Beta Rovers", row.note)
+            self.assertEqual(stats["conflict"], 1)
+
+    def test_an_already_preferred_upstream_is_counted_as_same_and_not_in_the_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # The game now ships club 30 as "Gamma" (the preferred name).
+            upstream_text = self.OLD.replace("Gamma Town", "Gamma")
+            upstream = self._upstream_doc(Path(tmp), upstream_text)
+            changes, missing, stats = editor.migrate_profile(profile, [upstream])
+            self.assertEqual(stats["already_preferred"], 1)
+            self.assertFalse(any(p.id == "30" for p in changes),
+                             "already-preferred rows are not in the preview")
+            self.assertFalse(any(p.id == "30" for p in missing))
+
+    def test_a_key_missing_upstream_is_unticked_with_the_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # The new files drop club 40's short name altogether.
+            upstream_text = (
+                '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+                '"CLUB_NAME_CHANGE"\t20\t"Beta Rovers"\t""\n'
+                '"CLUB_NAME_CHANGE"\t30\t"Gamma Town"\t""\n'
+            )
+            upstream = self._upstream_doc(Path(tmp), upstream_text)
+            _changes, missing, stats = editor.migrate_profile(profile, [upstream])
+            row = next(p for p in missing
+                       if p.cmd == "CLUB_SHORT_NAME_CHANGE" and p.id == "40")
+            self.assertFalse(row.checked)
+            self.assertIn("Not present in the new files", row.note)
+            self.assertEqual(stats["missing"], 1)
+
+    def test_a_recorded_addition_still_carries_forward_as_an_addition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # Club 10's 3-letter code was added by the user; the new files
+            # don't have one either, so this still proposes to add it, ticked.
+            upstream = self._upstream_doc(Path(tmp), self.OLD)
+            _changes, missing, _stats = editor.migrate_profile(profile, [upstream])
+            row = next(p for p in missing if p.cmd == "CLUB_3LETTER_NAME_CHANGE" and p.id == "10")
+            self.assertTrue(row.checked)
+            self.assertEqual(row.new, "ALP")
+            self.assertIn("Added line", row.note)
+
+    def test_an_unsaved_edit_on_the_upstream_line_leaves_the_proposal_unticked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            upstream = self._upstream_doc(Path(tmp), self.OLD)
+            # Mark edits club 10 in the new file before Migrate; the unsaved
+            # edit would be overwritten, so the migration leaves it unticked.
+            editor.try_set_name(
+                next(e for e in upstream.names() if e.id == "10" and e.cmd == "CLUB_NAME_CHANGE"),
+                "Alpha Something")
+            changes, _missing, stats = editor.migrate_profile(profile, [upstream])
+            row = next(p for p in changes if p.id == "10")
+            self.assertFalse(row.checked)
+            self.assertIn("Unsaved edit", row.note)
+            self.assertGreaterEqual(stats["blocked"], 1)
+
+    def test_a_repeated_key_is_classified_from_every_line_in_any_order(self):
+        """A key on more than one line fails the whole proposal if any line is in conflict,
+        whatever the order of the lines (reuses the Session 9 rule)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # Two "20" lines upstream, in both orders; the second has drifted.
+            doubled = (
+                '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+                '"CLUB_NAME_CHANGE"\t20\t"Beta Rovers"\t""\n'
+                '"CLUB_NAME_CHANGE"\t20\t"Beta Athletic"\t""\n'
+                '"CLUB_NAME_CHANGE"\t30\t"Gamma Town"\t""\n'
+                '"CLUB_SHORT_NAME_CHANGE"\t40\t"Delta FC"\t""\n'
+            )
+            upstream = self._upstream_doc(Path(tmp), doubled)
+            changes, _missing, _stats = editor.migrate_profile(profile, [upstream])
+            row = next(p for p in changes if p.id == "20")
+            self.assertFalse(row.checked)
+            self.assertIn("Upstream changed since recorded", row.note)
+
+            # Reverse the duplicate order; still unticked.
+            reversed_text = (
+                '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+                '"CLUB_NAME_CHANGE"\t20\t"Beta Athletic"\t""\n'
+                '"CLUB_NAME_CHANGE"\t20\t"Beta Rovers"\t""\n'
+                '"CLUB_NAME_CHANGE"\t30\t"Gamma Town"\t""\n'
+                '"CLUB_SHORT_NAME_CHANGE"\t40\t"Delta FC"\t""\n'
+            )
+            upstream2 = self._upstream_doc(Path(tmp) / "r", reversed_text)
+            changes2, _missing2, _stats2 = editor.migrate_profile(profile, [upstream2])
+            row2 = next(p for p in changes2 if p.id == "20")
+            self.assertFalse(row2.checked)
+            self.assertIn("Upstream changed since recorded", row2.note)
+
+    def test_describe_profile_migration_counts_every_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            # Mix: one unchanged, one conflict, one already-preferred, one missing.
+            upstream_text = (
+                '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'       # unchanged
+                '"CLUB_NAME_CHANGE"\t20\t"Beta Athletic"\t""\n'      # conflict
+                '"CLUB_NAME_CHANGE"\t30\t"Gamma"\t""\n'              # already preferred
+                # Club 40 short omitted -> missing
+            )
+            upstream = self._upstream_doc(Path(tmp), upstream_text)
+            _changes, _missing, stats = editor.migrate_profile(profile, [upstream])
+            summary = editor.describe_profile_migration(profile, stats)
+            self.assertIn("5 spelling(s) in Mine", summary)
+            self.assertIn("ticked to carry forward", summary)
+            self.assertIn("Nothing is written until you Save or Deploy", summary)
+
+    def test_apply_the_ticked_migration_is_one_undo_step(self):
+        """The migration applies as one Operation, so Undo takes it back as one step."""
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._recorded(Path(tmp))
+            upstream = self._upstream_doc(Path(tmp), self.OLD)
+            changes, missing, _stats = editor.migrate_profile(profile, [upstream])
+            with editor.Operation("migrate") as op:
+                before = [(entry.id, entry.cmd, entry.name) for entry in upstream.names()]
+                editor.apply_profile_proposals(profile.name, changes, missing, [upstream])
+                after = [(entry.id, entry.cmd, entry.name) for entry in upstream.names()]
+            self.assertNotEqual(before, after)
+            op.undo()
+            restored = [(entry.id, entry.cmd, entry.name) for entry in upstream.names()]
+            self.assertEqual(before, restored)
+            op.redo()
+            re_applied = [(entry.id, entry.cmd, entry.name) for entry in upstream.names()]
+            self.assertEqual(after, re_applied)
+
+
+class Session12Window(unittest.TestCase):
+    """Session 12 window glue: the Migrate action, the selector label, the dialog."""
+
+    def test_the_version_selector_shows_the_xml_identity_when_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_root = Path(tmp)
+            for folder_name in ("2600", "2700"):
+                version = db_root / folder_name
+                (version / "lnc" / "all").mkdir(parents=True)
+                for name in editor.NAME_FILES:
+                    (version / "lnc" / "all" / name).write_bytes(b"\xef\xbb\xbf")
+                fm_folder = version / f"{folder_name}_fm"
+                fm_folder.mkdir()
+                (fm_folder / f"{folder_name}_fm.xml").write_text(
+                    f'<record>'
+                    f'  <string id="name" value="Football Manager '
+                    f'{27 if folder_name == "2700" else 26}"/>'
+                    f'  <string id="version" value='
+                    f'"{27 if folder_name == "2700" else 26}.0.0"/>'
+                    f'</record>', encoding="utf-8")
+            with mock.patch.object(editor, "GAME_DB_ROOT", db_root):
+                win = make_window(self)
+                try:
+                    win.refresh_versions()
+                    texts = [win.version_box.itemText(i)
+                             for i in range(win.version_box.count())]
+                    self.assertEqual(texts, ["FM26 26.0.0 (2600)", "FM27 27.0.0 (2700)"])
+                finally:
+                    close_window(win)
+
+    def test_migrate_from_new_files_opens_the_preview(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # A profile with baselines matching the upstream so Migrate has
+            # something to show as ticked ("Carries forward").
+            root = Path(tmp)
+            work = root / "work"
+            work.mkdir()
+            club = work / "FM27_Club_Names.lnc"
+            write_lnc(club, Session12Migration.OLD)
+            doc = editor.LncDoc(club)
+            rows = {entry.id: entry for entry in doc.names()
+                    if entry.cmd == "CLUB_NAME_CHANGE"}
+            editor.try_set_name(rows["10"], "Alpha United FC")
+            with mock.patch.object(editor, "PROFILE_ROOT", root / "profiles"):
+                profile = editor.create_profile("Mine", "", root / "profiles")
+                editor.record_edits(profile, [doc])
+                editor.save_profile(profile, root / "profiles")
+                win = make_window(self)
+                try:
+                    win.refresh_profiles(select_file=profile.path.name)
+                    # Load the "new" files (same bytes as the recorded source).
+                    upstream = root / "upstream" / "FM27_Club_Names.lnc"
+                    upstream.parent.mkdir()
+                    write_lnc(upstream, Session12Migration.OLD)
+                    win.load([str(upstream)])
+                    seen = []
+                    with mock.patch.object(QDialog, "exec",
+                                           lambda d: seen.append(d) or 0):
+                        win.migrate_act.trigger()
+                    self.assertEqual(len(seen), 1)
+                    dialog = seen[0]
+                    self.assertEqual(dialog.windowTitle(), "Migrate profile: Mine")
+                    self.assertIn("ticked to carry forward",
+                                  dialog.summary.text())
+                finally:
+                    close_window(win)
+
+    def test_migrate_tells_the_user_to_open_the_new_files_first_when_none_are_open(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            work.mkdir()
+            club = work / "FM27_Club_Names.lnc"
+            write_lnc(club, Session12Migration.OLD)
+            doc = editor.LncDoc(club)
+            with mock.patch.object(editor, "PROFILE_ROOT", root / "profiles"):
+                profile = editor.create_profile("Mine", "", root / "profiles")
+                editor.record_edits(profile, [doc])
+                editor.save_profile(profile, root / "profiles")
+                win = make_window(self)
+                try:
+                    win.refresh_profiles(select_file=profile.path.name)
+                    with mock.patch.object(QMessageBox, "information") as told:
+                        win.migrate_act.trigger()
+                    self.assertIn("Open the new files first",
+                                  told.call_args.args[2])
+                finally:
+                    close_window(win)
+
+    def test_the_migrate_action_waits_for_a_job(self):
+        """Migrate writes no files itself but opens docs; it belongs with the
+        other profile actions in busy_actions, so it is switched off while
+        a load or game check runs."""
+        win = make_window(self)
+        try:
+            self.assertIn(win.migrate_act, win.busy_actions)
+        finally:
+            close_window(win)
 
 
 if __name__ == "__main__":
