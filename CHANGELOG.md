@@ -6,6 +6,24 @@ Application on disk: 3.0
 
 The program on disk reports `VERSION = "3.0"`. The launcher banner says v3.0.
 
+## Unreleased (Release 3.1)
+
+Session 14 — the rest of the saved Bulk-tools rules, and a visual pass:
+
+- **Every Bulk-tools rule is saved.** **Edit > Bulk tools...** now starts from all of your rules in `state\\rules.json`, not only the sponsor list: the **affix set** the affix stripper removes, the **small words** title casing keeps in lower case, a **casing** choice, the **scope**, and a **never-change list**. **Save as default rules** keeps everything on screen for next time. A rules file from 3.0 still loads; a field it lacks takes the built-in default, and one unusable never-change entry is dropped rather than the whole file. A damaged file is still named and left alone.
+- **Casing.** *Only names written wholly in capitals* is the 3.0 behaviour. *Also single long capital words* also fixes a word of four letters or more written in capitals inside a mixed-case name ("Club ATLETICO Madrid" becomes "Club Atletico Madrid"), and leaves short ones such as FC, AFC, and USA as they are.
+- **Scope.** A run covers the entities in the current filter, every entity in the family, or the selected rows; each choice shows how many entities it holds, and an empty one cannot be chosen. Changing it clears the preview.
+- **A tick on every preview row.** Every row starts ticked; **Tick all** and **Untick all** set them together, and **Apply** changes only the ticked rows ("Apply 12 ticked"). Applying is still one undo step and still writes nothing until Save or Deploy.
+- **Never change.** Select preview rows and choose **Never change selected rows** to keep those entities out of every bulk run; **Clear the list** empties it. The list is kept with the other rules when you save them.
+- **Named colours.** The slate theme's colours are defined once, by name, and the style sheet, the Edited / Added / Duplicate colours, the include tick, and the badges all take them from there. Every colour that means something still has a word beside it.
+- **Type badges.** On **All lines**, on **Changes**, and in **Review changes**, each line's type has a small badge in its family's colour (clubs blue, competitions pink, stadiums green, cities orange, nations red, awards yellow, person rules grey), with the type's words beside it.
+- **The remaining keys.** **Deploy to FM27** is Ctrl+Shift+D; **Exit** is Ctrl+Q; **View > Inspector** (F4) shows or hides the inspector, and the choice is remembered; **View > Reset column widths** forgets the widths you set and sizes every column to its text again. Ctrl+O stays **Open files**, and F1 stays **Keyboard shortcuts**.
+- **User guide.** **Help > User guide** explains the workflow in seven short sections: opening files, finding and editing names, tools that change memory only, Save and Deploy, profiles, backups and overrides, and where your files live. It has a button for the keyboard shortcuts.
+- **The line in the inspector.** Under each field the inspector shows the line as it stands in memory, command and all, as Save would write it.
+- **The version in the header.** The product name at the left of the header row shows the version it reads from the program, for example "FM Name Editor 3.1".
+- **Display checks with work in the window.** At 125% and 150% scaling the tests now load names, choose a long profile name, show a validation message, show the type badges and the Changes tab, and open Review changes, and check that each fits the screen's free area (in Qt's logical pixels: 1920 by 1080 at 150% is 1280 by 720, less the taskbar). Mark checks the real desktop at 100%, 125%, and 150%.
+- Tests: 232, up from 202. New cover for the rules file's new fields, defaults for a 3.0 file, wrong types, and dropped never-change entries; the affix set, small words, and long-word casing; the preview skipping never-change entities and applying only ticked rows; the Bulk dialog starting from every saved rule, its scope choice, ticks, never-change list, and Save as default rules (including a damaged file left alone); the style sheet built from the theme, no colour written outside it, state and badge colours; the new keys and menu items with no key used twice; F4 hiding the inspector and the choice remembered; Reset column widths; the badge on All lines and Changes; the raw line in the inspector; the user guide; and the working window at 125% and 150%.
+
 ## 3.0 (18 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.0 begins the update-migration workflow: when Football Manager releases a new database, a profile can carry its spellings forward, and the database selector names the version it is looking at. Session 13 closes 3.0 with a cross-file override inspector, review hints, and saved Bulk-tools rules. This is Stage 4 of the review of 2.1.

@@ -5713,5 +5713,628 @@ class Session13Responsiveness(unittest.TestCase):
                 close_window(win)
 
 
+class Session14Rules(unittest.TestCase):
+    """Session 14: the rest of the saved Bulk-tools rules.
+
+    The affix set, the small words, a casing preference, a scope, and per-key
+    exceptions live in ``state/rules.json``; every preview row has a tick.
+    """
+
+    CLUBS = ('"CLUB_NAME_CHANGE"\t1\t"Alpha FC"\t""\n'
+             '"CLUB_NAME_CHANGE"\t2\t"Beta FC"\t""\n'
+             '"CLUB_NAME_CHANGE"\t3\t"Gamma FC"\t""\n')
+
+    def clubs(self, tmp):
+        path = Path(tmp) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.CLUBS)
+        doc = editor.LncDoc(path)
+        return doc, [e for e in editor.build_entities([doc]) if e.family == "club"]
+
+    # ---- the file ----
+
+    def test_new_rules_have_defaults(self):
+        rules = editor.Rules()
+        self.assertEqual(rules.affixes, list(editor.AFFIXES))
+        self.assertEqual(rules.casing, "capitals")
+        self.assertEqual(rules.scope, "shown")
+        self.assertEqual(rules.exceptions, [])
+
+    def test_rules_round_trip_every_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = editor.Rules(
+                sponsors=["A"], small_words=["de"], affixes=["FC", "Ltd"],
+                casing="words", scope="family",
+                exceptions=[("club", "740", ""), ("comp", "11", "")])
+            editor.save_rules(saved, tmp)
+            loaded, problem = editor.read_rules(tmp)
+            self.assertEqual(problem, "")
+            self.assertEqual(loaded.affixes, ["FC", "Ltd"])
+            self.assertEqual(loaded.small_words, ["de"])
+            self.assertEqual(loaded.casing, "words")
+            self.assertEqual(loaded.scope, "family")
+            self.assertEqual(loaded.exceptions, [("club", "740", ""), ("comp", "11", "")])
+            # The same rules write the same bytes.
+            self.assertEqual(loaded.to_bytes(), saved.to_bytes())
+
+    def test_a_rules_file_from_session_13_takes_defaults_for_new_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / editor.RULES_FILE).write_bytes(
+                b'{"format":"fm-name-rules","version":1,"sponsors":["Z"]}\n')
+            rules, problem = editor.read_rules(tmp)
+            self.assertEqual(problem, "")
+            self.assertEqual(rules.sponsors, ["Z"])
+            self.assertEqual(rules.affixes, list(editor.AFFIXES))
+            self.assertEqual(sorted(rules.small_words), sorted(editor.SMALL_WORDS))
+
+    def test_wrong_types_take_defaults_and_bad_exceptions_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / editor.RULES_FILE).write_text(
+                '{"affixes": 5, "casing": ["x"], "scope": "nowhere", "small_words": "de",'
+                ' "exceptions": [1, {"family": "club", "id": "7"},'
+                ' {"family": ["club"], "id": "8"}, {"family": "club", "id": "x9"},'
+                ' {"family": "ghost", "id": "1"}, {"family": "comp", "id": "2", "language": 3}]}',
+                encoding="utf-8")
+            rules, problem = editor.read_rules(tmp)
+            self.assertEqual(problem, "")
+            self.assertEqual(rules.affixes, list(editor.AFFIXES))
+            self.assertEqual(rules.casing, "capitals")
+            self.assertEqual(rules.scope, "shown")
+            self.assertEqual(sorted(rules.small_words), sorted(editor.SMALL_WORDS))
+            self.assertEqual(rules.exceptions, [("club", "7", "")])
+
+    # ---- the transforms ----
+
+    def test_strip_affix_uses_the_affix_set_it_is_given(self):
+        self.assertEqual(editor.strip_affix("Ajax Ltd", ["Ltd"]), "Ajax")
+        self.assertEqual(editor.strip_affix("FC Ajax", ["Ltd"]), "FC Ajax")
+
+    def test_title_case_uses_the_small_words_it_is_given(self):
+        self.assertEqual(editor.title_case_name("CLUB DE FUTBOL", ["de"]), "Club de Futbol")
+        self.assertEqual(editor.title_case_name("CLUB DE FUTBOL", []), "Club De Futbol")
+        self.assertEqual(editor.title_case_name("CLUB DE FUTBOL"), "Club de Futbol")
+
+    def test_words_casing_fixes_long_capital_words_only(self):
+        mixed = "Club ATLETICO Madrid"
+        self.assertEqual(editor.title_case_name(mixed), mixed)
+        self.assertEqual(editor.title_case_name(mixed, mode="words"), "Club Atletico Madrid")
+        # Short capital words, such as FC and AFC, stay as they are.
+        self.assertEqual(editor.title_case_name("AFC Bournemouth", mode="words"),
+                         "AFC Bournemouth")
+        self.assertEqual(editor.title_case_name("FC Sankt PAULI", mode="words"),
+                         "FC Sankt Pauli")
+
+    # ---- the preview ----
+
+    def test_preview_uses_the_rules_affixes_and_skips_exceptions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, entities = self.clubs(tmp)
+            plain = editor.preview_bulk(entities, "affix")
+            self.assertEqual(len(plain), 3)
+            rules = editor.Rules(exceptions=[("club", "2", "")])
+            edits = editor.preview_bulk(entities, "affix", rules=rules)
+            self.assertEqual([edit.entity.id for edit in edits], ["1", "3"])
+            # An affix set without FC changes nothing.
+            none = editor.preview_bulk(entities, "affix", rules=editor.Rules(affixes=["Ltd"]))
+            self.assertEqual(none, [])
+
+    def test_every_preview_row_starts_ticked_and_only_ticked_rows_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, entities = self.clubs(tmp)
+            edits = editor.preview_bulk(entities, "affix")
+            self.assertTrue(all(edit.included for edit in edits))
+            edits[1].included = False
+            self.assertEqual(editor.apply_bulk(edits, [doc]), 2)
+            self.assertEqual([entry.name for entry in doc.names()],
+                             ["Alpha", "Beta FC", "Gamma"])
+
+    # ---- the window ----
+
+    def open_dialog(self, win, club):
+        from PySide6.QtWidgets import QDialog
+
+        win.load([str(club)])
+        seen = []
+        with mock.patch.object(QDialog, "exec", lambda d: seen.append(d) or 0):
+            win.open_bulk()
+        return seen[0]
+
+    def window_with_clubs(self, tmp, rules=None):
+        root = Path(tmp) / "state"
+        if rules is not None:
+            editor.save_rules(rules, root)
+        club = Path(tmp) / "FM27_Club_Names.lnc"
+        write_lnc(club, self.CLUBS)
+        return root, club
+
+    def test_the_dialog_starts_from_every_saved_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, club = self.window_with_clubs(tmp, editor.Rules(
+                affixes=["Ltd"], small_words=["de"], casing="words", scope="family",
+                exceptions=[("club", "2", "")]))
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    dialog = self.open_dialog(win, club)
+                    self.assertEqual(dialog.affix_box.toPlainText(), "Ltd")
+                    self.assertEqual(dialog.small_words_box.toPlainText(), "de")
+                    self.assertEqual(dialog.casing_box.currentData(), "words")
+                    self.assertEqual(dialog.scope_key(), "family")
+                    self.assertEqual(dialog.exceptions, {("club", "2", "")})
+                    self.assertIn("1 entity", dialog.exceptions_label.text())
+                finally:
+                    close_window(win)
+
+    def test_scope_chooses_the_entities_and_an_empty_scope_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, club = self.window_with_clubs(tmp)
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    win.load([str(club)])
+                    win.entity_search.setText("Alpha")
+                    win.apply_entity_filter()
+                    dialog = self.open_dialog(win, club)
+                    self.assertEqual(dialog.scope_key(), "shown")
+                    dialog.preview()
+                    self.assertEqual(len(dialog.edits), 1)
+                    dialog.scope_box.setCurrentIndex(dialog.scope_box.findData("family"))
+                    self.assertEqual(dialog.edits, [])          # a new scope clears the preview
+                    dialog.preview()
+                    self.assertEqual(len(dialog.edits), 3)
+                    selected = dialog.scope_box.findData("selected")
+                    self.assertFalse(dialog.scope_box.model().item(selected).isEnabled())
+                finally:
+                    close_window(win)
+
+    def test_untick_a_row_and_apply_changes_only_the_ticked_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, club = self.window_with_clubs(tmp)
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    dialog = self.open_dialog(win, club)
+                    dialog.preview()
+                    self.assertEqual(dialog.ticked(), 3)
+                    self.assertEqual(dialog.apply_btn.text(), "Apply 3 ticked")
+                    dialog.table.item(0, dialog.USE).setCheckState(Qt_Unchecked())
+                    self.assertEqual(dialog.ticked(), 2)
+                    self.assertEqual(dialog.apply_btn.text(), "Apply 2 ticked")
+                    dialog.untick_all_btn.click()
+                    self.assertEqual(dialog.ticked(), 0)
+                    self.assertFalse(dialog.apply_btn.isEnabled())
+                    dialog.tick_all_btn.click()
+                    dialog.table.item(1, dialog.USE).setCheckState(Qt_Unchecked())
+                    dialog.apply_edits()
+                    self.assertEqual(dialog.applied, 2)
+                    names = sorted(entry.name for doc in win.docs for entry in doc.names())
+                    self.assertEqual(names, sorted(["Alpha", "Beta FC", "Gamma"]))
+                finally:
+                    close_window(win)
+
+    def test_never_change_selected_rows_removes_them_and_is_saved(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, club = self.window_with_clubs(tmp)
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    dialog = self.open_dialog(win, club)
+                    dialog.preview()
+                    dialog.table.selectRow(1)
+                    dialog.never_change_selected()
+                    self.assertEqual(dialog.exceptions, {("club", "2", "")})
+                    self.assertEqual(len(dialog.edits), 2)
+                    self.assertNotIn("2", [edit.entity.id for edit in dialog.edits])
+                    with mock.patch.object(QMessageBox, "information"):
+                        dialog.save_rules_btn.click()
+                    saved, problem = editor.read_rules(root)
+                    self.assertEqual(problem, "")
+                    self.assertEqual(saved.exceptions, [("club", "2", "")])
+                    self.assertEqual(win.rules.exceptions, [("club", "2", "")])
+                    dialog.clear_exceptions()
+                    dialog.preview()
+                    self.assertEqual(len(dialog.edits), 3)
+                finally:
+                    close_window(win)
+
+    def test_save_as_default_keeps_the_affixes_casing_and_scope_on_screen(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, club = self.window_with_clubs(tmp)
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    dialog = self.open_dialog(win, club)
+                    dialog.affix_box.setPlainText("FC\nLtd\n")
+                    dialog.small_words_box.setPlainText("de\nla")
+                    dialog.casing_box.setCurrentIndex(dialog.casing_box.findData("words"))
+                    dialog.scope_box.setCurrentIndex(dialog.scope_box.findData("family"))
+                    with mock.patch.object(QMessageBox, "information"):
+                        dialog.save_rules_btn.click()
+                    saved, problem = editor.read_rules(root)
+                    self.assertEqual(problem, "")
+                    self.assertEqual(saved.affixes, ["FC", "Ltd"])
+                    self.assertEqual(saved.small_words, ["de", "la"])
+                    self.assertEqual(saved.casing, "words")
+                    self.assertEqual(saved.scope, "family")
+                finally:
+                    close_window(win)
+
+    def test_a_damaged_rules_file_is_left_alone_by_save_as_default(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, club = self.window_with_clubs(tmp)
+            root.mkdir()
+            (root / editor.RULES_FILE).write_bytes(b"not json")
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    dialog = self.open_dialog(win, club)
+                    with mock.patch.object(QMessageBox, "warning") as warned:
+                        dialog.save_rules_btn.click()
+                    self.assertTrue(warned.called)
+                    self.assertEqual((root / editor.RULES_FILE).read_bytes(), b"not json")
+                finally:
+                    close_window(win)
+
+    def test_title_mode_reads_the_small_words_and_casing_from_the_dialog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            club = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(club, '"CLUB_NAME_CHANGE"\t1\t"CLUB DE FUTBOL"\t""\n'
+                            '"CLUB_NAME_CHANGE"\t2\t"Club ATLETICO Madrid"\t""\n')
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    dialog = self.open_dialog(win, club)
+                    dialog.mode_group.buttons()[2].click()          # Title casing
+                    dialog.preview()
+                    self.assertEqual([edit.after for edit in dialog.edits], ["Club de Futbol"])
+                    dialog.small_words_box.setPlainText("")
+                    dialog.casing_box.setCurrentIndex(dialog.casing_box.findData("words"))
+                    dialog.preview()
+                    self.assertEqual(sorted(edit.after for edit in dialog.edits),
+                                     ["Club Atletico Madrid", "Club De Futbol"])
+                finally:
+                    close_window(win)
+
+
+def Qt_Unchecked():
+    from PySide6.QtCore import Qt
+    return Qt.Unchecked
+
+
+
+class Session14Visual(unittest.TestCase):
+    """Session 14: named colours, type badges, the remaining keys, the user guide,
+    the raw line in the inspector, and the inspector shown or hidden."""
+
+    LINES = ('"CLUB_NAME_CHANGE"\t1\t"Alpha FC"\t""\n'
+             '"CLUB_SHORT_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+             '"CLUB_NAME_CHANGE"\t2\t"Beta FC"\t""\n')
+
+    # ---- the engine ----
+
+    def test_the_style_sheet_takes_every_colour_from_the_theme(self):
+        import re
+
+        sheet = editor.theme_style_sheet()
+        self.assertNotIn("$", sheet)
+        used = set(re.findall(r"#[0-9a-fA-F]{6}\b", sheet))
+        self.assertTrue(used)
+        self.assertLessEqual(used, set(editor.THEME.values()))
+        # One change in the theme changes the sheet everywhere that colour is used.
+        theme = dict(editor.THEME, accent="#123456")
+        changed = editor.theme_style_sheet(theme)
+        self.assertNotIn(editor.THEME["accent"], changed)
+        self.assertEqual(changed.count("#123456"),
+                         sheet.count(editor.THEME["accent"]))
+
+    def test_no_colour_is_written_outside_the_theme(self):
+        import re
+
+        source = Path(editor.__file__).read_text(encoding="utf-8").splitlines()
+        start = next(n for n, line in enumerate(source) if line.startswith("THEME = {"))
+        end = next(n for n in range(start, len(source)) if source[n] == "}")
+        outside = [(n + 1, line) for n, line in enumerate(source)
+                   if not start <= n <= end and re.search(r"#[0-9a-fA-F]{6}\b", line)]
+        self.assertEqual(outside, [])
+
+    def test_every_state_colour_has_a_word_and_a_theme_colour(self):
+        for word, name in editor.STATE_COLOUR_NAMES.items():
+            self.assertIn(name, editor.THEME, word)
+        self.assertEqual(editor.state_colour_name("Duplicate, Edited"), "warning")
+        self.assertEqual(editor.state_colour_name("Added"), "added")
+        self.assertEqual(editor.state_colour_name("Edited"), "edited")
+        self.assertEqual(editor.state_colour_name(""), "")
+
+    def test_every_family_and_person_rules_have_a_badge_colour(self):
+        for cmd, (family, _slot) in editor.CMD_SLOT.items():
+            self.assertEqual(editor.badge_family(cmd), family)
+            self.assertIn(f"badge_{family}", editor.THEME)
+        self.assertEqual(editor.badge_family("PERSON_FIRST_NAME_END_CHANGE"), "person")
+        self.assertIn("badge_person", editor.THEME)
+        self.assertEqual(editor.badge_family("NATIONALITY_NAME_CHANGE"), "")
+
+    def test_the_remembered_view_keeps_the_inspector_choice(self):
+        self.assertEqual(editor.clean_view({"inspector": False}), {"inspector": False})
+        self.assertEqual(editor.clean_view({"inspector": True}), {"inspector": True})
+        self.assertEqual(editor.clean_view({"inspector": "no"}), {})
+
+    def test_a_field_carries_its_raw_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(path, self.LINES)
+            doc = editor.LncDoc(path)
+            entity = next(e for e in editor.build_entities([doc]) if e.id == "1")
+            views = {view.slot: view for view in editor.describe_fields(entity)}
+            self.assertEqual(views["long"].raw, '"CLUB_NAME_CHANGE"\t1\t"Alpha FC"\t""')
+            self.assertEqual(views["code"].raw, "")
+
+    def test_the_user_guide_mentions_only_keys_the_window_has(self):
+        text = " ".join(heading + " " + body for heading, body in editor.USER_GUIDE)
+        for key in ("Ctrl+F", "F2", "F4", "Ctrl+Z", "Ctrl+S", "Ctrl+Shift+D"):
+            self.assertIn(key, text)
+
+    # ---- the window ----
+
+    def window(self, tmp):
+        path = Path(tmp) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.LINES)
+        win = make_window(self)
+        win.load([str(path)])
+        return win
+
+    def test_the_new_keys_and_menu_items(self):
+        from PySide6.QtGui import QAction
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp)
+            try:
+                self.assertEqual(win.deploy_act.shortcut().toString(), "Ctrl+Shift+D")
+                self.assertEqual(win.exit_act.shortcut().toString(), "Ctrl+Q")
+                self.assertEqual(win.inspector_act.shortcut().toString(), "F4")
+                self.assertEqual(
+                    [action.text() for action in win.view_menu.actions() if action.text()],
+                    ["Entities", "All lines", "Changes", "Inspector", "Reset column widths"])
+                self.assertEqual(
+                    [action.text() for action in win.help_menu.actions() if action.text()],
+                    ["User guide", "Keyboard shortcuts", f"About {editor.APP_NAME}"])
+                taken = [key.toString() for action in win.findChildren(QAction)
+                         for key in action.shortcuts()]
+                self.assertEqual(len(taken), len(set(taken)), taken)
+                rows = win.shortcut_rows()
+                for row in (("Ctrl+Shift+D", "File > Deploy to FM27..."),
+                            ("Ctrl+Q", "File > Exit"), ("F4", "View > Inspector")):
+                    self.assertIn(row, rows)
+                self.assertEqual(win.product_label.text(),
+                                 f"{editor.APP_NAME} {editor.VERSION}")
+            finally:
+                close_window(win)
+
+    def test_f4_hides_and_shows_the_inspector_and_the_choice_is_remembered(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = self.window(tmp)
+                try:
+                    win.show()
+                    win.activateWindow()
+                    win.entity_view.setFocus()
+                    QApplication.processEvents()        # the window becomes active
+                    self.assertTrue(win.inspector_scroll.isVisible())
+                    QTest.keyClick(win.entity_view, Qt.Key_F4)
+                    self.assertFalse(win.inspector_scroll.isVisible())
+                    self.assertFalse(win.inspector_act.isChecked())
+                    win.remember_view()
+                    state, problem = editor.read_state(root)
+                    self.assertEqual(problem, "")
+                    self.assertIs(state["view"]["inspector"], False)
+                finally:
+                    close_window(win)
+                again = make_window(self)
+                try:
+                    self.assertFalse(again.inspector_scroll.isVisible())
+                    again.inspector_act.trigger()
+                    self.assertTrue(again.inspector_scroll.isVisible())
+                    self.assertGreaterEqual(again.entity_splitter.sizes()[2],
+                                            again.inspector_scroll.minimumWidth())
+                finally:
+                    close_window(again)
+
+    def test_reset_column_widths_forgets_the_widths_set_by_hand(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp)
+            try:
+                fitted = win.line_view.columnWidth(win.line_model.TYPE_COL)
+                win.line_widths = {"type": 31}
+                win.entity_widths = {"club": {"short": 31}}
+                win.line_view.setColumnWidth(win.line_model.TYPE_COL, 31)
+                win.reset_widths_act.trigger()
+                self.assertEqual((win.line_widths, win.entity_widths), ({}, {}))
+                self.assertEqual(win.line_view.columnWidth(win.line_model.TYPE_COL), fitted)
+            finally:
+                close_window(win)
+
+    def test_the_type_column_draws_a_badge_beside_its_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp)
+            try:
+                column = win.line_model.TYPE_COL
+                delegate = win.line_view.itemDelegateForColumn(column)
+                self.assertEqual(type(delegate).__name__, "BadgeDelegate")
+                index = win.line_model.index(0, column)
+                self.assertEqual(index.data(delegate.ROLE), "club")
+                self.assertEqual(index.data(), "Club - long name")     # the words stay
+                # The column has room for the badge and the words.
+                metrics = win.line_view.fontMetrics()
+                self.assertGreater(win.line_view.columnWidth(column),
+                                   metrics.horizontalAdvance("Club - short name"))
+                win.tabs.setCurrentIndex(1)
+                self.assertFalse(win.line_view.grab().isNull())        # paints without error
+                # The Changes tab and the review dialog use the same badge.
+                win.line_model.setData(win.line_model.index(0, win.line_model.NAME_COL),
+                                       "Alpha United")
+                win.tabs.setCurrentIndex(2)
+                change = win.change_view.itemDelegateForColumn(win.change_model.TYPE)
+                self.assertEqual(type(change).__name__, "BadgeDelegate")
+                self.assertEqual(win.change_model.index(0, win.change_model.TYPE)
+                                 .data(change.ROLE), "club")
+                self.assertFalse(win.change_view.grab().isNull())
+            finally:
+                close_window(win)
+
+    def test_the_inspector_shows_the_line_as_it_stands_in_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp)
+            try:
+                win.entity_view.selectRow(0)
+                raw = win.inspector_fields["long"]["raw"]
+                self.assertIn('"CLUB_NAME_CHANGE"', raw.text())
+                self.assertIn('"Alpha FC"', raw.text())
+                self.assertNotIn("\t", raw.text())
+                win.inspector_fields["long"]["edit"].setText("Alpha United")
+                win.commit_inspector("long", win.inspector_fields["long"]["edit"])
+                self.assertIn('"Alpha United"', raw.text())
+                self.assertEqual(win.inspector_fields["code"]["raw"].text(), "")
+            finally:
+                close_window(win)
+
+    def test_the_user_guide_opens_with_every_section(self):
+        from PySide6.QtWidgets import QDialog, QTextEdit
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp)
+            try:
+                seen = []
+
+                def look(dialog):
+                    seen.append((dialog.windowTitle(),
+                                 dialog.findChild(QTextEdit).toPlainText()))
+                    return 0
+
+                with mock.patch.object(QDialog, "exec", look):
+                    win.guide_act.trigger()
+                self.assertEqual(seen[0][0], "User guide")
+                for heading, _body in editor.USER_GUIDE:
+                    self.assertIn(heading, seen[0][1])
+            finally:
+                close_window(win)
+
+
+class Session14Display(unittest.TestCase):
+    """Session 14: at 125% and 150% scaling the window is checked with work in it, not
+    empty: names loaded, a long profile name, a visible validation message, type badges,
+    the Changes tab, and the review dialog. Sizes are Qt's logical pixels (1920 by 1080
+    physical at 150% is 1280 by 720 logical, less the taskbar)."""
+
+    SCRIPT = (
+        "import json, sys, tempfile\n"
+        "from pathlib import Path\n"
+        "from unittest import mock\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import fm_name_editor as editor\n"
+        "root = Path(tempfile.mkdtemp())\n"
+        "for name in ('BACKUP_ROOT', 'PROFILE_ROOT', 'STATE_ROOT'):\n"
+        "    mock.patch.object(editor, name, root / name).start()\n"
+        "editor.JOBS_INLINE = True\n"
+        "lnc = root / 'FM27_Club_Names.lnc'\n"
+        "rows = ''.join(f'\"CLUB_NAME_CHANGE\"\\t{n}\\t\"Club Atletico de Ejemplo Number {n} FC\"\\t\"\"\\r\\n'\n"
+        "               for n in range(1, 41))\n"
+        "lnc.write_bytes(b'\\xef\\xbb\\xbf' + rows.encode('utf-8'))\n"
+        "profile = editor.create_profile('My preferred spellings for every club in "
+        "England and Scotland', '', editor.PROFILE_ROOT)\n"
+        "from PySide6.QtCore import Qt\n"
+        "from PySide6.QtWidgets import QApplication, QDialog, QToolButton\n"
+        "app, win = editor.run_gui([str(lnc)])\n"
+        "QApplication.processEvents()\n"
+        "win.refresh_profiles(select_file=profile.path.name)\n"
+        "free = app.primaryScreen().availableGeometry()\n"
+        "win.entity_view.selectRow(0)\n"
+        "field = win.inspector_fields['long']\n"
+        "field['edit'].setText('Bad \"name\"')\n"
+        "win.check_field('long')\n"
+        "QApplication.processEvents()\n"
+        "problem = field['problem']\n"
+        "viewport = win.inspector_scroll.viewport().width()\n"
+        "message = {'visible': problem.isVisible(), 'width': problem.width(),\n"
+        "           'room': viewport, 'right': problem.mapTo(win.inspector, "
+        "problem.rect().topRight()).x()}\n"
+        "win.put_back_field('long')\n"
+        "win.line_model.setData(win.line_model.index(1, win.line_model.NAME_COL), 'Beta United')\n"
+        "win.tabs.setCurrentIndex(1)\n"
+        "QApplication.processEvents()\n"
+        "type_width = win.line_view.columnWidth(win.line_model.TYPE_COL)\n"
+        "type_text = win.line_view.fontMetrics().horizontalAdvance('Club - long name')\n"
+        "win.tabs.setCurrentIndex(2)\n"
+        "QApplication.processEvents()\n"
+        "changes = win.change_model.rowCount()\n"
+        "seen = []\n"
+        "def look(dialog):\n"
+        "    QApplication.processEvents()\n"
+        "    seen.append([dialog.width(), dialog.height()])\n"
+        "    return 0\n"
+        "with mock.patch.object(QDialog, 'exec', look):\n"
+        "    win.save()\n"
+        "overflow = win.toolbar.findChild(QToolButton, 'qt_toolbar_ext_button')\n"
+        "print(json.dumps({'free': [free.width(), free.height()],\n"
+        "                  'window': [win.width(), win.height()],\n"
+        "                  'toolbar': [win.toolbar.sizeHint().width(), win.toolbar.width()],\n"
+        "                  'overflow': bool(overflow is not None and overflow.isVisible()),\n"
+        "                  'profile': [win.profile_box.currentText(), win.profile_box.width()],\n"
+        "                  'message': message, 'type': [type_width, type_text],\n"
+        "                  'changes': changes, 'review': seen,\n"
+        "                  'ratio': app.primaryScreen().devicePixelRatio()}))\n"
+        "for doc in win.docs:\n"
+        "    doc.mark_clean()         # the edit is unsaved; closing would ask about it\n"
+        "win.remember_on_close = False\n"
+        "win.close()\n"
+    )
+
+    def test_a_working_window_fits_at_125_and_150_percent(self):
+        import subprocess
+        import sys
+
+        project = str(Path(__file__).resolve().parent.parent)
+        for ratio, width, height in ((1.25, 1536, 824), (1.5, 1280, 688)):
+            with self.subTest(ratio=ratio), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "screen.json").write_text(json.dumps({"screens": [{
+                    "name": "Desktop", "x": 0, "y": 0, "width": width, "height": height,
+                    "logicalDpi": 96, "logicalBaseDpi": 96, "dpr": ratio}]}), encoding="utf-8")
+                (Path(tmp) / "probe.py").write_text(self.SCRIPT, encoding="utf-8")
+                env = dict(os.environ, QT_QPA_PLATFORM="offscreen:configfile=screen.json")
+                run = subprocess.run([sys.executable, "probe.py", project], cwd=tmp, env=env,
+                                     capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                found = json.loads(run.stdout.strip().splitlines()[-1])
+                self.assertEqual((found["free"], found["ratio"]), ([width, height], ratio))
+                self.assertLessEqual(found["window"][0], width)
+                self.assertLessEqual(found["window"][1] + 40, height)
+                self.assertLessEqual(found["toolbar"][0], found["toolbar"][1])
+                self.assertFalse(found["overflow"])
+                # A long profile name is shown, in a box that keeps its cap.
+                self.assertTrue(found["profile"][0].startswith("My preferred spellings"))
+                self.assertLessEqual(found["profile"][1], 260)
+                # The validation message is shown and wraps inside the inspector.
+                message = found["message"]
+                self.assertTrue(message["visible"])
+                self.assertLessEqual(message["right"], message["room"])
+                # The type column has room for the badge and its words.
+                self.assertGreater(found["type"][0], found["type"][1])
+                self.assertGreaterEqual(found["changes"], 1)
+                # The review dialog opened and fits the free area.
+                self.assertEqual(len(found["review"]), 1, found)
+                review_width, review_height = found["review"][0]
+                self.assertLessEqual(review_width, width)
+                self.assertLessEqual(review_height + 40, height)
+
+
 if __name__ == "__main__":
     unittest.main()

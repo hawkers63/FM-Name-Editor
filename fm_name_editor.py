@@ -159,11 +159,192 @@ FRIENDLY = {
     "PERSON_SECOND_NAME_END_CHANGE": "Person - second name ending",
 }
 
+# The slate theme's colours, by name (Session 14). The style sheet, the state
+# colours in the grids, the include tick, and the type badges all read them
+# from here, so a colour is changed in one place. A colour that carries meaning
+# always has a word beside it on screen: Edited, Added, Duplicate, a line's type.
+THEME = {
+    "window": "#13151b",        # window and dialog background
+    "panel": "#1a1e28",         # menus, inputs, tables, buttons, the header row
+    "stripe": "#161b26",        # alternate table rows
+    "rule": "#2a3040",          # borders and grid lines
+    "hover": "#232838",
+    "text": "#e2e8f0",
+    "muted": "#8a94a6",         # secondary text, left-out rows
+    "disabled": "#5c6577",
+    "accent": "#8b5cf6",        # selection, Review changes, a ticked box
+    "accent_hover": "#7c4ff0",
+    "on_accent": "#ffffff",     # text on the accent
+    "edited": "#a78bfa",        # "Edited": lighter than the accent, so it reads on slate
+    "added": "#10b981",         # "Added", and good news
+    "warning": "#f59e0b",       # "Duplicate", competing values, refused text
+    "focus": "#06b6d4",         # keyboard focus, collections
+    "focus_text": "#67e8f9",
+    # The badge before a line's type, one per family; the type's words sit beside it.
+    "badge_club": "#60a5fa",
+    "badge_comp": "#f472b6",
+    "badge_stadium": "#a3e635",
+    "badge_city": "#fb923c",
+    "badge_nation": "#f87171",
+    "badge_award": "#fde047",
+    "badge_person": "#94a3b8",
+}
+# The state words in the grids, and the theme colour each is drawn in. A
+# repeated key is named first, then added, then edited.
+STATE_COLOUR_NAMES = {"Duplicate": "warning", "Added": "added", "Edited": "edited"}
+
+THEME_QSS = """
+QWidget { background-color: $window; color: $text; font-size: 13px; }
+QMainWindow, QDialog { background-color: $window; }
+QToolBar {
+    background: $panel; border: 0; border-bottom: 1px solid $rule;
+    spacing: 6px; padding: 4px;
+}
+QStatusBar { background: $panel; color: $muted; }
+QStatusBar QLabel { padding: 0 6px; }
+QMenuBar { background: $panel; color: $text; }
+QMenuBar::item { background: transparent; padding: 4px 10px; }
+QMenuBar::item:selected { background: $rule; }
+QToolBar QLabel { background: transparent; color: $muted; padding: 0 2px 0 6px; }
+QToolBar QWidget#spacer { background: transparent; }
+QToolBar QLabel#product {
+    color: $text; font-weight: bold; font-size: 14px; padding: 0 10px 0 4px;
+}
+QToolBar QToolButton {
+    background: transparent; color: $text; border: 1px solid transparent;
+    padding: 3px 8px; border-radius: 4px;
+}
+QToolBar QToolButton:hover { border-color: $rule; background: $hover; }
+QToolBar QToolButton:disabled { color: $disabled; }
+QToolBar QToolButton#review {
+    background: $accent; color: $on_accent; border-color: $accent; font-weight: bold;
+}
+QToolBar QToolButton#review:hover { background: $accent_hover; }
+QToolBar QToolButton#review:disabled {
+    background: transparent; color: $disabled; border-color: $rule; font-weight: normal;
+}
+QLabel#metrics { color: $muted; background: transparent; padding: 2px 6px; }
+QLabel#muted { color: $muted; background: transparent; }
+QLabel#warning { color: $warning; background: transparent; }
+QLabel#blocked { color: $warning; background: transparent; font-weight: bold; }
+QLabel#ok { color: $added; background: transparent; }
+QLabel#edited { color: $edited; background: transparent; }
+QLabel#added { color: $added; background: transparent; }
+QLabel#title { background: transparent; font-weight: bold; font-size: 15px; }
+QLabel#raw {
+    color: $muted; background: transparent; font-family: Consolas, monospace; font-size: 12px;
+}
+QPushButton#small { padding: 1px 8px; }
+QPushButton:focus, QToolBar QToolButton:focus { border-color: $focus; }
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus,
+QListWidget:focus, QTableView:focus, QTableWidget:focus { border: 1px solid $focus; }
+QCheckBox:focus, QRadioButton:focus { color: $focus_text; }
+QTabBar::tab:focus { color: $focus_text; }
+QLineEdit#invalid { border: 1px solid $warning; }
+QFrame#rule { background: $rule; max-height: 1px; border: 0; }
+QLabel#heading { background: transparent; font-weight: bold; }
+QMenu { background: $panel; color: $text; border: 1px solid $rule; }
+QMenu::item { padding: 4px 18px; }
+QMenu::item:selected { background: $accent; color: $on_accent; }
+QMenu::item:disabled { color: $muted; }
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QListWidget, QTableView, QTableWidget {
+    background: $panel; color: $text; border: 1px solid $rule;
+    selection-background-color: $accent; selection-color: $on_accent;
+}
+QHeaderView::section {
+    background: $panel; color: $muted; border: 1px solid $rule; padding: 4px;
+}
+QTableView, QTableWidget {
+    alternate-background-color: $stripe; gridline-color: $rule;
+}
+QPushButton {
+    background: $panel; color: $text; border: 1px solid $rule;
+    padding: 4px 10px; border-radius: 4px;
+}
+QPushButton:hover { border-color: $accent; }
+QPushButton:checked { background: $accent; color: $on_accent; border-color: $accent; }
+QTabBar::tab {
+    background: $panel; color: $muted; padding: 6px 14px; border: 1px solid $rule;
+}
+QTabBar::tab:selected { color: $text; border-bottom: 2px solid $accent; }
+QListWidget::item:selected, QTableWidget::item:selected {
+    background: $accent; color: $on_accent;
+}
+QComboBox QAbstractItemView {
+    background: $panel; color: $text; selection-background-color: $accent;
+}
+QSplitter::handle { background: $rule; }
+QLabel { background: transparent; }
+QCheckBox, QRadioButton { background: transparent; spacing: 6px; }
+"""
+
+
+def theme_style_sheet(theme=None) -> str:
+    """The window's style sheet, with every colour taken from ``theme`` (default THEME)."""
+    from string import Template
+    return Template(THEME_QSS).substitute(THEME if theme is None else theme)
+
+
+def state_colour_name(text: str) -> str:
+    """The theme colour for a status text, or "" for none: a repeated key first,
+    then added, then edited."""
+    for word, name in STATE_COLOUR_NAMES.items():
+        if word in text:
+            return name
+    return ""
+
+
 FILE_SECTION_HINT = (
     "The # comment heading this line sits under in the name file. It is file "
     "structure, not a reliable country. In FM27_Fix.lnc, for instance, the Premier "
     "League lines come before the #England heading, so they sit under the heading "
     "above it.")
+
+# Help > User guide: what the editor does and in what order, in plain words.
+USER_GUIDE = (
+    ("Open the name files",
+     "Quick load opens the two FM27 name files (FM27_Club_Names.lnc and FM27_Fix.lnc) "
+     "from the database folder chosen at the top. File > Open files opens any .lnc "
+     "files. Opening runs in the background; the window stays usable."),
+    ("Find and edit names",
+     "The Entities tab shows one row per club, competition, stadium, city, nation, or "
+     "award, with its long name, short name, and code side by side. Choose a family with "
+     "the buttons above the grid, narrow it with the search box (Ctrl+F), a file "
+     "section, or a collection, and edit a cell with F2 or a double-click. The "
+     "inspector on the right (F4 shows or hides it) shows the text on disk above the "
+     "proposed text for the selected row, and the line as it stands in the file. "
+     "All lines lists every name line and person rule; Changes lists every difference "
+     "from the files on disk."),
+    ("Tools change memory only",
+     "Bulk tools, Replace, Import older edits, name packs, profile Apply and Migrate, "
+     "and restoring a backup change the open files in memory and mark them unsaved. "
+     "Each shows a preview first. Bulk tools start from your saved rules (the affix "
+     "set, sponsors, small words, casing, scope, and a never-change list); every "
+     "preview row has a tick, and only ticked rows are applied. Undo (Ctrl+Z) takes "
+     "back a whole operation."),
+    ("Save and Deploy",
+     "Only Save (Ctrl+S) and Deploy (Ctrl+Shift+D) write files, and only through "
+     "Review changes, where each change has a tick. Unticked changes are left out and "
+     "stay pending. A copy of every game file is kept in the backups folder first, "
+     "files are replaced one at a time, and nothing is written to the game while "
+     "Football Manager is running. Deploy writes the name files into lnc\\all of the "
+     "chosen database folder."),
+    ("Spelling profiles",
+     "A profile keeps your preferred spellings after Save and Deploy. Record edits "
+     "before you save; Apply them again when the game's files change; Migrate carries "
+     "them forward to a new version of Football Manager, ticking only the spellings "
+     "the game has not changed itself."),
+    ("Backups and overrides",
+     "Backups > Browse and restore compares a backup with the open files and restores "
+     "it into memory. Right-click a row and choose Show overrides across files to see "
+     "every line in the database folder that names the same entity. The editor does "
+     "not know the game's load order and does not claim to."),
+    ("Where your files live",
+     "Backups, spelling profiles, and settings (the remembered view, saved searches, "
+     "collections, and the Bulk-tools rules in state\\rules.json) are kept in the "
+     "backups, profiles, and state folders beside the program. A damaged settings or "
+     "rules file is named in the status bar and left alone."),
+)
 
 PACK_FORMAT = "fm-name-pack"
 PACK_VERSION = 1
@@ -200,9 +381,11 @@ def friendly(cmd: str) -> str:
     return FRIENDLY.get(cmd, cmd)
 
 
-def count_of(number: int, word: str) -> str:
+def count_of(number: int, word: str, plural: str = "") -> str:
     """"1 name", "14 names": a count for a menu or a message."""
-    return f"{number:,} {word}" + ("" if number == 1 else "s")
+    if number == 1:
+        return f"{number:,} {word}"
+    return f"{number:,} {plural or word + 's'}"
 
 
 def field_is_legal(text: str) -> bool:
@@ -1352,6 +1535,16 @@ CMD_SLOT: dict[str, tuple[str, str]] = {
     for slot, _label, cmd in fields
 }
 
+
+def badge_family(cmd: str) -> str:
+    """The family whose badge a line's type is drawn with: a key of FAMILY_FIELDS,
+    "person" for a person rule, or "" for a command with no badge."""
+    if cmd in CMD_SLOT:
+        return CMD_SLOT[cmd][0]
+    if cmd.startswith("PERSON_"):
+        return "person"
+    return ""
+
 TEXT_SLOTS = {"long", "short", "name"}
 AFFIXES = ("FC", "CF", "FK", "SK", "AC", "AS", "AFC", "SC", "Calcio")
 SMALL_WORDS = {"of", "the", "and", "de", "da", "di", "van", "von", "y"}
@@ -1572,10 +1765,11 @@ class FieldView:
     line (or, for an empty field, where typing a name would add one), and
     ``count`` the number of lines that carry the field. ``hint`` is any
     review-hint note the field carries (empty for most fields; Session 13).
+    ``raw`` is the first line's text in memory, without its ending (Session 14).
     """
 
     __slots__ = ("slot", "label", "state", "current", "on_disk", "reason",
-                 "where", "count", "hint")
+                 "where", "count", "hint", "raw")
 
     def __init__(self, slot: str, label: str):
         self.slot = slot
@@ -1587,6 +1781,7 @@ class FieldView:
         self.where = ""
         self.count = 0
         self.hint = ""
+        self.raw = ""
 
     @property
     def marker(self) -> str:
@@ -1618,6 +1813,7 @@ def describe_fields(entity: NameEntity) -> list[FieldView]:
             continue
         first = group[0]
         view.current = first.name
+        view.raw = first.raw
         view.count = len(group)
         view.where = describe_lines(group)
         if first.imported:
@@ -1775,7 +1971,7 @@ def set_entity_field(entity: NameEntity, slot: str, new: str, docs,
     return True
 
 
-def strip_affix(name: str, affixes: tuple[str, ...] = AFFIXES) -> str:
+def strip_affix(name: str, affixes=AFFIXES) -> str:
     """Remove one leading and one trailing affix token. A lone token is kept."""
     tokens = name.split(" ")
     folded = {item.casefold() for item in affixes}
@@ -1802,19 +1998,41 @@ def _cap_token(token: str) -> str:
     return "".join(out)
 
 
-def title_case_name(name: str) -> str:
-    """Title-case a name that is entirely capitals. Anything else is unchanged."""
+WORD_CASE_LENGTH = 4    # in "words" casing, an all-capital word this long is re-cased
+
+
+def title_case_name(name: str, small_words=None, mode: str = "capitals") -> str:
+    """Title-case a name that is entirely capitals.
+
+    ``small_words`` (default ``SMALL_WORDS``) stay lower case after the first
+    word. With ``mode="words"``, a name that mixes cases also has each word of
+    four or more letters written wholly in capitals re-cased, so "Club ATLETICO
+    Madrid" is fixed while "FC", "AFC", and "USA" stay as they are. Any other
+    name is returned unchanged.
+    """
+    small = {word.casefold() for word in (SMALL_WORDS if small_words is None else small_words)}
     letters = [ch for ch in name if ch.isalpha()]
-    if not letters or not all(ch.isupper() for ch in letters):
+    if not letters:
         return name
     words = name.split(" ")
+    if all(ch.isupper() for ch in letters):
+        cased = []
+        for index, word in enumerate(words):
+            bare = word.casefold().strip(".'’")
+            if index > 0 and bare in small:
+                cased.append(word.lower())
+            else:
+                cased.append(_cap_token(word))
+        return " ".join(cased)
+    if mode != "words":
+        return name
     cased = []
-    for index, word in enumerate(words):
-        bare = word.casefold().strip(".'’")
-        if index > 0 and bare in SMALL_WORDS:
-            cased.append(word.lower())
-        else:
+    for word in words:
+        letters_in = [ch for ch in word if ch.isalpha()]
+        if len(letters_in) >= WORD_CASE_LENGTH and all(ch.isupper() for ch in letters_in):
             cased.append(_cap_token(word))
+        else:
+            cased.append(word)
     return " ".join(cased)
 
 
@@ -1838,9 +2056,12 @@ def strip_sponsor(name: str, sponsors: list[str]) -> str:
 
 
 class BulkEdit:
-    """One preview row. Nothing is written until apply_bulk."""
+    """One preview row. Nothing is written until apply_bulk.
 
-    __slots__ = ("entity", "slot", "entry", "before", "after")
+    ``included`` is the row's tick: apply_bulk changes only included rows.
+    """
+
+    __slots__ = ("entity", "slot", "entry", "before", "after", "included")
 
     def __init__(self, entity: NameEntity, slot: str, entry: Entry, before: str, after: str):
         self.entity = entity
@@ -1848,35 +2069,46 @@ class BulkEdit:
         self.entry = entry
         self.before = before
         self.after = after
+        self.included = True
 
 
-def _transform_name(kind: str, before: str, sponsors: list[str]) -> str:
+def _transform_name(kind: str, before: str, sponsors: list[str], rules: "Rules | None" = None) -> str:
     if kind == "affix":
-        return strip_affix(before)
+        return strip_affix(before, rules.affixes if rules is not None else AFFIXES)
     if kind == "sponsor":
         return strip_sponsor(before, sponsors)
     if kind == "title":
-        return title_case_name(before)
+        if rules is None:
+            return title_case_name(before)
+        return title_case_name(before, rules.small_words, rules.casing)
     raise ValueError(kind)
 
 
-def preview_bulk(entities, kind: str, sponsors: list[str] | None = None) -> list[BulkEdit]:
-    """Build the before/after list for the entities currently on screen.
+def preview_bulk(entities, kind: str, sponsors: list[str] | None = None,
+                 rules: "Rules | None" = None) -> list[BulkEdit]:
+    """Build the before/after list for the entities given.
 
     Codes are left alone. The sponsor cleanser only looks at competitions.
     Each source line is listed on its own, so duplicate IDs are not collapsed.
+    ``rules`` (default: the built-in ones) supplies the affix set, the small
+    words, the casing preference, and the per-key exceptions: an entity whose
+    key is an exception is never listed.
     """
     edits = []
-    phrases = list(sponsors or [])
+    phrases = list(sponsors if sponsors is not None
+                   else (rules.sponsors if rules is not None else []))
+    skipped = rules.exception_keys() if rules is not None else frozenset()
     for entity in entities:
         if kind == "sponsor" and entity.family != "comp":
+            continue
+        if skipped and entity_key(entity) in skipped:
             continue
         for slot, _label, _cmd in FAMILY_FIELDS[entity.family]:
             if slot not in TEXT_SLOTS:
                 continue
             for entry in entity.slots.get(slot) or []:
                 before = entry.name
-                after = _transform_name(kind, before, phrases)
+                after = _transform_name(kind, before, phrases, rules)
                 if after != before and name_is_legal(after):
                     edits.append(BulkEdit(entity, slot, entry, before, after))
     return edits
@@ -1885,13 +2117,15 @@ def preview_bulk(entities, kind: str, sponsors: list[str] | None = None) -> list
 def apply_bulk(edits, docs, reason: str = "bulk") -> int:
     """Apply a preview. Returns how many lines changed.
 
-    docs is unused; each edit already points at its line. It is kept so
-    callers can pass the open documents beside the preview. ``reason`` is
-    "bulk" for the bulk tools and "replace" for Replace.
+    Only rows whose tick is on (``included``; Replace's edits have no tick and
+    all count) are applied. docs is unused; each edit already points at its
+    line. ``reason`` is "bulk" for the bulk tools and "replace" for Replace.
     """
     del docs
     count = 0
     for edit in edits:
+        if not getattr(edit, "included", True):
+            continue
         if try_set_name(edit.entry, edit.after, reason):
             count += 1
     return count
@@ -2036,31 +2270,80 @@ RULES_VERSION = 1
 RULES_FILE = "rules.json"
 
 
+CASING_MODES = ("capitals", "words")
+BULK_SCOPES = ("shown", "family", "selected")
+DEFAULT_CASING = "capitals"
+DEFAULT_SCOPE = "shown"
+
+
 class Rules:
     """Reusable bulk-tool preferences, kept in ``state/rules.json``.
 
-    ``sponsors`` is the editable list in the Bulk tools' sponsor cleanser;
-    ``small_words`` is the list the title-caser keeps lower case. A missing
-    file loads the built-in defaults; a damaged file is named in the status
-    bar and left alone, as with ``state/settings.json`` (decision 38).
+    ``sponsors`` is the sponsor cleanser's list; ``affixes`` the affix
+    stripper's set; ``small_words`` the words the title-caser keeps lower case;
+    ``casing`` is "capitals" (re-case names written wholly in capitals) or
+    "words" (also re-case single long capital words); ``scope`` is where a run
+    starts: "shown" (the entities in the current filter), "family" (every
+    entity of the family shown), or "selected" (the selected rows);
+    ``exceptions`` are (family, id, language) keys no bulk run ever changes.
+    A missing file loads the built-in defaults; a damaged file is named in the
+    status bar and left alone, as with ``state/settings.json`` (decision 38).
     """
 
-    __slots__ = ("sponsors", "small_words")
+    __slots__ = ("sponsors", "small_words", "affixes", "casing", "scope", "exceptions")
 
-    def __init__(self, sponsors=None, small_words=None):
+    def __init__(self, sponsors=None, small_words=None, affixes=None,
+                 casing=DEFAULT_CASING, scope=DEFAULT_SCOPE, exceptions=None):
         self.sponsors = (list(sponsors) if sponsors is not None
                          else list(STARTER_SPONSORS))
         self.small_words = (list(small_words) if small_words is not None
                             else sorted(SMALL_WORDS))
+        self.affixes = list(affixes) if affixes is not None else list(AFFIXES)
+        self.casing = casing if casing in CASING_MODES else DEFAULT_CASING
+        self.scope = scope if scope in BULK_SCOPES else DEFAULT_SCOPE
+        self.exceptions = sorted({tuple(key) for key in (exceptions or ())},
+                                 key=_key_order)
+
+    def exception_keys(self) -> frozenset:
+        return frozenset(self.exceptions)
 
     def to_bytes(self) -> bytes:
         payload = {
             "format": RULES_FORMAT,
             "version": RULES_VERSION,
             "sponsors": self.sponsors,
+            "affixes": self.affixes,
             "small_words": self.small_words,
+            "casing": self.casing,
+            "scope": self.scope,
+            "exceptions": [{"family": family, "id": id_, "language": lang}
+                           for family, id_, lang in self.exceptions],
         }
         return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _text_list(raw, name: str):
+    """A list of non-empty texts from ``raw[name]``, or None when absent or not a list."""
+    value = raw.get(name)
+    if not isinstance(value, list):
+        return None
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _clean_exceptions(value) -> list[tuple]:
+    """The usable (family, id, language) keys in a saved list; anything else is dropped."""
+    keys = []
+    if not isinstance(value, list):
+        return keys
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        family, id_, lang = item.get("family"), item.get("id"), item.get("language", "")
+        if (isinstance(family, str) and family in FAMILY_FIELDS
+                and isinstance(id_, str) and id_is_legal(id_)
+                and isinstance(lang, str)):
+            keys.append((family, id_, lang))
+    return keys
 
 
 def read_rules(root) -> tuple["Rules", str]:
@@ -2068,7 +2351,9 @@ def read_rules(root) -> tuple["Rules", str]:
 
     Shape is the same as ``read_state``: ({built-in defaults}, "") when the
     file is missing, (defaults, named problem) when it exists but cannot be
-    used, and (parsed rules, "") on success. A byte-order mark is accepted.
+    used, and (parsed rules, "") on success. A byte-order mark is accepted. A
+    field that is missing or of the wrong type takes its default; one bad
+    exception is dropped, not the file.
     """
     path = Path(root) / RULES_FILE
     if not path.exists():
@@ -2087,11 +2372,15 @@ def read_rules(root) -> tuple["Rules", str]:
         return Rules(), f"{path} is not readable JSON: {exc.msg}."
     if not isinstance(raw, dict):
         return Rules(), f"{path} does not hold rules: it should be one JSON object."
-    sponsors = [value for value in (raw.get("sponsors") or [])
-                if isinstance(value, str) and value]
-    small_words = [value for value in (raw.get("small_words") or [])
-                   if isinstance(value, str) and value]
-    return Rules(sponsors=sponsors, small_words=small_words), ""
+    casing, scope = raw.get("casing"), raw.get("scope")
+    return Rules(
+        sponsors=_text_list(raw, "sponsors"),
+        small_words=_text_list(raw, "small_words"),
+        affixes=_text_list(raw, "affixes"),
+        casing=casing if isinstance(casing, str) else DEFAULT_CASING,
+        scope=scope if isinstance(scope, str) else DEFAULT_SCOPE,
+        exceptions=_clean_exceptions(raw.get("exceptions")),
+    ), ""
 
 
 def save_rules(rules: "Rules", root) -> None:
@@ -4428,7 +4717,7 @@ def clean_view(raw) -> dict:
 
     Keys: "tab", "family", "status", "entity_sort" and "line_sort" (key and
     descending), "entity_widths" (per family, per column key), "line_widths",
-    and "geometry", "window_state", and "splitter" (base64 text from Qt). A
+    "inspector" (shown or hidden), and "geometry", "window_state", and "splitter" (base64 text from Qt). A
     value of the wrong type or out of range is dropped, so an older or
     hand-edited settings file cannot stop the window opening. Each type is
     checked before the value is looked up: a list or an object cannot be.
@@ -4458,6 +4747,9 @@ def clean_view(raw) -> dict:
     line_widths = _clean_widths(raw.get("line_widths"), LINE_COLUMNS)
     if line_widths:
         view["line_widths"] = line_widths
+    inspector = raw.get("inspector")
+    if isinstance(inspector, bool):
+        view["inspector"] = inspector
     for name in ("geometry", "window_state", "splitter"):
         text = raw.get(name)
         if isinstance(text, str) and text.isascii() and 0 < len(text) < 20000:
@@ -4643,17 +4935,16 @@ def run_gui(paths):
         "are not saved.")
     DISPLAY, EDIT, FONT = Qt.DisplayRole, Qt.EditRole, Qt.FontRole
     FOREGROUND, TOOLTIP = Qt.ForegroundRole, Qt.ToolTipRole
-    # State text in the grids, coloured as well as worded. Lighter than the
-    # accent (#8b5cf6) so it reads on the slate panels.
-    STATE_COLOURS = {"Duplicate": QColor("#f59e0b"), "Added": QColor("#10b981"),
-                     "Edited": QColor("#a78bfa")}
+    # The theme's colours as Qt colours, made once (see THEME). State text in
+    # the grids is coloured as well as worded (STATE_COLOUR_NAMES).
+    COLOURS = {name: QColor(value) for name, value in THEME.items()}
+    BADGE_ROLE = Qt.UserRole + 20       # a type cell's badge family (see badge_family)
+    BADGE_SPACE = 18                    # the room a badge takes before the type's words
 
     def state_colour(text: str):
         """The colour for a status cell: a repeated key first, then added, then edited."""
-        for word, colour in STATE_COLOURS.items():
-            if word in text:
-                return colour
-        return None
+        name = state_colour_name(text)
+        return COLOURS[name] if name else None
 
     def reorder_rows(model, rows) -> None:
         """Give a model's rows a new order, keeping each selection on the same row.
@@ -4676,7 +4967,8 @@ def run_gui(paths):
         longest = sorted({text for text in texts if text}, key=len, reverse=True)[:sample]
         return max((metrics.horizontalAdvance(text) for text in longest), default=0)
 
-    def fit_columns(view: QTableView, texts_by_column: dict, caps: dict | None = None) -> None:
+    def fit_columns(view: QTableView, texts_by_column: dict, caps: dict | None = None,
+                    extra: dict | None = None) -> None:
         """Size columns from their texts without asking the model for every cell.
 
         resizeColumnToContents asks data() for a thousand rows per column,
@@ -4689,7 +4981,8 @@ def run_gui(paths):
         metrics = QFontMetrics(font)
         header = view.horizontalHeader()
         for column, texts in texts_by_column.items():
-            width = max(header.sectionSizeHint(column), text_width(metrics, texts) + 16)
+            width = max(header.sectionSizeHint(column), text_width(metrics, texts) + 16
+                        + (extra or {}).get(column, 0))
             if caps and column in caps:
                 width = min(width, caps[column])
             view.setColumnWidth(column, width)
@@ -4745,11 +5038,11 @@ def run_gui(paths):
                             side, side)
             painter.save()
             painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(QPen(QColor("#a78bfa" if checked else "#8a94a6"), 1.2))
-            painter.setBrush(QColor("#8b5cf6" if checked else "#13151b"))
+            painter.setPen(QPen(COLOURS["edited" if checked else "muted"], 1.2))
+            painter.setBrush(COLOURS["accent" if checked else "window"])
             painter.drawRoundedRect(square, 3, 3)
             if checked:
-                tick = QPen(QColor("white"), max(1.6, side / 8))
+                tick = QPen(COLOURS["on_accent"], max(1.6, side / 8))
                 tick.setCapStyle(Qt.RoundCap)
                 tick.setJoinStyle(Qt.RoundJoin)
                 painter.setPen(tick)
@@ -4758,6 +5051,47 @@ def run_gui(paths):
                                       QPointF(x + s * 0.43, y + s * 0.71),
                                       QPointF(x + s * 0.77, y + s * 0.31)])
             painter.restore()
+
+    class BadgeDelegate(QStyledItemDelegate):
+        """A line's type with its family's badge before it: a small rounded square
+        in the family's theme colour, then the type's own words ("Club - short
+        name"), so the colour never stands alone. Painted, never a widget per cell;
+        a cell with no badge family is drawn as usual.
+        """
+
+        ROLE = BADGE_ROLE
+
+        def paint(self, painter, option, index):
+            family = index.data(BADGE_ROLE)
+            if not family:
+                super().paint(painter, option, index)
+                return
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            widget = opt.widget
+            style = widget.style() if widget is not None else QApplication.style()
+            words = opt.text
+            opt.text = ""
+            style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+            rect = opt.rect
+            side = max(6.0, min(10.0, rect.height() - 10.0))
+            chip = QRectF(rect.x() + 6, rect.center().y() - side / 2 + 0.5, side, side)
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(COLOURS.get(f"badge_{family}", COLOURS["muted"]))
+            painter.drawRoundedRect(chip, 2.5, 2.5)
+            painter.restore()
+            opt.text = words
+            opt.rect = rect.adjusted(BADGE_SPACE - 4, 0, 0, 0)
+            opt.state &= ~QStyle.State_HasFocus
+            style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+
+        def sizeHint(self, option, index):
+            size = super().sizeHint(option, index)
+            if index.data(BADGE_ROLE):
+                size.setWidth(size.width() + BADGE_SPACE)
+            return size
 
     def report_write_failure(parent, operation: str, exc: Exception) -> None:
         """Tell the user why a write stopped and where each file stands."""
@@ -4779,6 +5113,7 @@ def run_gui(paths):
 
         COLS = ["File section or ending", "Type", "ID", "Name", "Language", "File", "Status"]
         KEYS = list(LINE_COLUMNS)
+        TYPE_COL = 1
         NAME_COL = 3
         STATUS_COL = 6
         operation_done = Signal(object)     # an edit made here, for the undo stack
@@ -4843,6 +5178,8 @@ def run_gui(paths):
                 return self.bold if self.rows[index.row()].changed else None
             if role == FOREGROUND and index.column() == self.STATUS_COL:
                 return state_colour(entry_status(self.rows[index.row()]))
+            if role == BADGE_ROLE and index.column() == self.TYPE_COL:
+                return badge_family(self.rows[index.row()].cmd)
             if role == TOOLTIP:
                 e = self.rows[index.row()]
                 if e.kind == "person":
@@ -5158,85 +5495,7 @@ def run_gui(paths):
             self.result_counts = (n, len(added))
             self.accept()
 
-    DARK_QSS = """
-    QWidget { background-color: #13151b; color: #e2e8f0; font-size: 13px; }
-    QMainWindow, QDialog { background-color: #13151b; }
-    QToolBar {
-        background: #1a1e28; border: 0; border-bottom: 1px solid #2a3040;
-        spacing: 6px; padding: 4px;
-    }
-    QStatusBar { background: #1a1e28; color: #8a94a6; }
-    QStatusBar QLabel { padding: 0 6px; }
-    QMenuBar { background: #1a1e28; color: #e2e8f0; }
-    QMenuBar::item { background: transparent; padding: 4px 10px; }
-    QMenuBar::item:selected { background: #2a3040; }
-    QToolBar QLabel { background: transparent; color: #8a94a6; padding: 0 2px 0 6px; }
-    QToolBar QWidget#spacer { background: transparent; }
-    QToolBar QLabel#product {
-        color: #e2e8f0; font-weight: bold; font-size: 14px; padding: 0 10px 0 4px;
-    }
-    QToolBar QToolButton {
-        background: transparent; color: #e2e8f0; border: 1px solid transparent;
-        padding: 3px 8px; border-radius: 4px;
-    }
-    QToolBar QToolButton:hover { border-color: #2a3040; background: #232838; }
-    QToolBar QToolButton:disabled { color: #5c6577; }
-    QToolBar QToolButton#review {
-        background: #8b5cf6; color: white; border-color: #8b5cf6; font-weight: bold;
-    }
-    QToolBar QToolButton#review:hover { background: #7c4ff0; }
-    QToolBar QToolButton#review:disabled {
-        background: transparent; color: #5c6577; border-color: #2a3040; font-weight: normal;
-    }
-    QLabel#metrics { color: #8a94a6; background: transparent; padding: 2px 6px; }
-    QLabel#muted { color: #8a94a6; background: transparent; }
-    QLabel#warning { color: #f59e0b; background: transparent; }
-    QLabel#blocked { color: #f59e0b; background: transparent; font-weight: bold; }
-    QLabel#ok { color: #10b981; background: transparent; }
-    QLabel#edited { color: #a78bfa; background: transparent; }
-    QLabel#added { color: #10b981; background: transparent; }
-    QLabel#title { background: transparent; font-weight: bold; font-size: 15px; }
-    QPushButton#small { padding: 1px 8px; }
-    QPushButton:focus, QToolBar QToolButton:focus { border-color: #06b6d4; }
-    QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus,
-    QListWidget:focus, QTableView:focus, QTableWidget:focus { border: 1px solid #06b6d4; }
-    QCheckBox:focus, QRadioButton:focus { color: #67e8f9; }
-    QTabBar::tab:focus { color: #67e8f9; }
-    QLineEdit#invalid { border: 1px solid #f59e0b; }
-    QFrame#rule { background: #2a3040; max-height: 1px; border: 0; }
-    QLabel#heading { background: transparent; font-weight: bold; }
-    QMenu { background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040; }
-    QMenu::item { padding: 4px 18px; }
-    QMenu::item:selected { background: #8b5cf6; color: white; }
-    QMenu::item:disabled { color: #8a94a6; }
-    QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QListWidget, QTableView, QTableWidget {
-        background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
-        selection-background-color: #8b5cf6; selection-color: #ffffff;
-    }
-    QHeaderView::section {
-        background: #1a1e28; color: #8a94a6; border: 1px solid #2a3040; padding: 4px;
-    }
-    QTableView, QTableWidget {
-        alternate-background-color: #161b26; gridline-color: #2a3040;
-    }
-    QPushButton {
-        background: #1a1e28; color: #e2e8f0; border: 1px solid #2a3040;
-        padding: 4px 10px; border-radius: 4px;
-    }
-    QPushButton:hover { border-color: #8b5cf6; }
-    QPushButton:checked { background: #8b5cf6; color: white; border-color: #8b5cf6; }
-    QTabBar::tab {
-        background: #1a1e28; color: #8a94a6; padding: 6px 14px; border: 1px solid #2a3040;
-    }
-    QTabBar::tab:selected { color: #e2e8f0; border-bottom: 2px solid #8b5cf6; }
-    QListWidget::item:selected, QTableWidget::item:selected { background: #8b5cf6; color: white; }
-    QComboBox QAbstractItemView {
-        background: #1a1e28; color: #e2e8f0; selection-background-color: #8b5cf6;
-    }
-    QSplitter::handle { background: #2a3040; }
-    QLabel { background: transparent; }
-    QCheckBox, QRadioButton { background: transparent; spacing: 6px; }
-    """
+    DARK_QSS = theme_style_sheet()
 
     def field_label(family: str, slot: str) -> str:
         """"long name", "3-letter code": a field as an undo label names it."""
@@ -5422,20 +5681,42 @@ def run_gui(paths):
             return True
 
     class BulkDialog(QDialog):
-        """Preview a bulk rename, then apply it in memory."""
+        """Preview a bulk rename, then apply it in memory.
 
-        def __init__(self, parent, entities, docs):
+        The saved rules (affix set, sponsors, small words, casing, scope,
+        never-change keys) start the dialog; Save as default rules keeps what
+        is on screen. Every preview row has a tick, and only ticked rows are
+        applied.
+        """
+
+        SCOPE_TEXT = {
+            "shown": "Entities in the current filter",
+            "family": "Every entity in this family",
+            "selected": "Selected rows",
+        }
+        CASING_TEXT = {
+            "capitals": "Only names written wholly in capitals",
+            "words": "Also single long capital words (four letters or more)",
+        }
+        USE, SECTION, ID, FIELD, BEFORE, AFTER = range(6)
+
+        def __init__(self, parent, entities, docs, scopes=None):
             super().__init__(parent)
             self.setWindowTitle("Bulk transformer")
-            self.resize(920, 560)
-            self.entities = entities
+            self.resize(960, 640)
             self.docs = docs
+            self.scopes = dict(scopes) if scopes else {"shown": list(entities)}
             self.edits: list[BulkEdit] = []
             self.applied = 0
+            self._filling = False
+            rules = getattr(parent, "rules", None)
+            if rules is None:
+                rules = Rules()
+            self.exceptions: set = set(rules.exceptions)
             lay = QVBoxLayout(self)
             lay.addWidget(QLabel(
-                "Works on the entities in the current filter. "
-                "Preview comes first. Apply only marks the files as unsaved."))
+                "Preview comes first, and each row has a tick. Apply changes only the "
+                "ticked rows and only marks the files as unsaved."))
             row = QHBoxLayout()
             self.mode_group = QButtonGroup(self)
             for kind, label in (
@@ -5451,41 +5732,99 @@ def run_gui(paths):
                     button.setChecked(True)
             row.addStretch(1)
             lay.addLayout(row)
+            scope_row = QHBoxLayout()
+            scope_row.addWidget(QLabel("Scope:"))
+            self.scope_box = QComboBox()
+            for key in BULK_SCOPES:
+                if key not in self.scopes:
+                    continue
+                count = len(self.scopes[key])
+                self.scope_box.addItem(f"{self.SCOPE_TEXT[key]} ({count})", key)
+                if not count:
+                    self.scope_box.model().item(self.scope_box.count() - 1).setEnabled(False)
+            wanted = self.scope_box.findData(rules.scope)
+            if wanted < 0 or not self.scopes.get(rules.scope):
+                wanted = self.scope_box.findData("shown")
+            self.scope_box.setCurrentIndex(max(wanted, 0))
+            scope_row.addWidget(self.scope_box, 1)
+            lay.addLayout(scope_row)
+            # One options area per mode; only the chosen mode's is shown.
+            self.affix_box = QTextEdit()
+            self.affix_box.setPlaceholderText("One affix per line, such as FC or AFC")
+            self.affix_box.setPlainText("\n".join(rules.affixes))
+            self.affix_box.setMaximumHeight(96)
+            lay.addWidget(self.affix_box)
             self.sponsor_box = QTextEdit()
             self.sponsor_box.setPlaceholderText("One sponsor phrase per line")
-            # Session 13: the Bulk tools start from the saved rules when the
-            # parent has them (which the live window does), and otherwise from
-            # the built-in starter list, as before.
-            rules = getattr(parent, "rules", None)
-            initial_sponsors = list(rules.sponsors) if rules is not None else list(STARTER_SPONSORS)
-            self.sponsor_box.setPlainText("\n".join(initial_sponsors))
+            self.sponsor_box.setPlainText("\n".join(rules.sponsors))
             self.sponsor_box.setMaximumHeight(110)
             lay.addWidget(self.sponsor_box)
+            self.casing_widget = QWidget()
+            casing_lay = QVBoxLayout(self.casing_widget)
+            casing_lay.setContentsMargins(0, 0, 0, 0)
+            casing_row = QHBoxLayout()
+            casing_row.addWidget(QLabel("Re-case:"))
+            self.casing_box = QComboBox()
+            for key in CASING_MODES:
+                self.casing_box.addItem(self.CASING_TEXT[key], key)
+            self.casing_box.setCurrentIndex(max(self.casing_box.findData(rules.casing), 0))
+            casing_row.addWidget(self.casing_box, 1)
+            casing_lay.addLayout(casing_row)
+            self.small_words_box = QTextEdit()
+            self.small_words_box.setPlaceholderText(
+                "Small words kept in lower case after the first word, one per line")
+            self.small_words_box.setPlainText("\n".join(rules.small_words))
+            self.small_words_box.setMaximumHeight(96)
+            casing_lay.addWidget(self.small_words_box)
+            lay.addWidget(self.casing_widget)
+            exception_row = QHBoxLayout()
+            self.exceptions_label = QLabel()
+            exception_row.addWidget(self.exceptions_label, 1)
+            self.never_btn = QPushButton("Never change selected rows")
+            self.never_btn.setToolTip(
+                "Add the entities of the selected preview rows to the never-change list. "
+                "Save as default rules keeps the list for later runs.")
+            self.never_btn.clicked.connect(self.never_change_selected)
+            exception_row.addWidget(self.never_btn)
+            self.clear_never_btn = QPushButton("Clear the list")
+            self.clear_never_btn.clicked.connect(self.clear_exceptions)
+            exception_row.addWidget(self.clear_never_btn)
+            lay.addLayout(exception_row)
             buttons = QHBoxLayout()
             preview = QPushButton("Preview")
             preview.clicked.connect(self.preview)
             buttons.addWidget(preview)
-            # Session 13: a Save-as-default button writes the current sponsor
-            # list to state/rules.json, so the next run starts from it. The
-            # button is on for parents that have keep_rules (the live window).
+            self.tick_all_btn = QPushButton("Tick all")
+            self.tick_all_btn.clicked.connect(lambda: self.set_all_ticks(True))
+            buttons.addWidget(self.tick_all_btn)
+            self.untick_all_btn = QPushButton("Untick all")
+            self.untick_all_btn.clicked.connect(lambda: self.set_all_ticks(False))
+            buttons.addWidget(self.untick_all_btn)
+            # A Save-as-default button writes the rules on screen to
+            # state/rules.json, so the next run starts from them. It is on for
+            # parents that have keep_rules (the live window).
             self.save_rules_btn = QPushButton("Save as default rules")
             self.save_rules_btn.setToolTip(
-                "Write the current sponsor list to state\\rules.json, so it "
-                "loads next time. Nothing in the name files is written.")
+                "Write the affixes, sponsors, small words, casing, scope, and never-change "
+                "list to state\\rules.json, so they load next time. Nothing in the name "
+                "files is written.")
             self.save_rules_btn.clicked.connect(self._save_rules)
             self.save_rules_btn.setEnabled(hasattr(parent, "keep_rules"))
             buttons.addWidget(self.save_rules_btn)
             buttons.addStretch(1)
             lay.addLayout(buttons)
-            self.preview_label = QLabel("Choose Preview to see the changes. Nothing is written yet.")
+            self.preview_label = QLabel(self.PREVIEW_HINT)
             self.preview_label.setWordWrap(True)
             lay.addWidget(self.preview_label)
-            self.table = QTableWidget(0, 5)
-            self.table.setHorizontalHeaderLabels(["File section", "ID", "Field", "Before", "After"])
+            self.table = QTableWidget(0, 6)
+            self.table.setHorizontalHeaderLabels(
+                ["Use", "File section", "ID", "Field", "Before", "After"])
             self.table.verticalHeader().setVisible(False)
             self.table.setEditTriggers(QTableWidget.NoEditTriggers)
             self.table.setSelectionBehavior(QTableWidget.SelectRows)
             self.table.horizontalHeader().setStretchLastSection(True)
+            self.table.setItemDelegateForColumn(self.USE, TickDelegate(self.table))
+            self.table.itemChanged.connect(self.on_tick)
             lay.addWidget(self.table, 1)
             box = QDialogButtonBox()
             self.apply_btn = box.addButton("Apply", QDialogButtonBox.AcceptRole)
@@ -5495,52 +5834,143 @@ def run_gui(paths):
             box.rejected.connect(self.reject)
             lay.addWidget(box)
             self.mode_group.buttonClicked.connect(lambda _button: self.invalidate())
-            self.sponsor_box.textChanged.connect(self.invalidate)
-            self.sync_sponsor()
+            self.scope_box.currentIndexChanged.connect(lambda _index: self.invalidate())
+            self.casing_box.currentIndexChanged.connect(lambda _index: self.invalidate())
+            for editor_box in (self.sponsor_box, self.affix_box, self.small_words_box):
+                editor_box.textChanged.connect(self.invalidate)
+            self.refresh_exceptions()
+            self.sync_options()
+
+        PREVIEW_HINT = "Choose Preview to see the changes. Nothing is written yet."
+
+        @property
+        def entities(self) -> list:
+            """The entities the chosen scope covers."""
+            return self.scopes.get(self.scope_key(), [])
 
         def kind(self) -> str:
             button = self.mode_group.checkedButton()
             return button.property("kind") if button else "affix"
 
-        def sync_sponsor(self) -> None:
-            self.sponsor_box.setVisible(self.kind() == "sponsor")
+        def scope_key(self) -> str:
+            return self.scope_box.currentData() or "shown"
+
+        @staticmethod
+        def _lines(box) -> list[str]:
+            return [line.strip() for line in box.toPlainText().splitlines() if line.strip()]
+
+        def current_rules(self) -> "Rules":
+            """The rules as they stand on screen."""
+            return Rules(
+                sponsors=self._lines(self.sponsor_box),
+                small_words=self._lines(self.small_words_box),
+                affixes=self._lines(self.affix_box),
+                casing=self.casing_box.currentData(),
+                scope=self.scope_key(),
+                exceptions=self.exceptions,
+            )
+
+        def sync_options(self) -> None:
+            kind = self.kind()
+            self.affix_box.setVisible(kind == "affix")
+            self.sponsor_box.setVisible(kind == "sponsor")
+            self.casing_widget.setVisible(kind == "title")
+
+        def sync_sponsor(self) -> None:         # the name Session 13 gave it
+            self.sync_options()
+
+        def refresh_exceptions(self) -> None:
+            count = len(self.exceptions)
+            self.exceptions_label.setText(
+                f"Never changed by any bulk run: {count_of(count, 'entity', 'entities')}."
+                if count else "No entity is on the never-change list.")
+            self.clear_never_btn.setEnabled(bool(count))
 
         def invalidate(self) -> None:
             self.edits = []
             self.apply_btn.setEnabled(False)
+            self.apply_btn.setText("Apply")
+            self._filling = True
             self.table.setRowCount(0)
-            self.preview_label.setText("Choose Preview to see the changes. Nothing is written yet.")
-            self.sync_sponsor()
+            self._filling = False
+            self.preview_label.setText(self.PREVIEW_HINT)
+            self.sync_options()
 
         def preview(self) -> None:
-            sponsors = self.sponsor_box.toPlainText().splitlines()
-            self.edits = preview_bulk(self.entities, self.kind(), sponsors)
+            rules = self.current_rules()
+            entities = self.entities
+            self.edits = preview_bulk(entities, self.kind(), rules.sponsors, rules)
+            self._filling = True
             self.table.setRowCount(len(self.edits))
-            labels = {slot: label for slot, label, _cmd in FAMILY_FIELDS[self.entities[0].family]}
             for row, edit in enumerate(self.edits):
-                field = labels.get(edit.slot, edit.slot)
-                values = [edit.entity.section, edit.entity.id, field, edit.before, edit.after]
-                for col, value in enumerate(values):
+                labels = {slot: label for slot, label, _cmd in FAMILY_FIELDS[edit.entity.family]}
+                tick = QTableWidgetItem()
+                tick.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                tick.setCheckState(Qt.Checked if edit.included else Qt.Unchecked)
+                self.table.setItem(row, self.USE, tick)
+                values = [edit.entity.section, edit.entity.id,
+                          labels.get(edit.slot, edit.slot), edit.before, edit.after]
+                for col, value in enumerate(values, start=self.SECTION):
                     self.table.setItem(row, col, QTableWidgetItem(value))
             self.table.resizeColumnsToContents()
-            self.apply_btn.setEnabled(bool(self.edits))
-            if self.kind() == "sponsor" and self.entities[0].family != "comp":
+            self._filling = False
+            if self.kind() == "sponsor" and any(e.family != "comp" for e in entities):
                 note = " The sponsor cleanser only changes competitions."
             else:
                 note = ""
+            if not entities:
+                note += " Nothing is in this scope."
             self.preview_label.setText(f"{len(self.edits)} line(s) would change.{note}")
+            self.update_apply()
+
+        def on_tick(self, item) -> None:
+            if self._filling or item.column() != self.USE:
+                return
+            row = item.row()
+            if 0 <= row < len(self.edits):
+                self.edits[row].included = item.checkState() == Qt.Checked
+                self.update_apply()
+
+        def set_all_ticks(self, on: bool) -> None:
+            self._filling = True
+            for row, edit in enumerate(self.edits):
+                edit.included = on
+                item = self.table.item(row, self.USE)
+                if item is not None:
+                    item.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            self._filling = False
+            self.update_apply()
+
+        def ticked(self) -> int:
+            return sum(1 for edit in self.edits if edit.included)
+
+        def update_apply(self) -> None:
+            ticked = self.ticked()
+            self.apply_btn.setEnabled(ticked > 0)
+            self.apply_btn.setText(f"Apply {ticked} ticked" if self.edits else "Apply")
+
+        def never_change_selected(self) -> None:
+            rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+            keys = {entity_key(self.edits[row].entity) for row in rows if row < len(self.edits)}
+            if not keys:
+                return
+            self.exceptions |= keys
+            self.refresh_exceptions()
+            self.preview()          # those entities drop out of the list
+
+        def clear_exceptions(self) -> None:
+            self.exceptions.clear()
+            self.refresh_exceptions()
+            self.invalidate()
 
         def apply_edits(self) -> None:
-            if not self.edits:
+            if not self.ticked():
                 return
             self.applied = apply_bulk(self.edits, self.docs)
             self.accept()
 
         def _save_rules(self) -> None:
-            sponsors = [line.strip() for line in self.sponsor_box.toPlainText().splitlines()
-                        if line.strip()]
-            small_words = sorted(SMALL_WORDS)
-            new_rules = Rules(sponsors=sponsors, small_words=small_words)
+            new_rules = self.current_rules()
             parent = self.parent()
             problem = parent.keep_rules(new_rules)
             if problem:
@@ -5550,8 +5980,11 @@ def run_gui(paths):
             parent.rules = new_rules
             QMessageBox.information(
                 self, APP_NAME,
-                f"Saved {len(sponsors)} sponsor(s) to {STATE_ROOT / RULES_FILE}. "
-                "The next run starts from this list.")
+                f"Saved the rules to {STATE_ROOT / RULES_FILE}: "
+                f"{count_of(len(new_rules.affixes), 'affix', 'affixes')}, "
+                f"{count_of(len(new_rules.sponsors), 'sponsor')}, "
+                f"{count_of(len(new_rules.exceptions), 'never-change entity', 'never-change entities')}. "
+                "The next run starts from them.")
 
     def confirm_game_write(parent, preflight: Preflight, question: str, note: str = "") -> bool:
         """Show a preflight result and ask once. True means the write may go ahead.
@@ -6285,7 +6718,7 @@ def run_gui(paths):
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     if override.state == "competing" and column == len(values) - 1:
-                        item.setForeground(QColor("#f59e0b"))     # warning amber
+                        item.setForeground(COLOURS["warning"])    # competing: worded too
                     self.table.setItem(row, column, item)
             self.table.resizeColumnsToContents()
             self.table.horizontalHeader().setStretchLastSection(True)
@@ -6347,7 +6780,7 @@ def run_gui(paths):
             super().__init__()
             self.rows: list[ChangeRow] = []
             self.destinations = dict(destinations or {})
-            self.muted = QColor("#8a94a6")
+            self.muted = COLOURS["muted"]
 
         def set_rows(self, rows) -> None:
             self.beginResetModel()
@@ -6388,6 +6821,8 @@ def run_gui(paths):
             column = index.column()
             if role == Qt.CheckStateRole and column == self.INCLUDE:
                 return Qt.Checked if row.included else Qt.Unchecked
+            if role == BADGE_ROLE:
+                return badge_family(row.command) if column == self.TYPE and row.command else ""
             if role in (Qt.DisplayRole, Qt.EditRole):
                 if column == self.INCLUDE:
                     return "" if role == Qt.DisplayRole else int(row.included)
@@ -6497,6 +6932,7 @@ def run_gui(paths):
         view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         view.setItemDelegateForColumn(ChangeModel.DEST, MiddleElide(view))
         view.setItemDelegateForColumn(ChangeModel.INCLUDE, TickDelegate(view))
+        view.setItemDelegateForColumn(ChangeModel.TYPE, BadgeDelegate(view))
         header = view.horizontalHeader()
         header.setStretchLastSection(True)
         header.setResizeContentsPrecision(200)
@@ -6520,7 +6956,7 @@ def run_gui(paths):
         if not view.isColumnHidden(ChangeModel.DEST):
             texts[ChangeModel.DEST] = {str(model.destination(row)) for row in rows}
         fit_columns(view, texts, {ChangeModel.ON_DISK: 320, ChangeModel.PROPOSED: 320,
-                                  ChangeModel.DEST: 420})
+                                  ChangeModel.DEST: 420}, {ChangeModel.TYPE: BADGE_SPACE})
 
     def describe_ticks(rows) -> str:
         """The line under the Changes tab's filter."""
@@ -7004,7 +7440,7 @@ def run_gui(paths):
                 "Save...", self.save, QKeySequence.Save,
                 "Review the changes, then write the ticked ones to the files they came from")
             self.deploy_act = a(
-                "Deploy to FM27...", self.deploy, (),
+                "Deploy to FM27...", self.deploy, ["Ctrl+Shift+D"],
                 "Review the changes, then write the name files into lnc\\all of the selected "
                 "database, after a backup")
             self.import_act = a(
@@ -7016,7 +7452,7 @@ def run_gui(paths):
             self.licensing_act = a(
                 "Licensing files...", self.open_licensing, (),
                 "Check the name-mask files; four of them can be disabled or restored")
-            self.exit_act = a("Exit", self.close)
+            self.exit_act = a("Exit", self.close, ["Ctrl+Q"], "Close the editor")
 
             self.undo_act = self.undo_stack.createUndoAction(self, "Undo")
             self.undo_act.setShortcut(QKeySequence.Undo)
@@ -7044,6 +7480,15 @@ def run_gui(paths):
                 "Changes", self.show_changes_tab, ["Ctrl+Shift+C", "Ctrl+3"],
                 "Every difference between the open files and the files on disk")
 
+            self.inspector_act = a(
+                "Inspector", self.set_inspector_shown, ["F4"],
+                "Show or hide the inspector beside the entity grid")
+            self.inspector_act.setCheckable(True)
+            self.inspector_act.setChecked(True)
+            self.reset_widths_act = a(
+                "Reset column widths", self.reset_column_widths, (),
+                "Size every grid column to its text again, forgetting the widths you set")
+
             self.export_act = a("Export pack...", self.export_pack, (),
                                 "Save edited names as JSON or CSV")
             self.import_pack_act = a("Import pack...", self.import_pack, (),
@@ -7070,6 +7515,9 @@ def run_gui(paths):
 
             self.shortcuts_act = a("Keyboard shortcuts", self.show_shortcuts,
                                    QKeySequence.HelpContents, "List the keys the editor knows")
+            self.guide_act = a(
+                "User guide", self.show_guide, (),
+                "What the editor does and in what order: open, edit, review, write")
             self.about_act = a(
                 f"About {APP_NAME}", self.show_about, (),
                 "Version, copyright, and the licence this software ships under")
@@ -7136,7 +7584,8 @@ def run_gui(paths):
             self.edit_menu = menu(
                 "&Edit", self.undo_act, self.redo_act, None, self.edit_cell_act,
                 self.revert_act, None, self.find_act, self.replace_act, self.bulk_act)
-            self.view_menu = menu("&View", self.entities_act, self.lines_act, self.changes_act)
+            self.view_menu = menu("&View", self.entities_act, self.lines_act, self.changes_act,
+                                  None, self.inspector_act, self.reset_widths_act)
             self.packs_menu = menu("&Packs", self.export_act, self.import_pack_act)
             self.backups_menu = menu("&Backups", self.backups_act)
             self.profiles_menu = menu(
@@ -7146,7 +7595,8 @@ def run_gui(paths):
                 "&Collections", self.add_to_collection_menu.menuAction(),
                 self.remove_from_collection_act, None, self.new_collection_act,
                 self.rename_collection_act, self.delete_collection_act)
-            self.help_menu = menu("&Help", self.shortcuts_act, None, self.about_act)
+            self.help_menu = menu("&Help", self.guide_act, self.shortcuts_act, None,
+                                  self.about_act)
 
         def build_toolbar(self) -> None:
             """One row under the menus: the product, the database, the profile, the
@@ -7158,8 +7608,9 @@ def run_gui(paths):
             tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
             tb.toggleViewAction().setVisible(False)    # no right-click way to hide the header
             self.toolbar = tb
-            product = QLabel(APP_NAME)
+            product = QLabel(f"{APP_NAME} {VERSION}")
             product.setObjectName("product")
+            self.product_label = product
             tb.addWidget(product)
             tb.addSeparator()
             tb.addWidget(QLabel("Database"))
@@ -7297,6 +7748,7 @@ def run_gui(paths):
             inspector_scroll.setFrameShape(QFrame.NoFrame)
             inspector_scroll.setMinimumWidth(260)
             inspector_scroll.setWidget(self.inspector)
+            self.inspector_scroll = inspector_scroll
             splitter.addWidget(inspector_scroll)
             splitter.setStretchFactor(1, 1)
             splitter.setSizes([190, 770, 300])
@@ -7329,6 +7781,8 @@ def run_gui(paths):
             self.line_view.verticalHeader().setDefaultSectionSize(24)
             self.line_view.horizontalHeader().setSectionResizeMode(
                 EntryModel.NAME_COL, QHeaderView.Stretch)
+            self.line_view.setItemDelegateForColumn(EntryModel.TYPE_COL,
+                                                    BadgeDelegate(self.line_view))
             sortable(self.line_view, self.on_line_sort)
             self.line_view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
             line_lay.addWidget(self.line_view, 1)
@@ -7618,6 +8072,9 @@ def run_gui(paths):
                                   ("splitter", self.entity_splitter.restoreState)):
                 if name in view:
                     restore(QByteArray.fromBase64(view[name].encode("ascii")))
+            shown = view.get("inspector", True)
+            self.inspector_act.setChecked(shown)
+            self.set_inspector_shown(shown)
 
         def remember_view(self) -> None:
             """Keep the view in the settings file for next time. The window calls it on close."""
@@ -7637,10 +8094,40 @@ def run_gui(paths):
                 "geometry": text(self.saveGeometry()),
                 "window_state": text(self.saveState()),
                 "splitter": text(self.entity_splitter.saveState()),
+                "inspector": self.inspector_act.isChecked(),
             })
             # The window is closing: when the file cannot be written, the next run
             # starts with the view before, and a damaged file stays as it is.
             self.keep_settings(self.state)
+
+        def set_inspector_shown(self, shown: bool) -> None:
+            """Show or hide the inspector (View > Inspector, F4). Shown again, it
+            gets its width back if the splitter had squeezed it to nothing."""
+            shown = bool(shown)
+            if self.inspector_act.isChecked() != shown:
+                self.inspector_act.setChecked(shown)
+            self.inspector_scroll.setVisible(shown)
+            if shown:
+                sizes = self.entity_splitter.sizes()
+                if len(sizes) == 3 and sizes[2] < self.inspector_scroll.minimumWidth():
+                    sizes[1] = max(200, sizes[1] - 300)
+                    sizes[2] = 300
+                    self.entity_splitter.setSizes(sizes)
+
+        def reset_column_widths(self) -> None:
+            """Forget the widths set by hand and size every grid column to its text."""
+            self.entity_widths = {}
+            self.line_widths = {}
+            self._size_line_columns()
+            self._sizing = True
+            try:
+                self._size_entity_columns()
+            finally:
+                self._sizing = False
+            fit_change_columns(self.change_view, self.change_model)
+            self.statusBar().showMessage(
+                "Column widths reset to fit their text. The new widths are kept when the "
+                "window closes.", 8000)
 
         def keep_settings(self, state: dict) -> str:
             """Write the settings file. Returns "" when it was written, or why it was not.
@@ -7999,7 +8486,7 @@ def run_gui(paths):
             texts[EntryModel.STATUS_COL] = {"Added", "Edited"}
             self._sizing = True                 # these widths are the program's, not the user's
             try:
-                fit_columns(self.line_view, texts, {0: 240})
+                fit_columns(self.line_view, texts, {0: 240}, {EntryModel.TYPE_COL: BADGE_SPACE})
                 for column, key in enumerate(EntryModel.KEYS):
                     if key in self.line_widths and column != EntryModel.NAME_COL:
                         self.line_view.setColumnWidth(column, self.line_widths[key])
@@ -8125,7 +8612,7 @@ def run_gui(paths):
                 count = collection.count_in(self.family)
                 item = QListWidgetItem(f"★ {collection.name} ({count:,})")
                 item.setData(Qt.UserRole, collection.name)
-                item.setForeground(QColor("#06b6d4"))
+                item.setForeground(COLOURS["focus"])
                 item.setToolTip(f"Collection {collection.name}: {count:,} {family} of "
                                 f"{len(collection.keys):,} in all. Collections are yours; "
                                 "they are not file sections.")
@@ -8524,23 +9011,31 @@ def run_gui(paths):
                 where.setObjectName("muted")
                 where.setWordWrap(True)
                 grid.addWidget(where, 3, 1)
+                # Session 14: the line as it stands in memory, command and all.
+                raw = QLabel("")
+                raw.setObjectName("raw")
+                raw.setWordWrap(True)
+                raw.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                raw.setToolTip("The line as it stands in memory, as Save would write it. "
+                               "Tabs between the fields are shown as wide spaces.")
+                grid.addWidget(raw, 4, 1)
                 problem = QLabel("")
                 problem.setObjectName("warning")
                 problem.setWordWrap(True)
                 problem.hide()
-                grid.addWidget(problem, 4, 0, 1, 2)
+                grid.addWidget(problem, 5, 0, 1, 2)
                 # Session 13: the review hint. Local list of suspicious baselines
                 # such as "Wolverhamption"; shown, never applied.
                 hint = QLabel("")
                 hint.setObjectName("warning")
                 hint.setWordWrap(True)
                 hint.hide()
-                grid.addWidget(hint, 5, 0, 1, 2)
+                grid.addWidget(hint, 6, 0, 1, 2)
                 self.inspector_lay.addWidget(block)
                 self.inspector_edits[slot] = edit
                 self.inspector_fields[slot] = {"marker": marker, "disk": disk, "edit": edit,
-                                               "where": where, "problem": problem,
-                                               "hint": hint}
+                                               "where": where, "raw": raw,
+                                               "problem": problem, "hint": hint}
             self.inspector_revert = QPushButton("Revert")
             self.inspector_revert.setToolTip(
                 "Put the selected rows' lines back to the text on disk. Added lines stay.")
@@ -8570,7 +9065,7 @@ def run_gui(paths):
                         "Its fields show here: the text on disk, the proposed text, and "
                         "the file and line.")
                     for widgets in self.inspector_fields.values():
-                        for name in ("marker", "disk", "where"):
+                        for name in ("marker", "disk", "where", "raw"):
                             widgets[name].setText("")
                         edit = widgets["edit"]
                         edit.blockSignals(True)
@@ -8617,6 +9112,7 @@ def run_gui(paths):
                     edit.blockSignals(False)
                     edit.setEnabled(True)
                     widgets["where"].setText(view.where)
+                    widgets["raw"].setText(view.raw.replace("\t", "    "))
                     self.show_field_problem(widgets, draft[1] if draft else "")
                     widgets["hint"].setText(view.hint)
                     widgets["hint"].setVisible(bool(view.hint))
@@ -8824,6 +9320,30 @@ def run_gui(paths):
             dialog.resize(480, 240)
             dialog.exec()
 
+        def show_guide(self) -> None:
+            """Help > User guide: the sections of USER_GUIDE, read-only."""
+            import html as html_text
+            dialog = QDialog(self)
+            dialog.setWindowTitle("User guide")
+            lay = QVBoxLayout(dialog)
+            body = QTextEdit()
+            body.setObjectName("guide")
+            body.setReadOnly(True)
+            body.setHtml("".join(
+                f"<h3>{html_text.escape(heading)}</h3><p>{html_text.escape(text)}</p>"
+                for heading, text in USER_GUIDE))
+            lay.addWidget(body, 1)
+            box = QDialogButtonBox(QDialogButtonBox.Close)
+            keys = box.addButton("Keyboard shortcuts", QDialogButtonBox.ActionRole)
+            keys.clicked.connect(self.show_shortcuts)
+            box.rejected.connect(dialog.reject)
+            lay.addWidget(box)
+            free = self.screen().availableGeometry() if self.screen() else None
+            dialog.resize(min(640, free.width() - 40) if free else 640,
+                          min(600, free.height() - 80) if free else 600)
+            self.guide_dialog = dialog
+            dialog.exec()
+
         def show_shortcuts(self) -> None:
             rows = self.shortcut_rows()
             dialog = QDialog(self)
@@ -8907,12 +9427,15 @@ def run_gui(paths):
             return rows
 
         def open_bulk(self) -> None:
-            entities = self.visible_entities()
-            if not entities:
+            shown = self.visible_entities()
+            family = list(self.entity_model.rows)
+            if not family:
                 QMessageBox.information(
-                    self, APP_NAME, "Nothing in the current entity filter.")
+                    self, APP_NAME, "There are no entities in this family.")
                 return
-            dialog = BulkDialog(self, entities, self.docs)
+            scopes = {"shown": shown, "family": family,
+                      "selected": self.selected_entities()}
+            dialog = BulkDialog(self, shown, self.docs, scopes)
             with self.recording("bulk") as operation:
                 accepted = dialog.exec()
                 kind = {"affix": "strip affix", "sponsor": "remove sponsors",
