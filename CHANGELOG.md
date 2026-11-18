@@ -1,16 +1,18 @@
 # Changelog
 
-Release: 3.0
+Release: 3.1
 Status: released
-Application on disk: 3.0
+Application on disk: 3.1
 
-The program on disk reports `VERSION = "3.0"`. The launcher banner says v3.0.
+The program on disk reports `VERSION = "3.1"`. The launcher banner says v3.1.
 
-## Unreleased (Release 3.1)
+## 3.1 (18 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.1 finishes the saved Bulk-tools rules and makes a visual pass of the window: every rule is kept for next time, a tick on each preview row chooses what is applied, and the slate theme's colours, type badges, the remaining keys, a user guide, and the version in the header are in place. Session 14 closes 3.1.
 
 Session 14 — the rest of the saved Bulk-tools rules, and a visual pass:
 
-- **Every Bulk-tools rule is saved.** **Edit > Bulk tools...** now starts from all of your rules in `state\\rules.json`, not only the sponsor list: the **affix set** the affix stripper removes, the **small words** title casing keeps in lower case, a **casing** choice, the **scope**, and a **never-change list**. **Save as default rules** keeps everything on screen for next time. A rules file from 3.0 still loads; a field it lacks takes the built-in default, and one unusable never-change entry is dropped rather than the whole file. A damaged file is still named and left alone.
+- **Every Bulk-tools rule is saved.** **Edit > Bulk tools...** now starts from all of your rules in `state\rules.json`, not only the sponsor list: the **affix set** the affix stripper removes, the **small words** title casing keeps in lower case, a **casing** choice, the **scope**, and a **never-change list**. **Save as default rules** keeps everything on screen for next time. A rules file from 3.0 still loads; a field it lacks takes the built-in default, and one unusable never-change entry is dropped rather than the whole file. A damaged file is still named and left alone.
 - **Casing.** *Only names written wholly in capitals* is the 3.0 behaviour. *Also single long capital words* also fixes a word of four letters or more written in capitals inside a mixed-case name ("Club ATLETICO Madrid" becomes "Club Atletico Madrid"), and leaves short ones such as FC, AFC, and USA as they are.
 - **Scope.** A run covers the entities in the current filter, every entity in the family, or the selected rows; each choice shows how many entities it holds, and an empty one cannot be chosen. Changing it clears the preview.
 - **A tick on every preview row.** Every row starts ticked; **Tick all** and **Untick all** set them together, and **Apply** changes only the ticked rows ("Apply 12 ticked"). Applying is still one undo step and still writes nothing until Save or Deploy.
@@ -38,9 +40,9 @@ Session 12 — three-way update migration and database identity:
 
 Session 13 — override inspector, review hints, saved rules, and a quicker Import:
 
-- **Show overrides across files.** Right-click a row on the Entities tab and choose **Show overrides across files...** to list every line in the chosen database folder's `.lnc` files (`lnc\\all`, `lnc\greek`, and any other subfolder) for that club, competition, or other entity: the file, line, type, language, and name. Lines for the same type and language are marked *Same value* when they all agree and *Different value* when they do not. The list shows the overlap only; it does not claim to know which file the game reads last, and a file that cannot be read is left out. The scan runs in the background (about a second for a folder with 43 name files).
+- **Show overrides across files.** Right-click a row on the Entities tab and choose **Show overrides across files...** to list every line in the chosen database folder's `.lnc` files (`lnc\all`, `lnc\greek`, and any other subfolder) for that club, competition, or other entity: the file, line, type, language, and name. Lines for the same type and language are marked *Same value* when they all agree and *Different value* when they do not. The list shows the overlap only; it does not claim to know which file the game reads last, and a file that cannot be read is left out. The scan runs in the background (about a second for a folder with 43 name files).
 - **Review hints.** The inspector shows an amber hint under a field the editor has a note about. The first is club 740, whose long name on disk is "Wolverhamption", a likely typo. A hint is a note only; nothing is changed for you.
-- **Saved Bulk-tools rules.** **Edit > Bulk tools...** now starts the sponsor cleanser from your own list, and **Save as default rules** keeps the list you typed for next time, in the local `state\\rules.json`. A missing file starts from the built-in list. A damaged file is named in the status bar ("Rules not saved") and left exactly as it is; no rules are written for the rest of that run.
+- **Saved Bulk-tools rules.** **Edit > Bulk tools...** now starts the sponsor cleanser from your own list, and **Save as default rules** keeps the list you typed for next time, in the local `state\rules.json`. A missing file starts from the built-in list. A damaged file is named in the status bar ("Rules not saved") and left exactly as it is; no rules are written for the rest of that run.
 - **Import older edits no longer freezes the window.** Reading the older files and comparing them took about three quarters of a second with both FM27 files; it now runs in the background, with **Compare** switched off until it is done.
 - Tests: 202, up from 181. New cover for the review hint and its place in the inspector's field description; `find_overrides` with agreeing values, disagreeing values, separate groups for long and short names, other IDs, an unreadable file, and an unknown family; the overrides action in the grid menu and `busy_actions`, and the dialog filled from a fixture database; the rules file's defaults, round trip, byte-order mark, damaged file named and never written over, the window loading saved rules and naming a damaged file, and the Bulk tools starting from the saved list; and Import older edits comparing through the window's worker. One existing window test was updated for the larger grid menu.
 

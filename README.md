@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.0](https://img.shields.io/badge/Release-v3.0-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.1](https://img.shields.io/badge/Release-v3.1-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-202%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-232%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.0
+Release: 3.1
 Status: released
-Application on disk: 3.0
+Application on disk: 3.1
 </sub>
 
 </div>
@@ -175,6 +175,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.1) | 18&nbsp;Nov&nbsp;2026 | 🎨 Named colours and type badges, the rest of the saved Bulk-tools rules, a user guide, and the version in the header |
 | [**3.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.0) | 18&nbsp;Nov&nbsp;2026 | 🔄 Carry a profile's spellings forward when the game's database updates; an override inspector, review hints, saved rules, and a sharper icon |
 | [**2.6.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.6.1) | 17&nbsp;Nov&nbsp;2026 | 🔗 The public repository link in **Help > About** and the status bar; a steadier speed test |
 | [**2.6**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.6) | 17&nbsp;Nov&nbsp;2026 | 🏷️ Public-ready: copyright inside the editor, its own icon, a Windows `.exe` with each release |
@@ -186,6 +187,22 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.1 adds</b> &nbsp;·&nbsp; 18&nbsp;Nov&nbsp;2026</summary>
+
+3.1 finishes the saved Bulk-tools rules and makes a visual pass of the window.
+
+- **Every Bulk-tools rule is saved.** **Edit > Bulk tools...** now starts from all of your rules in `state\rules.json`, not only the sponsor list: the affix set, the small words, a casing choice, the scope, and a never-change list. **Save as default rules** keeps everything on screen. A rules file from 3.0 still loads, using the defaults for anything new.
+- **Casing.** The new *Also single long capital words* option turns "Club ATLETICO Madrid" into "Club Atletico Madrid" and leaves short forms such as FC, AFC, and USA alone.
+- **Scope.** A run covers the current filter, the whole family, or the selected rows. Each option shows its count, and an empty one cannot be picked.
+- **A tick on every preview row.** Rows start ticked, there is **Tick all** / **Untick all**, and the button reads **Apply N ticked**. Applying is one undo step and writes nothing until Save or Deploy.
+- **Never change.** Select preview rows and choose **Never change selected rows** to keep those entities out of every bulk run.
+- **Named colours and type badges.** Every colour is defined once, by name. **All lines**, **Changes**, and **Review changes** show a small coloured square for each line's family, next to the type's own words.
+- **Keys and menus.** **Deploy** is Ctrl+Shift+D, **Exit** is Ctrl+Q, **F4** shows or hides the inspector (and the choice is remembered), **View > Reset column widths** sizes every column to its text again, and **Help > User guide** explains the workflow in seven short sections.
+- **The line in the inspector.** Each field shows the raw line as Save would write it. The header's product label shows the version.
+
+</details>
 
 <details>
 <summary><b>What 3.0 adds</b> &nbsp;·&nbsp; 18&nbsp;Nov&nbsp;2026</summary>
@@ -307,7 +324,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Release 3.1:** a visual pass, and the rest of the saved Bulk-tools rules (the affix set, casing, scope, per-key exceptions, and a tick per row in the Bulk preview).
+- **Optional polish:** an illustrative table, scoreboard, and ticker preview of long, short, and code spellings, and a name-level restore from a backup, only if wanted after 3.1.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 

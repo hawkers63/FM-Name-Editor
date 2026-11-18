@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.0
+FM Name Editor v3.1
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -33,6 +33,11 @@ the database selector names the version it is looking at, and a
 cross-file override inspector, review hints, and saved Bulk-tools
 rules close the release. The application icon is now rendered from
 the vector artwork at 16 to 256 pixels.
+Release 3.1 finishes the saved Bulk-tools rules and makes a visual
+pass: every rule on the Bulk tools dialog is kept, a tick on each
+preview row chooses what is applied, and the window gains named
+colours, type badges, the remaining keys, a user guide, and the
+version in the header.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -77,7 +82,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.0"
+VERSION = "3.1"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")
