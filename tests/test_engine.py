@@ -3779,7 +3779,8 @@ class Session8Window(unittest.TestCase):
             self.assertEqual(win.collection_list.item(0).text(), "★ Names to review (1)")
             self.assertEqual([action.text() for action in win.grid_menu().actions()],
                              ["Add selected to", "Remove selected from this collection",
-                              "", "Edit cell", "Revert selected"])
+                              "", "Edit cell", "Revert selected",
+                              "", "Show overrides across files..."])
             with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as asked:
                 win.delete_collection_act.trigger()
             self.assertIn("recovered by hand", asked.call_args.args[2])
@@ -5379,6 +5380,337 @@ class Session12Window(unittest.TestCase):
             self.assertIn(win.migrate_act, win.busy_actions)
         finally:
             close_window(win)
+
+
+class Session13ReviewHints(unittest.TestCase):
+    """Session 13: local list of suspicious baselines, shown in the inspector."""
+
+    def test_the_wolverhamption_hint_names_the_disk_spelling_and_the_typo(self):
+        note = editor.review_hint("CLUB_NAME_CHANGE", "740", "")
+        self.assertTrue(note)
+        self.assertIn("Wolverhamption", note)
+        self.assertIn("Wolverhampton", note)
+        self.assertIn("never applies hints automatically", note)
+
+    def test_review_hint_is_empty_for_a_key_with_no_hint(self):
+        self.assertEqual(editor.review_hint("CLUB_NAME_CHANGE", "1", ""), "")
+        self.assertEqual(editor.review_hint("COMP_LONG_NAME_CHANGE", "740", ""), "")
+
+    def test_describe_fields_carries_the_hint_through_to_the_inspector(self):
+        """The hint lives on FieldView, so show_inspector reads it alongside
+        the usual field metadata."""
+        with tempfile.TemporaryDirectory() as tmp:
+            club = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(club, '"CLUB_NAME_CHANGE"\t740\t"Wolverhamption Wanderers"\t""\n')
+            doc = editor.LncDoc(club)
+            entity = editor.build_entities([doc])[0]
+            views = editor.describe_fields(entity)
+            long_view = next(view for view in views if view.slot == "long")
+            self.assertIn("Wolverhampton", long_view.hint)
+
+
+class Session13Overrides(unittest.TestCase):
+    """Session 13: the cross-file override inspector.
+
+    find_overrides scans every .lnc under <version>/lnc/ and groups matching
+    rows by (command, language), marking a group competing when the values
+    disagree.
+    """
+
+    def _version_tree(self, root: Path, files: dict[str, str]) -> Path:
+        """A <version>/lnc/all/<...lnc> fixture. ``files`` is {name: text}."""
+        version = root / "db" / "2700"
+        (version / "lnc" / "all").mkdir(parents=True)
+        for name, text in files.items():
+            write_lnc(version / "lnc" / "all" / name, text)
+        return version
+
+    def test_find_overrides_lists_identical_values_across_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), {
+                "FM27_Club_Names.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolves"\t""\n',
+                "chinese.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolves"\t""\n',
+            })
+            overrides = editor.find_overrides("club", "740", version)
+            self.assertEqual(len(overrides), 2)
+            for override in overrides:
+                self.assertEqual(override.state, "identical")
+                self.assertEqual(override.command, "CLUB_NAME_CHANGE")
+                self.assertEqual(override.name, "Wolves")
+
+    def test_find_overrides_flags_competing_values_in_the_same_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), {
+                "FM27_Club_Names.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolverhampton Wanderers"\t""\n',
+                "unofficial.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolves FC"\t""\n',
+            })
+            overrides = editor.find_overrides("club", "740", version)
+            self.assertEqual(len(overrides), 2)
+            states = {override.state for override in overrides}
+            self.assertEqual(states, {"competing"})
+            names = sorted(override.name for override in overrides)
+            self.assertEqual(names, ["Wolverhampton Wanderers", "Wolves FC"])
+
+    def test_find_overrides_groups_by_command_and_language(self):
+        """Different commands (long vs short) are separate groups; a long-name
+        disagreement does not make the short name competing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), {
+                "FM27_Club_Names.lnc":
+                    '"CLUB_NAME_CHANGE"\t10\t"Alpha Alpha"\t""\n'
+                    '"CLUB_SHORT_NAME_CHANGE"\t10\t"Alpha"\t""\n',
+                "extra.lnc":
+                    '"CLUB_NAME_CHANGE"\t10\t"Alpha Beta"\t""\n'
+                    '"CLUB_SHORT_NAME_CHANGE"\t10\t"Alpha"\t""\n',
+            })
+            overrides = editor.find_overrides("club", "10", version)
+            long_rows = [o for o in overrides if o.command == "CLUB_NAME_CHANGE"]
+            short_rows = [o for o in overrides if o.command == "CLUB_SHORT_NAME_CHANGE"]
+            self.assertEqual({o.state for o in long_rows}, {"competing"})
+            self.assertEqual({o.state for o in short_rows}, {"identical"})
+
+    def test_find_overrides_ignores_ids_that_do_not_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), {
+                "FM27_Club_Names.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolves"\t""\n'
+                    '"CLUB_NAME_CHANGE"\t1\t"Arsenal"\t""\n',
+            })
+            overrides = editor.find_overrides("club", "740", version)
+            self.assertEqual([o.id for o in overrides], ["740"])
+
+    def test_find_overrides_skips_files_that_cannot_be_decoded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), {
+                "FM27_Club_Names.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolves"\t""\n',
+            })
+            bad = version / "lnc" / "all" / "broken.lnc"
+            bad.write_bytes(b"\xff\xfe\xff\xff")   # looks UTF-16, truncated
+            overrides = editor.find_overrides("club", "740", version)
+            # The broken file is skipped; the readable one still contributes.
+            self.assertEqual(len(overrides), 1)
+            self.assertEqual(overrides[0].name, "Wolves")
+
+    def test_find_overrides_returns_empty_for_an_unknown_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = self._version_tree(Path(tmp), {
+                "FM27_Club_Names.lnc":
+                    '"CLUB_NAME_CHANGE"\t740\t"Wolves"\t""\n',
+            })
+            self.assertEqual(editor.find_overrides("no-such-family", "740", version), [])
+
+    def test_the_grid_menu_carries_the_overrides_action(self):
+        win = make_window(self)
+        try:
+            self.assertIn(win.overrides_act, win.grid_menu().actions())
+            self.assertIn(win.overrides_act, win.busy_actions)
+        finally:
+            close_window(win)
+
+    def test_show_overrides_opens_the_dialog_on_the_selected_entity(self):
+        from PySide6.QtWidgets import QDialog, QTableWidget
+
+        with tempfile.TemporaryDirectory() as tmp:
+            version = Session13Overrides._version_tree(
+                self, Path(tmp), {
+                    "FM27_Club_Names.lnc":
+                        '"CLUB_NAME_CHANGE"\t740\t"Wolverhampton"\t""\n',
+                    "other.lnc":
+                        '"CLUB_NAME_CHANGE"\t740\t"Wolves FC"\t""\n',
+                })
+            # Load the club file so the selection has an entity to run on.
+            club = version / "lnc" / "all" / "FM27_Club_Names.lnc"
+            with mock.patch.object(editor, "GAME_DB_ROOT", version.parent):
+                win = make_window(self)
+                try:
+                    win.load([str(club)])
+                    self.assertTrue(win.entity_model.rows)
+                    # Refresh once GAME_DB_ROOT is pointed at the fixture.
+                    win.refresh_versions()
+                    win.version_box.setCurrentIndex(
+                        win.version_box.findData(str(version)))
+                    index = win.entity_proxy.index(0, 0)
+                    win.entity_view.setCurrentIndex(index)
+                    seen = []
+                    with mock.patch.object(QDialog, "exec",
+                                           lambda d: seen.append(d) or 0):
+                        win.show_overrides()
+                    self.assertEqual(len(seen), 1)
+                    dialog = seen[0]
+                    table = dialog.findChild(QTableWidget)
+                    self.assertIsNotNone(table)
+                    # The scan runs on self.jobs; with JOBS_INLINE it finishes
+                    # before exec returns in the test, so the table is filled.
+                    self.assertEqual(table.rowCount(), 2)
+                    self.assertIn("disagree", dialog.summary.text())
+                finally:
+                    close_window(win)
+
+
+class Session13Rules(unittest.TestCase):
+    """Session 13: saved bulk-tool rules in state/rules.json."""
+
+    def test_default_rules_hold_the_built_in_sponsor_and_small_word_lists(self):
+        rules = editor.Rules()
+        self.assertEqual(tuple(rules.sponsors), editor.STARTER_SPONSORS)
+        self.assertEqual(sorted(rules.small_words), sorted(editor.SMALL_WORDS))
+
+    def test_round_trip_through_save_and_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved = editor.Rules(sponsors=["My Sponsor"], small_words=["de"])
+            editor.save_rules(saved, root)
+            loaded, problem = editor.read_rules(root)
+            self.assertEqual(problem, "")
+            self.assertEqual(loaded.sponsors, ["My Sponsor"])
+            self.assertEqual(loaded.small_words, ["de"])
+            self.assertEqual(saved.to_bytes(),
+                             (root / editor.RULES_FILE).read_bytes())
+
+    def test_read_rules_missing_file_returns_defaults_and_no_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules, problem = editor.read_rules(Path(tmp))
+            self.assertEqual(problem, "")
+            self.assertEqual(tuple(rules.sponsors), editor.STARTER_SPONSORS)
+
+    def test_read_rules_names_a_damaged_file_and_keeps_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / editor.RULES_FILE
+            path.write_bytes(b"not json at all")
+            rules, problem = editor.read_rules(root)
+            self.assertTrue(problem)
+            self.assertIn(str(path), problem)
+            self.assertIn("not readable JSON", problem)
+            self.assertEqual(tuple(rules.sponsors), editor.STARTER_SPONSORS)
+            # The file is not written over.
+            self.assertEqual(path.read_bytes(), b"not json at all")
+
+    def test_read_rules_accepts_a_byte_order_mark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / editor.RULES_FILE).write_bytes(
+                b"\xef\xbb\xbf" + b'{"format":"fm-name-rules","version":1,'
+                                  b'"sponsors":["Alpha"],"small_words":[]}\n')
+            rules, problem = editor.read_rules(root)
+            self.assertEqual(problem, "")
+            self.assertEqual(rules.sponsors, ["Alpha"])
+
+    def test_save_rules_refuses_to_write_over_a_damaged_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / editor.RULES_FILE).write_bytes(b"not json")
+            with self.assertRaises(editor.DamagedFileError) as ctx:
+                editor.save_rules(editor.Rules(sponsors=["X"]), root)
+            self.assertEqual(ctx.exception.path, root / editor.RULES_FILE)
+            # And the byte content is still as it was.
+            self.assertEqual((root / editor.RULES_FILE).read_bytes(), b"not json")
+
+    def test_window_loads_saved_rules_on_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            editor.save_rules(editor.Rules(sponsors=["MyBrand"]), root)
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    self.assertEqual(win.rules.sponsors, ["MyBrand"])
+                    self.assertEqual(win.rules_problem, "")
+                    self.assertFalse(win.rules_label.isVisible())
+                finally:
+                    close_window(win)
+
+    def test_window_names_a_damaged_rules_file_in_the_status_bar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / editor.RULES_FILE).write_bytes(b"not json")
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    self.assertTrue(win.rules_problem)
+                    self.assertTrue(win.rules_label.isVisible())
+                    self.assertIn("Rules not saved", win.rules_label.text())
+                    # And keep_rules refuses to save for the rest of the run,
+                    # so a hand-fix meanwhile does not get silently replaced.
+                    msg = win.keep_rules(editor.Rules(sponsors=["X"]))
+                    self.assertTrue(msg)
+                finally:
+                    close_window(win)
+
+    def test_bulk_dialog_reads_the_saved_sponsor_list(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            editor.save_rules(editor.Rules(sponsors=["Mega Sponsor"]), root)
+            # Open a club to give BulkDialog something to operate on.
+            club = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(club, '"CLUB_NAME_CHANGE"\t1\t"Alpha FC"\t""\n')
+            with mock.patch.object(editor, "STATE_ROOT", root):
+                win = make_window(self)
+                try:
+                    win.load([str(club)])
+                    seen = []
+                    with mock.patch.object(QDialog, "exec",
+                                           lambda d: seen.append(d) or 0):
+                        win.open_bulk()
+                    dialog = seen[0]
+                    # The Bulk dialog's sponsor box starts from the saved list.
+                    self.assertEqual(
+                        dialog.sponsor_box.toPlainText().splitlines(),
+                        ["Mega Sponsor"])
+                    # The Save-as-default button is on, so the user can keep
+                    # whatever they type here for next time.
+                    self.assertTrue(dialog.save_rules_btn.isEnabled())
+                finally:
+                    close_window(win)
+
+
+class Session13Responsiveness(unittest.TestCase):
+    """Session 13: ImportDialog.compare runs on the window's worker.
+
+    The reading and build_proposals step was timed at 773 ms on this PC for
+    both FM27 files; moving it off the GUI thread keeps the window drawn.
+    """
+
+    def test_import_dialog_runs_compare_through_the_window_jobs(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            club = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(club,
+                      '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+                      '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n')
+            older = Path(tmp) / "older" / "FM27_Club_Names.lnc"
+            older.parent.mkdir()
+            write_lnc(older,
+                      '"CLUB_NAME_CHANGE"\t1\t"Alpha United"\t""\n'
+                      '"CLUB_NAME_CHANGE"\t2\t"Beta Rovers"\t""\n')
+            win = make_window(self)
+            try:
+                win.load([str(club)])
+                seen = []
+                with mock.patch.object(QDialog, "exec",
+                                       lambda d: seen.append(d) or 0):
+                    win.import_old()
+                dialog = seen[0]
+                self.assertIsNotNone(dialog.jobs)
+                # Point the dialog at the older file and click Compare.
+                dialog.old_paths = [str(older)]
+                dialog.compare_btn.setEnabled(True)
+                dialog.compare()
+                # JOBS_INLINE in setUpModule runs the work at once, so the
+                # table is filled by the time compare() returns.
+                self.assertTrue(dialog.compare_btn.isEnabled())   # re-enabled
+                self.assertTrue(dialog.apply_btn.isEnabled())
+                self.assertEqual(dialog.change_model.rowCount(), 2)
+                self.assertIn("read from the older files", dialog.summary.text())
+            finally:
+                close_window(win)
 
 
 if __name__ == "__main__":

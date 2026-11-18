@@ -8,7 +8,7 @@ The program on disk reports `VERSION = "2.6.1"`. The launcher banner says v2.6.1
 
 ## Unreleased
 
-Shipped in `fm_name_editor.py`. Release 3.0 begins the update-migration workflow: when Football Manager releases a new database, a profile can carry its spellings forward, and the database selector names the version it is looking at. Session 13 closes 3.0 with the conflict inspector and saved rules. This is Stage 4 of the review of 2.1.
+Shipped in `fm_name_editor.py`. Release 3.0 begins the update-migration workflow: when Football Manager releases a new database, a profile can carry its spellings forward, and the database selector names the version it is looking at. Session 13 closes 3.0 with a cross-file override inspector, review hints, and saved Bulk-tools rules. This is Stage 4 of the review of 2.1.
 
 Session 12 — three-way update migration and database identity:
 
@@ -17,6 +17,14 @@ Session 12 — three-way update migration and database identity:
 - **New keys.** A profile stores baselines only for the spellings it recorded. Without an original baseline file or a key inventory, the editor does not claim an upstream key is new; it simply does not appear in the migration. Missing overrides do not prove an entity left the game.
 - **One undo step.** Applying the ticked migration is one Operation; Undo takes it back, and the writes go through Review changes as usual.
 - Tests: 181, up from 160. New cover for `read_database_identity` with a good, missing, malformed, or incomplete XML; `short_database_name` and `version_label` for folders with and without the XML and with and without the name files; `migrate_profile` with an unchanged key pre-ticked (acceptance), a stock rename between versions unticked (acceptance), an already-preferred upstream counted and left out, a key missing from the new files, a recorded addition still ticked, an unsaved edit blocking, and a repeated key classified from every line in either order; the `describe_profile_migration` summary; applying the ticked migration as one Operation with undo and redo; the `Migrate from new files...` action in the Profiles menu, the preview opening with the right title and summary, the "open the new files first" guard, and the Migrate action belonging in `busy_actions`.
+
+Session 13 — override inspector, review hints, saved rules, and a quicker Import:
+
+- **Show overrides across files.** Right-click a row on the Entities tab and choose **Show overrides across files...** to list every line in the chosen database folder's `.lnc` files (`lncll`, `lnc\greek`, and any other subfolder) for that club, competition, or other entity: the file, line, type, language, and name. Lines for the same type and language are marked *Same value* when they all agree and *Different value* when they do not. The list shows the overlap only; it does not claim to know which file the game reads last, and a file that cannot be read is left out. The scan runs in the background (about a second for a folder with 43 name files).
+- **Review hints.** The inspector shows an amber hint under a field the editor has a note about. The first is club 740, whose long name on disk is "Wolverhamption", a likely typo. A hint is a note only; nothing is changed for you.
+- **Saved Bulk-tools rules.** **Edit > Bulk tools...** now starts the sponsor cleanser from your own list, and **Save as default rules** keeps the list you typed for next time, in the local `stateules.json`. A missing file starts from the built-in list. A damaged file is named in the status bar ("Rules not saved") and left exactly as it is; no rules are written for the rest of that run.
+- **Import older edits no longer freezes the window.** Reading the older files and comparing them took about three quarters of a second with both FM27 files; it now runs in the background, with **Compare** switched off until it is done.
+- Tests: 202, up from 181. New cover for the review hint and its place in the inspector's field description; `find_overrides` with agreeing values, disagreeing values, separate groups for long and short names, other IDs, an unreadable file, and an unknown family; the overrides action in the grid menu and `busy_actions`, and the dialog filled from a fixture database; the rules file's defaults, round trip, byte-order mark, damaged file named and never written over, the window loading saved rules and naming a damaged file, and the Bulk tools starting from the saved list; and Import older edits comparing through the window's worker. One existing window test was updated for the larger grid menu.
 
 ## 2.6.1 (17 November 2026)
 

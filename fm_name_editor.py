@@ -1360,6 +1360,60 @@ STARTER_SPONSORS = (
     "Vertu",
 )
 
+# Session 13: review hints. A local list of suspicious baselines, shown in the
+# inspector for the matching key. Hints are shown, never applied: the tool
+# flags, the user decides.
+REVIEW_HINTS = {
+    # (command, id, language): the hint to show
+    ("CLUB_NAME_CHANGE", "740", ""): (
+        "Hint: the game's own spelling here is 'Wolverhamption', a likely "
+        "typo of 'Wolverhampton Wanderers'. This is a note only; the editor "
+        "never applies hints automatically."),
+}
+
+
+def review_hint(command: str, id_: str, language: str) -> str:
+    """Returns the hint for one key, or "" when there is none.
+
+    A hint is shown in the inspector for the matching entry; it is never
+    applied. Keys that are not in ``REVIEW_HINTS`` have no hint.
+    """
+    return REVIEW_HINTS.get((command, id_, language), "")
+
+
+# Session 13: cross-file override inspector. A key may be set in several
+# ``.lnc`` files under the same database folder; the tool shows the overlap
+# and does not claim to know the game's load order (note 05, C).
+OVERRIDE_STATES = {
+    "reference": "First seen",
+    "identical": "Same value",
+    "competing": "Different value",
+    "unsupported_command": "Unsupported command",
+    "malformed": "Could not be read",
+}
+
+
+class Override:
+    """One ``.lnc`` line in a database folder that matches a chosen key.
+
+    ``file`` is the path, ``line`` is its 1-based line number, ``command``,
+    ``id``, ``language``, ``name`` are the four quoted fields, and ``state``
+    is a key of ``OVERRIDE_STATES``. ``reference`` is the first identical
+    line seen in the scan; later identical lines share its value, and
+    ``competing`` lines carry a different one.
+    """
+
+    __slots__ = ("file", "line", "command", "id", "language", "name", "state")
+
+    def __init__(self, file, line, command, id_, language, name, state):
+        self.file = file
+        self.line = line
+        self.command = command
+        self.id = id_
+        self.language = language
+        self.name = name
+        self.state = state
+
 MASK_FILES = (
     Path("dbc/permanent/language/Licensing2.dbc"),
     Path("dbc/permanent/language/Licensing2_chn.dbc"),
@@ -1510,10 +1564,12 @@ class FieldView:
     None when the file has no such line yet. ``current`` is the text in
     memory, ``reason`` the operation that changed it, ``where`` the file and
     line (or, for an empty field, where typing a name would add one), and
-    ``count`` the number of lines that carry the field.
+    ``count`` the number of lines that carry the field. ``hint`` is any
+    review-hint note the field carries (empty for most fields; Session 13).
     """
 
-    __slots__ = ("slot", "label", "state", "current", "on_disk", "reason", "where", "count")
+    __slots__ = ("slot", "label", "state", "current", "on_disk", "reason",
+                 "where", "count", "hint")
 
     def __init__(self, slot: str, label: str):
         self.slot = slot
@@ -1524,6 +1580,7 @@ class FieldView:
         self.reason = ""
         self.where = ""
         self.count = 0
+        self.hint = ""
 
     @property
     def marker(self) -> str:
@@ -1565,6 +1622,7 @@ def describe_fields(entity: NameEntity) -> list[FieldView]:
             view.state, view.on_disk = "same", first.name
         if view.state != "same":
             view.reason = line_reason(first)
+        view.hint = review_hint(first.cmd, first.id, first.lang)
         views.append(view)
     return views
 
@@ -1921,6 +1979,128 @@ def version_label(version_dir) -> str:
     else:
         base = folder.name
     return base if version_has_names(folder) else f"{base} (no name files)"
+
+
+def find_overrides(family: str, id_: str, version_dir) -> list["Override"]:
+    """Every ``.lnc`` line in a database folder whose entity key matches.
+
+    Scans every ``.lnc`` under ``<version>/lnc/`` (``lnc/all``, ``lnc/greek``,
+    and any other subfolders) and returns the lines whose command belongs
+    to ``family``'s set and whose id matches ``id_``. Lines are grouped by
+    (command, language); within a group, a line's state is ``identical``
+    when its value equals every other value in that group, or ``competing``
+    when the group holds more than one distinct value. The tool shows the
+    overlap and does not claim to know the game's load order (note 05, C).
+    A file that cannot be read or decoded is skipped; its absence from the
+    list does not mean the file has nothing to say.
+    """
+    commands = {cmd for _slot, _label, cmd in FAMILY_FIELDS.get(family, [])}
+    if not commands:
+        return []
+    folder = Path(version_dir) / "lnc"
+    if not folder.is_dir():
+        return []
+    overrides: list[Override] = []
+    groups: dict[tuple[str, str], list[str]] = {}
+    paths = sorted(folder.rglob("*.lnc"),
+                   key=lambda p: (p.parent.name.casefold(), p.name.casefold()))
+    for path in paths:
+        try:
+            doc = LncDoc(path)
+        except (OSError, UnicodeError):
+            continue
+        for entry in doc.names():
+            if entry.cmd not in commands or entry.id != id_:
+                continue
+            key = (entry.cmd, entry.lang)
+            groups.setdefault(key, []).append(entry.name)
+            overrides.append(Override(
+                file=path, line=entry.lineno, command=entry.cmd,
+                id_=entry.id, language=entry.lang, name=entry.name,
+                state="identical"))             # settled by the second pass
+    for override in overrides:
+        values = groups[(override.command, override.language)]
+        if len(set(values)) > 1:
+            override.state = "competing"
+    return overrides
+
+
+RULES_FORMAT = "fm-name-rules"
+RULES_VERSION = 1
+RULES_FILE = "rules.json"
+
+
+class Rules:
+    """Reusable bulk-tool preferences, kept in ``state/rules.json``.
+
+    ``sponsors`` is the editable list in the Bulk tools' sponsor cleanser;
+    ``small_words`` is the list the title-caser keeps lower case. A missing
+    file loads the built-in defaults; a damaged file is named in the status
+    bar and left alone, as with ``state/settings.json`` (decision 38).
+    """
+
+    __slots__ = ("sponsors", "small_words")
+
+    def __init__(self, sponsors=None, small_words=None):
+        self.sponsors = (list(sponsors) if sponsors is not None
+                         else list(STARTER_SPONSORS))
+        self.small_words = (list(small_words) if small_words is not None
+                            else sorted(SMALL_WORDS))
+
+    def to_bytes(self) -> bytes:
+        payload = {
+            "format": RULES_FORMAT,
+            "version": RULES_VERSION,
+            "sponsors": self.sponsors,
+            "small_words": self.small_words,
+        }
+        return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def read_rules(root) -> tuple["Rules", str]:
+    """Returns (rules, problem). A missing file is not damaged.
+
+    Shape is the same as ``read_state``: ({built-in defaults}, "") when the
+    file is missing, (defaults, named problem) when it exists but cannot be
+    used, and (parsed rules, "") on success. A byte-order mark is accepted.
+    """
+    path = Path(root) / RULES_FILE
+    if not path.exists():
+        return Rules(), ""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return Rules(), f"{path} could not be read: {exc}."
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return Rules(), f"{path} is not UTF-8 text."
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return Rules(), f"{path} is not readable JSON: {exc.msg}."
+    if not isinstance(raw, dict):
+        return Rules(), f"{path} does not hold rules: it should be one JSON object."
+    sponsors = [value for value in (raw.get("sponsors") or [])
+                if isinstance(value, str) and value]
+    small_words = [value for value in (raw.get("small_words") or [])
+                   if isinstance(value, str) and value]
+    return Rules(sponsors=sponsors, small_words=small_words), ""
+
+
+def save_rules(rules: "Rules", root) -> None:
+    """Save the rules file. Refuses to write over a damaged one (decision 38).
+
+    Raises ``DamagedFileError`` with the path of the damaged file; the window
+    shows the problem and leaves the file as it is. The caller created the
+    ``state`` folder for other files, so this helper only writes to it.
+    """
+    root_path = Path(root)
+    _rules, problem = read_rules(root_path)
+    if problem:
+        raise DamagedFileError(root_path / RULES_FILE, problem)
+    root_path.mkdir(parents=True, exist_ok=True)
+    write_file_atomically(root_path / RULES_FILE, rules.to_bytes())
 
 
 def under_game_tree(path: Path, game_root: Path | None) -> bool:
@@ -4810,6 +4990,7 @@ def run_gui(paths):
             self.docs = docs
             self.old_paths, self.base_paths = [], []
             self.result_counts = None
+            self.jobs = getattr(parent, "jobs", None)
             lay = QVBoxLayout(self)
 
             self.old_label = QLabel("No files chosen")
@@ -4895,13 +5076,39 @@ def run_gui(paths):
             self.base_label.setText(", ".join(Path(p).name for p in paths) or "None (optional)")
 
         def compare(self):
-            try:
-                old = [LncDoc(p) for p in self.old_paths]
-                base = [LncDoc(p) for p in self.base_paths] or None
-            except (OSError, UnicodeError) as exc:
-                QMessageBox.critical(self, APP_NAME, f"Could not read file:\n{exc}")
-                return
-            changes, missing, stats = build_proposals(self.docs, old, base)
+            """Read the older files and build proposals. The reading and the
+            comparison run on the window's worker when one is available (the
+            live files time 773 ms end-to-end on this PC); the dialog fills
+            in when the job finishes, and the Compare button stays off
+            meanwhile."""
+            self.compare_btn.setEnabled(False)
+            self.apply_btn.setEnabled(False)
+            self.summary.setText("Reading the older files and comparing...")
+            old_paths = list(self.old_paths)
+            base_paths = list(self.base_paths)
+            docs = self.docs
+
+            def work():
+                old = [LncDoc(p) for p in old_paths]
+                base = [LncDoc(p) for p in base_paths] or None
+                changes, missing, stats = build_proposals(docs, old, base)
+                bad = sum(len(d.problems()) for d in old)
+                return changes, missing, stats, bad
+
+            if self.jobs is None:
+                try:
+                    result = work()
+                except (OSError, UnicodeError) as exc:
+                    self._compare_failed(exc)
+                    return
+                self._compare_done(result)
+            else:
+                self.jobs.start("Reading older files...", work,
+                                self._compare_done, self._compare_failed)
+
+        def _compare_done(self, result) -> None:
+            changes, missing, stats, bad = result
+            self.compare_btn.setEnabled(True)
             key = lambda p: (fold(p.section), p.cmd, p.new)
             self.change_model.set_items(sorted(changes, key=key))
             self.missing_model.set_items(sorted(missing, key=key))
@@ -4909,10 +5116,9 @@ def run_gui(paths):
             self.tabs.setTabText(1, f"Not in current files ({len(missing)})")
             for i in range(2):
                 self.tabs.widget(i).resizeColumnsToContents()
-            bad = sum(len(d.problems()) for d in old)
             text = (f"{stats['old']} names read from the older files. "
                     f"{stats['same']} already match the current files.")
-            if base:
+            if self.base_paths:
                 text += (f" {stats['stock']} were never edited by you and are skipped."
                          " 'Renamed since' in the Note column means the stock name has"
                          " also changed between versions, so your older name may be out"
@@ -4928,6 +5134,13 @@ def run_gui(paths):
             self.summary.setText(text)
             self.apply_btn.setEnabled(True)
             self.search.clear()
+
+        def _compare_failed(self, exc: Exception) -> None:
+            self.compare_btn.setEnabled(True)
+            self.summary.setText("")
+            if not isinstance(exc, (OSError, UnicodeError)):
+                raise exc
+            QMessageBox.critical(self, APP_NAME, f"Could not read file:\n{exc}")
 
         def refilter(self, text):
             self.change_model.apply_filter(text)
@@ -5234,13 +5447,28 @@ def run_gui(paths):
             lay.addLayout(row)
             self.sponsor_box = QTextEdit()
             self.sponsor_box.setPlaceholderText("One sponsor phrase per line")
-            self.sponsor_box.setPlainText("\n".join(STARTER_SPONSORS))
+            # Session 13: the Bulk tools start from the saved rules when the
+            # parent has them (which the live window does), and otherwise from
+            # the built-in starter list, as before.
+            rules = getattr(parent, "rules", None)
+            initial_sponsors = list(rules.sponsors) if rules is not None else list(STARTER_SPONSORS)
+            self.sponsor_box.setPlainText("\n".join(initial_sponsors))
             self.sponsor_box.setMaximumHeight(110)
             lay.addWidget(self.sponsor_box)
             buttons = QHBoxLayout()
             preview = QPushButton("Preview")
             preview.clicked.connect(self.preview)
             buttons.addWidget(preview)
+            # Session 13: a Save-as-default button writes the current sponsor
+            # list to state/rules.json, so the next run starts from it. The
+            # button is on for parents that have keep_rules (the live window).
+            self.save_rules_btn = QPushButton("Save as default rules")
+            self.save_rules_btn.setToolTip(
+                "Write the current sponsor list to state\\rules.json, so it "
+                "loads next time. Nothing in the name files is written.")
+            self.save_rules_btn.clicked.connect(self._save_rules)
+            self.save_rules_btn.setEnabled(hasattr(parent, "keep_rules"))
+            buttons.addWidget(self.save_rules_btn)
             buttons.addStretch(1)
             lay.addLayout(buttons)
             self.preview_label = QLabel("Choose Preview to see the changes. Nothing is written yet.")
@@ -5301,6 +5529,23 @@ def run_gui(paths):
                 return
             self.applied = apply_bulk(self.edits, self.docs)
             self.accept()
+
+        def _save_rules(self) -> None:
+            sponsors = [line.strip() for line in self.sponsor_box.toPlainText().splitlines()
+                        if line.strip()]
+            small_words = sorted(SMALL_WORDS)
+            new_rules = Rules(sponsors=sponsors, small_words=small_words)
+            parent = self.parent()
+            problem = parent.keep_rules(new_rules)
+            if problem:
+                QMessageBox.warning(self, APP_NAME,
+                                    f"The default rules were not saved.\n\n{problem}")
+                return
+            parent.rules = new_rules
+            QMessageBox.information(
+                self, APP_NAME,
+                f"Saved {len(sponsors)} sponsor(s) to {STATE_ROOT / RULES_FILE}. "
+                "The next run starts from this list.")
 
     def confirm_game_write(parent, preflight: Preflight, question: str, note: str = "") -> bool:
         """Show a preflight result and ask once. True means the write may go ahead.
@@ -5955,6 +6200,103 @@ def run_gui(paths):
             QMessageBox.critical(self, APP_NAME, f"Could not restore:\n{exc}")
             self.summary.setText("Nothing was restored. The open file is unchanged.")
 
+    class OverrideDialog(QDialog):
+        """Session 13: the cross-file conflict inspector.
+
+        Lists every ``.lnc`` line in the chosen database folder that matches
+        the selected entity's family and ID, grouped by (command, language),
+        with the state saying whether a group's values agree. The tool shows
+        the overlap and does not claim to know the game's load order
+        (note 05, C). Reads run through the window's ``Jobs`` so the scan
+        does not freeze the GUI.
+        """
+
+        COLUMNS = ("File", "Line", "Type", "Language", "Name", "State")
+
+        def __init__(self, parent, entity, version_dir):
+            super().__init__(parent)
+            self.entity = entity
+            self.version_dir = Path(version_dir)
+            self.setWindowTitle(
+                f"Overrides across files: {ENTITY_KINDS[entity.family]} ID {entity.id}")
+            self.resize(880, 520)
+            lay = QVBoxLayout(self)
+            self.summary = QLabel(
+                f"Scanning {self.version_dir}\\lnc for every line that matches this entity...")
+            self.summary.setWordWrap(True)
+            lay.addWidget(self.summary)
+            self.table = QTableWidget(0, len(self.COLUMNS))
+            self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
+            self.table.verticalHeader().setVisible(False)
+            self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self.table.setSelectionMode(QTableWidget.NoSelection)
+            self.table.horizontalHeader().setStretchLastSection(True)
+            lay.addWidget(self.table, 1)
+            self.note = QLabel(
+                "The editor shows every matching line and whether the values agree. "
+                "It does not claim to know the game's load order; a single file may "
+                "override another at run-time in ways this list cannot tell.")
+            self.note.setObjectName("muted")
+            self.note.setWordWrap(True)
+            lay.addWidget(self.note)
+            box = QDialogButtonBox(QDialogButtonBox.Close)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.jobs = parent.jobs
+            self._scan()
+
+        def _scan(self) -> None:
+            family = self.entity.family
+            id_ = self.entity.id
+            version = self.version_dir
+
+            def work():
+                return find_overrides(family, id_, version)
+
+            self.jobs.start(
+                f"Scanning {version.name} for overrides...", work, self._filled, self._failed)
+
+        def _filled(self, overrides: list) -> None:
+            self.table.setRowCount(len(overrides))
+            competing = 0
+            for row, override in enumerate(overrides):
+                state_text = OVERRIDE_STATES.get(override.state, override.state)
+                if override.state == "competing":
+                    competing += 1
+                try:
+                    rel = override.file.relative_to(self.version_dir)
+                    file_text = str(rel)
+                except ValueError:
+                    file_text = str(override.file)
+                values = [
+                    file_text,
+                    str(override.line),
+                    friendly(override.command),
+                    override.language or "",
+                    override.name,
+                    state_text,
+                ]
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if override.state == "competing" and column == len(values) - 1:
+                        item.setForeground(QColor("#f59e0b"))     # warning amber
+                    self.table.setItem(row, column, item)
+            self.table.resizeColumnsToContents()
+            self.table.horizontalHeader().setStretchLastSection(True)
+            if not overrides:
+                self.summary.setText(
+                    f"No matching lines found under {self.version_dir}\\lnc.")
+            elif competing:
+                self.summary.setText(
+                    f"{len(overrides):,} line(s) found; {competing:,} disagree with the others. "
+                    f"Hover a value to compare.")
+            else:
+                self.summary.setText(
+                    f"{len(overrides):,} line(s) found; all values agree.")
+
+        def _failed(self, exc: Exception) -> None:
+            self.summary.setText(f"Could not scan the database folder:\n{exc}")
+
     # ---------------- changes and the review before a write ----------------
     def show_lines(parent, title: str, intro: str, lines: list[str],
                    empty: str = "None.") -> None:
@@ -6512,6 +6854,10 @@ def run_gui(paths):
             # A damaged settings file is named in the status bar and never written
             # over (note 05, finding 5); the window opens with its defaults.
             self.state, self.state_problem = read_state(STATE_ROOT)
+            # Session 13: saved bulk-tool rules (state/rules.json). Same shape:
+            # a missing file loads built-in defaults, a damaged one is named in
+            # the status bar and refused for writes.
+            self.rules, self.rules_problem = read_rules(STATE_ROOT)
             self.saved_view = clean_view(self.state.get("view"))
             self.saved_searches = clean_saved_searches(self.state.get("saved_searches"))
             self.entity_widths = {family: dict(widths) for family, widths
@@ -6568,6 +6914,10 @@ def run_gui(paths):
             self.settings_label.setObjectName("warning")
             self.statusBar().addPermanentWidget(self.settings_label)
             self.show_settings_problem()
+            self.rules_label = QLabel("")
+            self.rules_label.setObjectName("warning")
+            self.statusBar().addPermanentWidget(self.rules_label)
+            self.show_rules_problem()
 
             self.entity_timer = QTimer(self)
             self.entity_timer.setSingleShot(True)
@@ -6607,7 +6957,8 @@ def run_gui(paths):
                 self.rename_profile_act, self.delete_profile_act,
                 self.add_to_collection_menu.menuAction(),
                 self.new_collection_act, self.rename_collection_act,
-                self.delete_collection_act, self.remove_from_collection_act]
+                self.delete_collection_act, self.remove_from_collection_act,
+                self.overrides_act]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
             self._enabled_before: dict = {}
 
@@ -6716,6 +7067,10 @@ def run_gui(paths):
             self.about_act = a(
                 f"About {APP_NAME}", self.show_about, (),
                 "Version, copyright, and the licence this software ships under")
+            self.overrides_act = a(
+                "Show overrides across files...", self.show_overrides, (),
+                "List every line in the chosen database folder's .lnc files that "
+                "matches the selected entity, and whether the values agree.")
 
             # Collections: sets of entities you name, kept in state\collections.json.
             self.add_to_collection_menu = QMenu("Add selected to", self)
@@ -7308,6 +7663,34 @@ def run_gui(paths):
                 self.settings_label.setText(
                     f"Settings not saved: {STATE_ROOT / STATE_FILE} could not be read")
                 self.settings_label.setToolTip(f"{problem} {SETTINGS_LEFT_ALONE}")
+
+        def keep_rules(self, rules: "Rules") -> str:
+            """Write the saved rules file. Returns "" when it was written, or why it was not.
+
+            Mirrors ``keep_settings``: a damaged rules file is never written
+            over, and once one is found no rules are written for the rest of
+            the run, so a file put right by hand meanwhile is not replaced by
+            this window's defaults either.
+            """
+            if not self.rules_problem:
+                try:
+                    save_rules(rules, STATE_ROOT)
+                    return ""
+                except DamagedFileError as exc:     # damaged after the window opened
+                    self.rules_problem = str(exc)
+                    self.show_rules_problem()
+                except OSError as exc:
+                    return f"Could not write the rules file:\n{exc}"
+            return f"{self.rules_problem} {SETTINGS_LEFT_ALONE}"
+
+        def show_rules_problem(self) -> None:
+            """Name a damaged rules file in the status bar for as long as the window runs."""
+            problem = self.rules_problem
+            self.rules_label.setVisible(bool(problem))
+            if problem:
+                self.rules_label.setText(
+                    f"Rules not saved: {STATE_ROOT / RULES_FILE} could not be read")
+                self.rules_label.setToolTip(f"{problem} {SETTINGS_LEFT_ALONE}")
 
         def on_entity_resized(self, column: int, _old: int, new: int) -> None:
             """Remember a width the user gave a grid column, per family."""
@@ -7904,17 +8287,43 @@ def run_gui(paths):
             self.store_collections(f"Deleted the collection {collection.name}.")
 
         def grid_menu(self) -> QMenu:
-            """The grid's right-click menu: collections, Edit cell, and Revert."""
+            """The grid's right-click menu: collections, Edit cell, Revert, and the
+            cross-file override inspector."""
             menu = QMenu(self)
             menu.addMenu(self.add_to_collection_menu)
             menu.addAction(self.remove_from_collection_act)
             menu.addSeparator()
             menu.addAction(self.edit_cell_act)
             menu.addAction(self.revert_act)
+            menu.addSeparator()
+            menu.addAction(self.overrides_act)
             return menu
 
         def show_grid_menu(self, point) -> None:
             self.grid_menu().exec(self.entity_view.viewport().mapToGlobal(point))
+
+        def show_overrides(self) -> None:
+            """Open the cross-file override inspector for the selected entity.
+
+            The scan runs on ``self.jobs``, so a folder with many ``.lnc``
+            files does not freeze the window; the dialog fills in when it is
+            done. Shown from the grid's right-click menu.
+            """
+            rows = self.selected_entities()
+            if not rows:
+                rows = [self.inspector_entity] if self.inspector_entity is not None else []
+            if not rows:
+                QMessageBox.information(
+                    self, APP_NAME,
+                    "Select a row on the Entities tab first.")
+                return
+            version = self.selected_version()
+            if version is None or not version.is_dir():
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    f"No database folder was found under\n{GAME_DB_ROOT}")
+                return
+            OverrideDialog(self, rows[0], version).exec()
 
         # ----- saved searches -----
         def describe_search(self, search: SavedSearch) -> str:
@@ -8114,10 +8523,18 @@ def run_gui(paths):
                 problem.setWordWrap(True)
                 problem.hide()
                 grid.addWidget(problem, 4, 0, 1, 2)
+                # Session 13: the review hint. Local list of suspicious baselines
+                # such as "Wolverhamption"; shown, never applied.
+                hint = QLabel("")
+                hint.setObjectName("warning")
+                hint.setWordWrap(True)
+                hint.hide()
+                grid.addWidget(hint, 5, 0, 1, 2)
                 self.inspector_lay.addWidget(block)
                 self.inspector_edits[slot] = edit
                 self.inspector_fields[slot] = {"marker": marker, "disk": disk, "edit": edit,
-                                               "where": where, "problem": problem}
+                                               "where": where, "problem": problem,
+                                               "hint": hint}
             self.inspector_revert = QPushButton("Revert")
             self.inspector_revert.setToolTip(
                 "Put the selected rows' lines back to the text on disk. Added lines stay.")
@@ -8156,6 +8573,8 @@ def run_gui(paths):
                         edit.blockSignals(False)
                         edit.setEnabled(False)
                         self.show_field_problem(widgets, "")
+                        widgets["hint"].setText("")
+                        widgets["hint"].hide()
                     self.inspector_revert.setEnabled(False)
                     return
                 language = entity.lang or next(
@@ -8193,6 +8612,8 @@ def run_gui(paths):
                     edit.setEnabled(True)
                     widgets["where"].setText(view.where)
                     self.show_field_problem(widgets, draft[1] if draft else "")
+                    widgets["hint"].setText(view.hint)
+                    widgets["hint"].setVisible(bool(view.hint))
                 self.inspector_revert.setEnabled(entity.changed())
             finally:
                 self._filling = False
