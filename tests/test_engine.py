@@ -3196,7 +3196,7 @@ class Session7Window(unittest.TestCase):
 
         win = self._window()
         self.assertEqual([menu.title().replace("&", "") for menu in win.menus],
-                         ["File", "Edit", "View", "Packs", "Backups", "Profiles",
+                         ["File", "Edit", "Tools", "View", "Packs", "Backups", "Profiles",
                           "Collections", "Help"])             # Collections since Session 8
         self.assertEqual([action.text() for action in win.file_menu.actions() if action.text()],
                          ["Open files...", "Quick load", "Save...", "Deploy to FM27...",
@@ -3777,10 +3777,19 @@ class Session8Window(unittest.TestCase):
             with mock.patch.object(QDialog, "exec", self._name("Names to review")):
                 win.rename_collection_act.trigger()
             self.assertEqual(win.collection_list.item(0).text(), "★ Names to review (1)")
-            self.assertEqual([action.text() for action in win.grid_menu().actions()],
-                             ["Add selected to", "Remove selected from this collection",
-                              "", "Edit cell", "Revert selected",
-                              "", "Show overrides across files..."])
+            grid = win.grid_menu()
+            actions = grid.actions()
+            self.assertIn(win.batch_rename_act, actions)
+            selected = len(win.selected_entities())
+            self.assertEqual(win.batch_rename_act.isEnabled(), bool(selected))
+            collection_action = next(action for action in actions
+                                     if action.menu() is not None and
+                                     action.text().startswith("Add selection to collection"))
+            self.assertEqual(collection_action.text(), f"Add selection to collection ({selected})")
+            first_old = actions.index(collection_action)
+            self.assertEqual([action.text() for action in actions[first_old + 1:]],
+                             ["Remove selected from this collection", "", "Edit cell",
+                              "Revert selected", "", "Show overrides across files..."])
             with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as asked:
                 win.delete_collection_act.trigger()
             self.assertIn("recovered by hand", asked.call_args.args[2])
@@ -6334,6 +6343,642 @@ class Session14Display(unittest.TestCase):
                 review_width, review_height = found["review"][0]
                 self.assertLessEqual(review_width, width)
                 self.assertLessEqual(review_height + 40, height)
+
+
+class Session15BatchRename(unittest.TestCase):
+    """Smart selection and reviewed batch changes stay in memory and undo together."""
+
+    def documents(self, tmp, names, second_names=()):
+        docs = []
+        next_id = 1
+        for number, group in enumerate((names, second_names)):
+            if not group:
+                continue
+            path = Path(tmp) / f"names_{number}.lnc"
+            text = "# English clubs\r\n"
+            for name in group:
+                text += f'"CLUB_NAME_CHANGE"\t{next_id}\t"{name}"\t""\r\n'
+                next_id += 1
+            write_lnc(path, text)
+            docs.append(editor.LncDoc(path))
+        return docs, editor.build_entities(docs)
+
+    def window(self, tmp, names, second_names=()):
+        docs, _entities = self.documents(tmp, names, second_names)
+        win = make_window(self)
+        win.load([str(doc.path) for doc in docs])
+        return win
+
+    def preview(self, entities, find, replacement, **options):
+        rule = editor.BatchRenameRule(find=find, replacement=replacement, **options)
+        return editor.preview_batch_rename(entities, rule, slots=("long",))
+
+    def test_extract_name_tokens_isolates_significant_words(self):
+        self.assertEqual(editor.extract_name_tokens("Manchester United"),
+                         ["Manchester", "United"])
+        self.assertEqual(editor.extract_name_tokens("FC Bayern München"),
+                         ["Bayern", "München", "FC"])
+        tokens = editor.extract_name_tokens('The "City" and United / CITY (Reserves)')
+        self.assertEqual(tokens, ["City", "United"])
+        self.assertEqual(editor.extract_name_tokens("de del des der von for"), [])
+        self.assertIn("AFC", editor.extract_name_tokens("AFC Albion"))
+
+    def test_batch_rename_substring_replaces_accurately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            names = [f"Club {n} United" if n % 2 else f"Club {n} City"
+                     for n in range(10)]
+            docs, entities = self.documents(tmp, names[:5], names[5:])
+            original = {doc.path: doc.path.read_bytes() for doc in docs}
+            edits = self.preview(entities, "United", "Utd")
+            self.assertEqual(len(edits), 5)
+            self.assertEqual(editor.apply_batch_rename(edits, docs), 5)
+            actual = [entry.name for doc in docs for entry in doc.names()]
+            self.assertEqual(actual, [name.replace("United", "Utd") for name in names])
+            self.assertTrue(all(doc.dirty for doc in docs))
+            self.assertEqual({doc.path: doc.path.read_bytes() for doc in docs}, original)
+            self.assertTrue(all(edit.entry.reason == "batch_rename" for edit in edits))
+
+    def test_batch_rename_whole_word_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs, entities = self.documents(tmp, ["Bristol City", "Cityscape", "Scunthorpe"])
+            edits = self.preview(entities, "City", "Cty")
+            self.assertEqual([edit.after for edit in edits], ["Bristol Cty"])
+            editor.apply_batch_rename(edits, docs)
+            self.assertEqual([e.name for e in docs[0].names()],
+                             ["Bristol Cty", "Cityscape", "Scunthorpe"])
+
+    def test_accent_insensitive_replacement_keeps_unicode_offsets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _docs, entities = self.documents(
+                tmp, ["Straße Atlético United", "Cafe\u0301 City", "Atlético Atlético"])
+            edits = self.preview(entities, "Atletico", "Ath", match_accents=False)
+            self.assertEqual([edit.after for edit in edits],
+                             ["Straße Ath United", "Ath Ath"])
+            self.assertEqual(self.preview(entities, "Atletico", "Ath"), [])
+            decomposed = self.preview(entities, "Cafe", "Coffee", match_accents=False)
+            self.assertEqual([edit.after for edit in decomposed], ["Coffee City"])
+
+    def test_case_sensitive_option_and_literal_replacement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _docs, entities = self.documents(tmp, ["United", "UNITED", "united"])
+            edits = self.preview(entities, "United", r"U\1", case_sensitive=True)
+            self.assertEqual([edit.after for edit in edits], [r"U\1"])
+            self.assertEqual(len(self.preview(entities, "United", "Utd")), 3)
+
+    def test_regex_backreferences_and_invalid_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs, entities = self.documents(tmp, ["The Albion", "The Rovers"])
+            edits = self.preview(entities, r"^The (.+)$", r"\1", mode="regex")
+            self.assertEqual([edit.after for edit in edits], ["Albion", "Rovers"])
+            for pattern, replacement in (("[", "x"), ("(The)", r"\2")):
+                with self.subTest(pattern=pattern, replacement=replacement):
+                    with self.assertRaises(ValueError):
+                        self.preview(entities, pattern, replacement, mode="regex")
+            self.assertFalse(docs[0].dirty)
+
+    def test_prefix_and_suffix_trim_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _docs, entities = self.documents(tmp, ["FC Albion FC"])
+            cases = (("add_prefix", "", "  AFC  ", "AFC FC Albion FC"),
+                     ("remove_prefix", " FC ", "", "Albion FC"),
+                     ("add_suffix", "", "  United ", "FC Albion FC United"),
+                     ("remove_suffix", " FC ", "", "FC Albion"))
+            for mode, find, replacement, expected in cases:
+                with self.subTest(mode=mode):
+                    edits = self.preview(entities, find, replacement, mode=mode)
+                    self.assertEqual([edit.after for edit in edits], [expected])
+
+    def test_invalid_result_refuses_the_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs, entities = self.documents(tmp, ["United", "City United"])
+            with self.assertRaises(ValueError):
+                self.preview(entities, "United", 'Bad "name"')
+            with self.assertRaises(ValueError):
+                self.preview(entities, "United", "")
+            self.assertFalse(docs[0].dirty)
+
+    def test_stale_preview_is_refused_before_any_batch_line_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs, entities = self.documents(tmp, ["Alpha United", "Beta United"])
+            edits = self.preview(entities, "United", "Utd")
+            edits[-1].entry.set_name("A later edit")
+            with self.assertRaises(ValueError):
+                editor.apply_batch_rename(edits, docs)
+            self.assertEqual(edits[0].entry.name, "Alpha United")
+            self.assertEqual(edits[-1].entry.name, "A later edit")
+
+    def test_duplicate_overrides_are_reviewed_and_unticked_rows_stay_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "duplicate.lnc"
+            write_lnc(path, '"CLUB_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_NAME_CHANGE" 1 "Other United" ""\n')
+            doc = editor.LncDoc(path)
+            edits = self.preview(editor.build_entities([doc]), "United", "Utd")
+            self.assertEqual(len(edits), 2)
+            edits[1].included = False
+            self.assertEqual(editor.apply_batch_rename(edits, [doc]), 1)
+            self.assertEqual([entry.name for entry in doc.names()],
+                             ["Alpha Utd", "Other United"])
+
+    def test_untouched_bytes_bom_and_mixed_endings_survive_utf8_and_utf16(self):
+        for encoding, bom in (("utf-8", BOM), ("utf-16-le", b"\xff\xfe")):
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "mixed.lnc"
+                before = ('# untouched\r\n"CLUB_NAME_CHANGE"\t1\t"Alpha United"\t""\n'
+                          '  "CLUB_NAME_CHANGE" 2 "München City" "" # keep\r\n')
+                original = bom + before.encode(encoding)
+                path.write_bytes(original)
+                doc = editor.LncDoc(path)
+                self.assertEqual(editor.build_payload(doc).data, original)
+                edits = self.preview(editor.build_entities([doc]), "United", "Utd")
+                editor.apply_batch_rename(edits, [doc])
+                self.assertEqual(editor.build_payload(doc).data,
+                                 bom + before.replace("United", "Utd").encode(encoding))
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_short_names_and_codes_need_explicit_field_targeting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fields.lnc"
+            write_lnc(path, '"CLUB_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_SHORT_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_3LETTER_NAME_CHANGE" 1 "United" ""\n'
+                            '"CLUB_NAME_CHANGE" 2 "Beta United" ""\n')
+            doc = editor.LncDoc(path)
+            entities = editor.build_entities([doc])
+            rule = editor.BatchRenameRule(find="United", replacement="Utd")
+            edits = editor.preview_batch_rename(entities, rule)
+            self.assertEqual([edit.slot for edit in edits].count("code"), 0)
+            editor.apply_batch_rename(edits, [doc])
+            self.assertEqual(entities[0].name_in("code"), "United")
+            self.assertEqual(entities[1].name_in("short"), "")
+            self.assertEqual(len(list(doc.names())), 4)
+
+    def test_naming_scanner_reports_entities_once_per_variant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mixed.lnc"
+            write_lnc(path, '"CLUB_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_SHORT_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_NAME_CHANGE" 2 "Beta Utd" ""\n'
+                            '"CLUB_NAME_CHANGE" 3 "Saint Albion FC" ""\n'
+                            '"CLUB_NAME_CHANGE" 4 "St. Rovers F.C." ""\n')
+            entities = editor.build_entities([editor.LncDoc(path)])
+            clusters = editor.find_naming_inconsistencies(entities)
+            variants = {term: matching for cluster in clusters
+                        for term, matching in cluster.variants}
+            self.assertEqual([entity.id for entity in variants["United"]], ["1"])
+            self.assertEqual([entity.id for entity in variants["Utd"]], ["2"])
+            self.assertIn("Saint", variants)
+            self.assertTrue(any(term in variants for term in ("St", "St.")))
+            self.assertIn("FC", variants)
+            self.assertIn("F.C.", variants)
+
+    def test_auto_sync_short_skips_a_short_name_already_edited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shorts.lnc"
+            write_lnc(path, '"CLUB_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_SHORT_NAME_CHANGE" 1 "Alpha United" ""\n'
+                            '"CLUB_NAME_CHANGE" 2 "Beta United" ""\n'
+                            '"CLUB_SHORT_NAME_CHANGE" 2 "Beta United" ""\n')
+            doc = editor.LncDoc(path)
+            entities = editor.build_entities([doc])
+            entities[1].slots["short"][0].set_name("Custom United")
+            rule = editor.BatchRenameRule(find="United", replacement="Utd")
+            edits = editor.preview_batch_rename(entities, rule, slots=("long",),
+                                                auto_sync_short=True)
+            editor.apply_batch_rename(edits, [doc])
+            self.assertEqual(entities[0].name_in("short"), "Alpha Utd")
+            self.assertEqual(entities[1].name_in("short"), "Custom United")
+
+    def capture_batch(self, win, **kwargs):
+        from PySide6.QtWidgets import QDialog
+
+        seen = []
+        with mock.patch.object(QDialog, "exec", lambda dialog: seen.append(dialog) or 0):
+            win.open_batch_rename(**kwargs)
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_batch_rename_single_undo_step(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [f"Club {number} United" for number in range(20)])
+            try:
+                win.select_entities_by_token("United")
+                original = [doc.to_bytes() for doc in win.docs]
+
+                def apply(dialog):
+                    dialog.find_edit.setText("United")
+                    dialog.replace_edit.setText("Utd")
+                    dialog.refresh_preview()
+                    dialog.accept_edits()
+                    return dialog.result()
+
+                with mock.patch.object(QDialog, "exec", apply), \
+                        mock.patch.object(editor, "write_file_atomically") as write:
+                    win.open_batch_rename()
+                write.assert_not_called()
+                self.assertEqual(win.undo_stack.count(), 1)
+                self.assertTrue(win.undo_stack.canUndo())
+                self.assertTrue(all("Utd" in entry.name for doc in win.docs
+                                    for entry in doc.names()))
+                win.undo_act.trigger()
+                self.assertEqual([doc.to_bytes() for doc in win.docs], original)
+                self.assertTrue(all(not doc.dirty for doc in win.docs))
+                win.redo_act.trigger()
+                self.assertTrue(all("Utd" in entry.name for doc in win.docs
+                                    for entry in doc.names()))
+            finally:
+                close_window(win)
+
+    def test_batch_rename_dialog_unticked_items_are_ignored(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [f"Club {number} United" for number in range(5)])
+            try:
+                win.select_entities_by_token("United")
+
+                def apply(dialog):
+                    dialog.find_edit.setText("United")
+                    dialog.replace_edit.setText("Utd")
+                    dialog.refresh_preview()
+                    self.assertEqual(len(dialog.edits), 5)
+                    dialog.edits[1].included = False
+                    dialog.edits[3].included = False
+                    dialog.accept_edits()
+                    return dialog.result()
+
+                with mock.patch.object(QDialog, "exec", apply):
+                    win.open_batch_rename()
+                names = [entry.name for doc in win.docs for entry in doc.names()]
+                self.assertEqual(sum("Utd" in name for name in names), 3)
+                self.assertEqual(sum("United" in name for name in names), 2)
+                self.assertEqual(win.undo_stack.count(), 1)
+            finally:
+                close_window(win)
+
+    def test_cancelling_preview_and_invalid_regex_cannot_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta United"])
+            try:
+                dialog = self.capture_batch(win, entities=win.visible_entities(),
+                                            initial_token="United", replacement="Utd")
+                self.assertEqual(len(dialog.edits), 2)
+                self.assertFalse(any(doc.dirty for doc in win.docs))
+                dialog.mode_box.setCurrentIndex(dialog.mode_box.findData("regex"))
+                dialog.find_edit.setText("[")
+                dialog.refresh_preview()
+                self.assertFalse(dialog.apply_btn.isEnabled())
+                self.assertEqual(dialog.edits, [])
+                self.assertEqual(win.undo_stack.count(), 0)
+            finally:
+                close_window(win)
+
+    def test_dialog_ticks_and_hide_unchanged_keep_a_reviewed_subset(self):
+        from PySide6.QtCore import Qt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta United", "Gamma City"])
+            try:
+                dialog = self.capture_batch(win, entities=win.visible_entities(),
+                                            initial_token="United", replacement="Utd")
+                self.assertEqual(dialog.preview_model.rowCount(), 2)
+                dialog.hide_unchanged.setChecked(False)
+                self.assertEqual(dialog.preview_model.rowCount(), 3)
+                dialog.set_all_ticks(False)
+                self.assertEqual(dialog.ticked(), 0)
+                self.assertFalse(dialog.apply_btn.isEnabled())
+                dialog.invert_ticks()
+                self.assertEqual(dialog.ticked(), 2)
+                changed = next(row for row, edit in enumerate(dialog.preview_model.rows)
+                               if edit.before != edit.after)
+                self.assertTrue(dialog.preview_model.setData(
+                    dialog.preview_model.index(changed, 0), Qt.Unchecked, Qt.CheckStateRole))
+                self.assertEqual(dialog.ticked(), 1)
+                dialog.hide_unchanged.setChecked(True)
+                self.assertEqual(dialog.ticked(), 1)
+                self.assertFalse(any(doc.dirty for doc in win.docs))
+            finally:
+                close_window(win)
+
+    def test_grid_menu_populates_token_actions_dynamically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Manchester United", "Newcastle United", "Manchester City"])
+            try:
+                win.select_entities_matching(lambda entity: entity.name_in("long") ==
+                                             "Manchester United")
+                menu = win.grid_menu()
+                similar = next(action.menu() for action in menu.actions()
+                               if action.menu() and "similar" in action.text().lower())
+                united = next(action for action in similar.actions()
+                              if "'United'" in action.text())
+                self.assertIn("2", united.text())
+                united.trigger()
+                self.assertEqual({entity.name_in("long") for entity in win.selected_entities()},
+                                 {"Manchester United", "Newcastle United"})
+                self.assertTrue(any("batch" in action.text().lower() for action in menu.actions()))
+            finally:
+                close_window(win)
+
+    def test_selection_respects_filter_and_changes_in_one_signal(self):
+        from PySide6.QtTest import QSignalSpy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta United", "Alpha City"])
+            try:
+                win.entity_search.setText("Alpha")
+                win.apply_entity_filter()
+                spy = QSignalSpy(win.entity_view.selectionModel().selectionChanged)
+                self.assertEqual(win.select_entities_by_token("United"), 1)
+                self.assertEqual(spy.count(), 1)
+                self.assertEqual([entity.name_in("long") for entity in win.selected_entities()],
+                                 ["Alpha United"])
+                win.invert_entity_selection()
+                self.assertEqual([entity.name_in("long") for entity in win.selected_entities()],
+                                 ["Alpha City"])
+                win.clear_entity_selection()
+                self.assertEqual(win.selected_entities(), [])
+                self.assertEqual(win.select_by_pattern("Alpha C*"), 1)
+                self.assertEqual(win.select_by_pattern(r"United$", regex=True), 1)
+            finally:
+                close_window(win)
+
+    def test_shortcuts_have_one_owner_and_palette_lists_menu_commands(self):
+        from PySide6.QtGui import QAction
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta United"])
+            try:
+                taken = [key.toString() for action in win.findChildren(QAction)
+                         for key in action.shortcuts()]
+                self.assertEqual(len(taken), len(set(taken)), taken)
+                for key in ("Ctrl+B", "Ctrl+Shift+P", "Ctrl+Shift+W", "Ctrl+Shift+S",
+                            "Ctrl+Alt+S", "Ctrl+Shift+I", "Ctrl+D", "F1"):
+                    self.assertIn(key, taken)
+                commands = win.palette_commands()
+                self.assertTrue(any("Batch" in row[0] and row[1] == "Ctrl+B"
+                                    for row in commands))
+                self.assertTrue(any("Selection" in row[0] for row in commands))
+            finally:
+                close_window(win)
+
+    def test_command_palette_quick_token_selection(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta United", "Gamma City"])
+            try:
+                def choose(palette):
+                    palette.search_edit.setText("United")
+                    self.assertGreater(palette.list_widget.count(), 0)
+                    quick_row = next(index for index in range(palette.list_widget.count())
+                                     if "Select visible names" in
+                                     palette.list_widget.item(index).text())
+                    palette.list_widget.setCurrentRow(quick_row)
+                    palette.run_selected()
+                    return palette.result()
+
+                with mock.patch.object(QDialog, "exec", choose):
+                    win.open_command_palette()
+                self.assertEqual(len(win.selected_entities()), 2)
+            finally:
+                close_window(win)
+
+    def test_harmoniser_opens_preconfigured_review_without_changing_names(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta Utd", "Gamma United"])
+            try:
+                seen = []
+
+                def choose(dialog):
+                    seen.append(dialog)
+                    if hasattr(dialog, "direction_box"):
+                        index = next(row for row in range(dialog.direction_box.count())
+                                     if dialog.direction_box.itemData(row)[:2] ==
+                                     ("Utd", "United"))
+                        dialog.direction_box.setCurrentIndex(index)
+                        dialog.choose_direction()
+                        return dialog.result()
+                    self.assertEqual(dialog.find_edit.text(), "Utd")
+                    self.assertEqual(dialog.replace_edit.text(), "United")
+                    self.assertEqual(len(dialog.entities), 1)
+                    return 0
+
+                with mock.patch.object(QDialog, "exec", choose):
+                    win.open_harmoniser()
+                self.assertEqual(len(seen), 2)
+                self.assertFalse(any(doc.dirty for doc in win.docs))
+                self.assertEqual(win.undo_stack.count(), 0)
+            finally:
+                close_window(win)
+
+    def test_token_selection_on_4300_entities_answers_within_a_second(self):
+        from time import perf_counter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [f"Club {number} United" for number in range(4300)])
+            try:
+                elapsed = []
+                for _attempt in range(2):
+                    win.clear_entity_selection()
+                    started = perf_counter()
+                    count = win.select_entities_by_token("United")
+                    elapsed.append(perf_counter() - started)
+                    if elapsed[-1] < 1:
+                        break
+                self.assertEqual(count, 4300)
+                self.assertLess(min(elapsed), 1, elapsed)
+            finally:
+                close_window(win)
+
+    def test_harmonising_st_keeps_a_dotted_variant_on_the_same_entity(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "saints.lnc"
+            write_lnc(path, '"CLUB_NAME_CHANGE" 1 "St. Albans" ""\n'
+                            '"CLUB_SHORT_NAME_CHANGE" 1 "St Albans" ""\n'
+                            '"CLUB_NAME_CHANGE" 2 "Saint City" ""\n')
+            win = make_window(self)
+            try:
+                win.load([str(path)])
+
+                def choose(dialog):
+                    if hasattr(dialog, "direction_box"):
+                        index = next(row for row in range(dialog.direction_box.count())
+                                     if "'St' clubs to 'Saint'" in
+                                     dialog.direction_box.itemText(row))
+                        dialog.direction_box.setCurrentIndex(index)
+                        dialog.choose_direction()
+                        return dialog.result()
+                    dialog.refresh_preview()
+                    changed = [edit for edit in dialog.edits if edit.before != edit.after]
+                    self.assertEqual([(edit.before, edit.after) for edit in changed],
+                                     [("St Albans", "Saint Albans")])
+                    dialog.accept_edits()
+                    return dialog.result()
+
+                with mock.patch.object(QDialog, "exec", choose):
+                    win.open_harmoniser()
+                entity = next(entity for entity in win.all_entities if entity.id == "1")
+                self.assertEqual(entity.name_in("long"), "St. Albans")
+                self.assertEqual(entity.name_in("short"), "Saint Albans")
+                self.assertEqual(win.undo_stack.count(), 1)
+                win.undo_act.trigger()
+                self.assertEqual(entity.name_in("short"), "St Albans")
+            finally:
+                close_window(win)
+
+    def test_award_name_field_supports_patterns_tokens_and_context_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "awards.lnc"
+            write_lnc(path, '"AWARD_NAME_CHANGE" 100 "Young Player" "English"\n'
+                            '"AWARD_NAME_CHANGE" 101 "Senior Player" "English"\n')
+            win = make_window(self)
+            try:
+                win.load([str(path)])
+                next(button for button in win.family_buttons
+                     if button.property("family") == "award").click()
+                self.assertEqual(win.select_by_pattern("*Player"), 2)
+                self.assertEqual(win.select_entities_by_token("Young"), 1)
+                menu = win.grid_menu()
+                similar = next(action.menu() for action in menu.actions()
+                               if action.menu() and "similar" in action.text().lower())
+                player = next(action for action in similar.actions()
+                              if "'Player'" in action.text())
+                player.trigger()
+                self.assertEqual({entity.id for entity in win.selected_entities()},
+                                 {"100", "101"})
+            finally:
+                close_window(win)
+
+    def test_selection_from_other_tabs_shows_the_selected_entities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta City"])
+            try:
+                win.tabs.setCurrentIndex(1)
+                self.assertEqual(win.select_entities_by_token("United"), 1)
+                self.assertEqual(win.tabs.currentIndex(), 0)
+                self.assertEqual(win.selected_entities()[0].name_in("long"), "Alpha United")
+                win.tabs.setCurrentIndex(2)
+                self.assertEqual(win.select_by_pattern("*City"), 1)
+                self.assertEqual(win.tabs.currentIndex(), 0)
+                self.assertEqual(win.selected_entities()[0].name_in("long"), "Beta City")
+            finally:
+                close_window(win)
+
+    def test_selection_pill_cannot_open_batch_rename_while_busy(self):
+        from PySide6.QtWidgets import QApplication, QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta United"])
+            try:
+                win.show()
+                win.select_entities_by_token("United")
+                QApplication.processEvents()
+                self.assertTrue(win.selection_pill.isVisible())
+                self.assertTrue(win.selection_pill.isEnabled())
+                win.set_busy(True, "Reading files")
+                try:
+                    self.assertFalse(win.selection_pill.isEnabled())
+                    self.assertFalse(win.batch_rename_act.isEnabled())
+                    with mock.patch.object(QDialog, "exec") as opened:
+                        win.selection_pill.click()
+                        win.open_batch_rename()
+                    opened.assert_not_called()
+                finally:
+                    win.set_busy(False, "")
+                self.assertTrue(win.selection_pill.isEnabled())
+                self.assertTrue(win.batch_rename_act.isEnabled())
+                win.tabs.setCurrentIndex(1)
+                self.assertFalse(win.selection_pill.isVisible())
+            finally:
+                close_window(win)
+
+    def test_disjoint_matches_are_selected_as_row_ranges_in_one_update(self):
+        from PySide6.QtTest import QSignalSpy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Alpha United", "Beta City", "Charlie United",
+                                    "Delta City", "Echo United"])
+            try:
+                selection = win.entity_view.selectionModel()
+                spy = QSignalSpy(selection.selectionChanged)
+                self.assertEqual(win.select_entities_by_token("United"), 3)
+                self.assertEqual(spy.count(), 1)
+                self.assertEqual([(block.top(), block.bottom())
+                                  for block in selection.selection()], [(0, 0), (2, 2), (4, 4)])
+                self.assertEqual(win.selected_entity_rows(), [0, 2, 4])
+                self.assertEqual([entity.name_in("long") for entity in win.selected_entities()],
+                                 ["Alpha United", "Charlie United", "Echo United"])
+                win.invert_entity_selection()
+                self.assertEqual(win.selected_entity_rows(), [1, 3])
+            finally:
+                close_window(win)
+
+    def test_batch_preview_controls_fit_at_150_percent(self):
+        import subprocess
+        import sys
+
+        script = '''import json, sys
+from pathlib import Path
+from unittest import mock
+sys.path.insert(0, sys.argv[1])
+import fm_name_editor as editor
+root = Path.cwd()
+for name in ("BACKUP_ROOT", "PROFILE_ROOT", "STATE_ROOT"):
+    mock.patch.object(editor, name, root / name).start()
+editor.JOBS_INLINE = True
+path = root / "names.lnc"
+text = "".join(f'"CLUB_NAME_CHANGE" {n} "Club number {n} United" ""\\n'
+               for n in range(1, 7))
+path.write_bytes(text.encode("utf-8"))
+from PySide6.QtCore import QRect
+from PySide6.QtWidgets import QApplication, QDialog
+app, win = editor.run_gui([str(path)])
+win.select_entities_by_token("United")
+seen = []
+def inspect(dialog):
+    dialog.show()
+    QApplication.processEvents()
+    controls = (dialog.find_edit, dialog.replace_edit, dialog.apply_btn,
+                dialog.tick_all_btn, dialog.untick_all_btn)
+    seen.append({"size": [dialog.width(), dialog.height()],
+                 "rows": dialog.preview_model.rowCount(),
+                 "reachable": all(dialog.rect().contains(QRect(
+                     control.mapTo(dialog, control.rect().topLeft()), control.size()))
+                     and control.isVisible() for control in controls)})
+    dialog.hide()
+    return 0
+with mock.patch.object(QDialog, "exec", inspect):
+    win.open_batch_rename(initial_token="United", replacement="Utd")
+free = app.primaryScreen().availableGeometry()
+print(json.dumps({"free": [free.width(), free.height()], "dialogs": seen}))
+win.remember_on_close = False
+win.close()
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "screen.json").write_text(json.dumps({"screens": [{
+                "name": "Desktop", "x": 0, "y": 0, "width": 1280, "height": 688,
+                "logicalDpi": 96, "logicalBaseDpi": 96, "dpr": 1.5}]}), encoding="utf-8")
+            (folder / "probe.py").write_text(script, encoding="utf-8")
+            project = str(Path(__file__).resolve().parent.parent)
+            env = dict(os.environ, QT_QPA_PLATFORM="offscreen:configfile=screen.json")
+            result = subprocess.run([sys.executable, "probe.py", project], cwd=tmp, env=env,
+                                    capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            found = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertEqual(found["free"], [1280, 688])
+            self.assertEqual(len(found["dialogs"]), 1)
+            dialog = found["dialogs"][0]
+            self.assertLessEqual(dialog["size"][0], 1280)
+            self.assertLessEqual(dialog["size"][1] + 40, 688)
+            self.assertEqual(dialog["rows"], 6)
+            self.assertTrue(dialog["reachable"], dialog)
 
 
 if __name__ == "__main__":

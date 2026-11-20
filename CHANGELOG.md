@@ -6,6 +6,17 @@ Application on disk: 3.1
 
 The program on disk reports `VERSION = "3.1"`. The launcher banner says v3.1.
 
+## [Unreleased]
+
+Session 15 — menu selection and batch rename (20 November 2026):
+
+- **Select similar names.** Right-click an entity to select matching words from its names, with match counts and the visible count when a filter hides some. Edit > Selection adds word selection (Ctrl+Shift+W), wildcard or regular-expression selection (Ctrl+Shift+S or Ctrl+Shift+F), same file section (Ctrl+Alt+S), invert (Ctrl+Shift+I), and clear (Ctrl+D). Selection keeps the current filters and brings the Entities tab into view. Consecutive rows are selected together; reading a large selection uses row ranges rather than Qt checking each cell.
+- **Batch rename selected (Ctrl+B).** A live, ticked preview supports literal replacement, whole words, case and accent matching, capitalisation preservation, prefix and suffix changes, football abbreviation presets, and Python regular expressions with capture groups. Long/name and short fields start selected; existing codes are optional. Missing overrides are not invented. An optional short-name transform skips names with unsaved edits. Tick all, Untick all, Invert ticks and Hide unchanged rows choose exactly what is applied.
+- **One undo step, memory only.** The whole ticked preview is checked before changing any line; stale previews and invalid results are refused. Apply changes memory, and one Undo takes back the batch. Save and Deploy still own every file write, review and backup.
+- **Harmonise terminology.** Tools lists full and abbreviated club spellings in the loaded files, with counts for each form. Choose the direction yourself, then review it in Batch rename. Dotted and undotted Saint abbreviations remain distinct.
+- **Command palette (Ctrl+Shift+P).** Search menu commands, saved searches and collections by text or fuzzy matching, or select visible names by a word. F1 remains Keyboard shortcuts, which now includes submenu keys. A status-bar button opens Batch rename while several entity rows are selected.
+- **Verification.** All 30 `Session15BatchRename` tests pass, along with 13 `Session14Visual` checks, the menu and collection regression checks, and `Session7Speed` on temporary copies of both live FM27 files. New tests cover transforms, Unicode offsets, untouched UTF-8/UTF-16 bytes, ticks, cancellation, stale previews, one undo/redo step, selection, menus, keyboard access and 150% offscreen dialog layout. A synthetic 4,300-entity selection check enforces the one-second response requirement. A separate 4,300-entity / 8,600-line probe measured selection at 0.13 s and context-menu construction at 0.14 s. Full-suite release verification and the real Windows scaling check remain with Neal and Mark.
+
 ## 3.1 (18 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.1 finishes the saved Bulk-tools rules and makes a visual pass of the window: every rule is kept for next time, a tick on each preview row chooses what is applied, and the slate theme's colours, type badges, the remaining keys, a user guide, and the version in the header are in place. Session 14 closes 3.1.

@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import fnmatch
 import hashlib
 import io
 import json
@@ -327,6 +328,16 @@ USER_GUIDE = (
      "set, sponsors, small words, casing, scope, and a never-change list); every "
      "preview row has a tick, and only ticked rows are applied. Undo (Ctrl+Z) takes "
      "back a whole operation."),
+    ("Select similar names and batch rename",
+     "Right-click a name and use Select similar names, or Edit > Selection to select "
+     "a word (Ctrl+Shift+W), wildcard or regular expression (Ctrl+Shift+S). Only visible "
+     "rows are selected. Ctrl+B opens Batch rename selected: replace text, add or "
+     "remove a prefix or suffix, choose a football preset, or use a regular expression. "
+     "Choose long names, short names or existing codes, review the live preview and "
+     "untick any change to leave it out. Apply is one undo step and writes nothing. "
+     "Tools > Harmonise terminology finds mixed club spellings and opens the same "
+     "preview for a chosen direction. Ctrl+Shift+P searches commands, saved searches, "
+     "collections and name words; F1 still lists keyboard shortcuts."),
     ("Save and Deploy",
      "Only Save (Ctrl+S) and Deploy (Ctrl+Shift+D) write files, and only through "
      "Review changes, where each change has a tick. Unticked changes are left out and "
@@ -478,6 +489,7 @@ ROW_KINDS = ("name", "person")
 CHANGE_REASONS = {
     "manual": "Manual edit",
     "bulk": "Bulk tool",
+    "batch_rename": "Batch rename",
     "replace": "Replace",
     "pack": "Name pack",
     "import": "Older files",
@@ -2134,6 +2146,309 @@ def apply_bulk(edits, docs, reason: str = "bulk") -> int:
         if try_set_name(edit.entry, edit.after, reason):
             count += 1
     return count
+
+
+COMMON_FOOTBALL_STOP_WORDS = frozenset({
+    "and", "the", "for", "von", "van", "der", "del", "des", "de", "di",
+    "da", "la", "le", "el", "of",
+})
+
+# label, mode, find, replacement; codes are never selected by a preset.
+BATCH_RENAME_PRESETS = (
+    ("United → Utd", "replace", "United", "Utd"),
+    ("City → Cty", "replace", "City", "Cty"),
+    ("Cty → City", "replace", "Cty", "City"),
+    ("Town → Twn", "replace", "Town", "Twn"),
+    ("Twn → Town", "replace", "Twn", "Town"),
+    ("Athletic → Ath", "replace", "Athletic", "Ath"),
+    ("Association → Assoc", "replace", "Association", "Assoc"),
+    ("International → Intl", "replace", "International", "Intl"),
+    ("Saint → St", "replace", "Saint", "St"),
+    ("Sporting → Sp", "replace", "Sporting", "Sp"),
+    ("Wanderers → Wand", "replace", "Wanderers", "Wand"),
+    ("Strip trailing FC", "remove_suffix", "FC", ""),
+    ("Strip leading FC", "remove_prefix", "FC", ""),
+)
+
+
+def extract_name_tokens(name: str) -> list[str]:
+    """Return significant words, with the short football descriptor FC last."""
+    text = re.sub(r"\([^)]*\)|\[[^]]*\]|\{[^}]*\}", " ",
+                  unicodedata.normalize("NFC", name))
+    tokens, descriptors, seen = [], [], set()
+    for token in re.findall(r"[^\W_]+(?:['’][^\W_]+)*", text, re.UNICODE):
+        key = token.casefold()
+        if key in seen or key in COMMON_FOOTBALL_STOP_WORDS:
+            continue
+        if len(token) < 3 and key != "fc":
+            continue
+        seen.add(key)
+        (descriptors if key == "fc" else tokens).append(token)
+    return tokens + descriptors
+
+
+def _name_search_map(text: str, case_sensitive: bool, match_accents: bool):
+    """Normalise graphemes while retaining their exact spans in the source."""
+    parts, starts, ends = [], [], []
+    clusters = []
+    for position, char in enumerate(text):
+        if unicodedata.category(char).startswith("M") and clusters:
+            clusters[-1][1] = position + 1
+        else:
+            clusters.append([position, position + 1])
+    for start, end in clusters:
+        part = unicodedata.normalize("NFC", text[start:end])
+        if not match_accents:
+            part = "".join(ch for ch in unicodedata.normalize("NFD", part)
+                           if unicodedata.category(ch) != "Mn")
+        if not case_sensitive:
+            part = part.casefold()
+        parts.append(part)
+        starts.extend([start] * len(part))
+        ends.extend([end] * len(part))
+    return "".join(parts), starts, ends
+
+
+def _literal_name_matches(text, term, case_sensitive=False, match_accents=True,
+                          whole_word=True):
+    normal, starts, ends = _name_search_map(text, case_sensitive, match_accents)
+    needle = _name_search_map(term, case_sensitive, match_accents)[0]
+    if not needle:
+        return
+    expression = re.escape(needle)
+    if whole_word:
+        expression = r"(?<!\w)" + expression + r"(?!\w)"
+    for match in re.finditer(expression, normal):
+        start, end = match.span()
+        # A match must not split a case-fold expansion, such as ß → ss.
+        if start and starts[start] == starts[start - 1]:
+            continue
+        if end < len(ends) and ends[end - 1] == ends[end]:
+            continue
+        yield starts[start], ends[end - 1]
+
+
+def entity_matches_token(entity: NameEntity, token: str,
+                         case_sensitive: bool = False) -> bool:
+    """Match a whole word in any existing text-name override of an entity."""
+    token = token.strip()
+    if not token:
+        return False
+    needle = unicodedata.normalize("NFC", token)
+    if not case_sensitive:
+        needle = needle.casefold()
+    expression = re.compile(r"(?<!\w)" + re.escape(needle) + r"(?!\w)")
+    for slot, entries in entity.slots.items():
+        if slot not in TEXT_SLOTS:
+            continue
+        for entry in entries:
+            normal = (entry.name if entry.name.isascii()
+                      else unicodedata.normalize("NFC", entry.name))
+            text = normal if case_sensitive else normal.casefold()
+            if not expression.search(text):
+                continue
+            # Only uncommon expansions or remaining combining marks need the
+            # source-span check used by replacement. Ordinary names need no map.
+            if (not normal.isascii()
+                    and (len(text) != len(normal)
+                         or any(unicodedata.category(char).startswith("M") for char in normal))):
+                if next(_literal_name_matches(entry.name, token, case_sensitive), None) is None:
+                    continue
+            return True
+    return False
+
+
+class BatchRenameRule:
+    """The transformation and matching choices for one batch preview."""
+
+    __slots__ = ("mode", "find", "replacement", "whole_word", "case_sensitive",
+                 "match_accents", "preserve_case")
+
+    def __init__(self, mode="replace", find="", replacement="", whole_word=True,
+                 case_sensitive=False, match_accents=True, preserve_case=False):
+        self.mode = mode
+        self.find = find
+        self.replacement = replacement
+        self.whole_word = whole_word
+        self.case_sensitive = case_sensitive
+        self.match_accents = match_accents
+        self.preserve_case = preserve_case
+
+
+def _replacement_case(replacement: str, matched: str) -> str:
+    letters = "".join(ch for ch in matched if ch.isalpha())
+    if letters and letters.isupper():
+        return replacement.upper()
+    if letters and letters.islower():
+        return replacement.lower()
+    if matched.istitle():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def _batch_transformer(rule: BatchRenameRule):
+    modes = {"replace", "regex", "add_prefix", "remove_prefix", "add_suffix", "remove_suffix"}
+    if rule.mode not in modes:
+        raise ValueError("Choose a recognised batch rename mode.")
+    if rule.mode == "regex":
+        try:
+            expression = re.compile(rule.find, 0 if rule.case_sensitive else re.IGNORECASE)
+            # Parse backreferences even when none of the chosen names matches.
+            expression.sub(rule.replacement, "")
+        except (re.error, IndexError) as exc:
+            raise ValueError(f"Regular expression: {exc}") from exc
+
+        def regex_transform(before):
+            return expression.sub(rule.replacement, before).strip() if rule.find else before
+
+        return regex_transform
+
+    def transform(before):
+        if rule.mode.startswith("add_"):
+            affix = (rule.replacement or rule.find).strip()
+            if not affix:
+                return before
+            return (f"{affix} {before.strip()}" if rule.mode == "add_prefix"
+                    else f"{before.strip()} {affix}")
+        term = rule.find.strip() if rule.mode.startswith("remove_") else rule.find
+        if not term:
+            return before
+        matches = list(_literal_name_matches(before, term, rule.case_sensitive,
+                                             rule.match_accents, rule.whole_word))
+        if rule.mode == "remove_prefix":
+            matches = [(start, end) for start, end in matches if not before[:start].strip()]
+        elif rule.mode == "remove_suffix":
+            matches = [(start, end) for start, end in matches if not before[end:].strip()]
+        result, last = [], 0
+        for start, end in matches:
+            result.append(before[last:start])
+            replacement = "" if rule.mode.startswith("remove_") else rule.replacement
+            result.append(_replacement_case(replacement, before[start:end])
+                          if rule.preserve_case else replacement)
+            last = end
+        result.append(before[last:])
+        return "".join(result).strip() if matches else before
+
+    return transform
+
+
+def preview_batch_rename(entities, rule: BatchRenameRule, slots=("long", "short", "name"),
+                         auto_sync_short=False, include_unchanged=False) -> list[BulkEdit]:
+    """Preview existing lines only; a refused transformation changes no memory."""
+    transform = _batch_transformer(rule)
+    selected_slots = frozenset(slots)
+    edits, seen = [], set()
+    for entity in entities:
+        entity_edits = []
+        for slot, _label, _cmd in FAMILY_FIELDS[entity.family]:
+            if slot not in selected_slots:
+                continue
+            for entry in entity.slots.get(slot) or []:
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                after = transform(entry.name)
+                problem = name_problem(after)
+                if problem:
+                    raise ValueError(f"{ENTITY_KINDS[entity.family]} {entity.id}: {problem}")
+                if after != entry.name or include_unchanged:
+                    edit = BulkEdit(entity, slot, entry, entry.name, after)
+                    edit.included = after != entry.name
+                    entity_edits.append(edit)
+        if (auto_sync_short and "short" not in selected_slots
+                and any(edit.slot in {"long", "name"} and edit.before != edit.after
+                        for edit in entity_edits)):
+            short_entries = entity.slots.get("short") or []
+            if short_entries and all(not entry.changed for entry in short_entries):
+                for entry in short_entries:
+                    after = transform(entry.name)
+                    problem = name_problem(after)
+                    if problem:
+                        raise ValueError(f"{ENTITY_KINDS[entity.family]} {entity.id}: {problem}")
+                    if after != entry.name or include_unchanged:
+                        edit = BulkEdit(entity, "short", entry, entry.name, after)
+                        edit.included = after != entry.name
+                        entity_edits.append(edit)
+        edits.extend(entity_edits)
+    return edits
+
+
+def apply_batch_rename(edits, docs) -> int:
+    """Validate the complete ticked preview, then change its lines in memory."""
+    live_docs = set(docs)
+    live_entries, chosen = {}, {}
+    for edit in edits:
+        if not edit.included or edit.before == edit.after:
+            continue
+        entry = edit.entry
+        if entry.doc not in live_docs:
+            raise ValueError("The open files changed. Refresh the batch rename preview.")
+        if entry.doc not in live_entries:
+            live_entries[entry.doc] = set(entry.doc.entries)
+        if (entry not in live_entries[entry.doc] or entry.kind != "name"
+                or entry.span is None or entry.name != edit.before):
+            raise ValueError("A name changed after the preview. Refresh the batch rename preview.")
+        problem = name_problem(edit.after)
+        if problem:
+            raise ValueError(problem)
+        if entry in chosen and chosen[entry] != edit.after:
+            raise ValueError("The preview contains competing changes to the same line.")
+        chosen[entry] = edit.after
+    operation = Operation("batch rename")
+    try:
+        with operation:
+            for entry, after in chosen.items():
+                entry.set_name(after, reason="batch_rename")
+    except Exception:
+        operation.undo()
+        raise
+    return len(chosen)
+
+
+class TerminologyCluster:
+    """A term family with at least two spellings in the loaded text names."""
+
+    __slots__ = ("label", "variants")
+
+    def __init__(self, label, variants):
+        self.label = label
+        self.variants = tuple((term, tuple(entities)) for term, entities in variants)
+
+
+def harmonisation_pattern(source: str) -> str:
+    """Match the chosen spelling without treating St. as the separate form St."""
+    ending = r"(?![\w.])" if source.casefold() == "st" else r"(?!\w)"
+    return r"(?<!\w)" + re.escape(source) + ending
+
+
+def find_naming_inconsistencies(entities) -> list[TerminologyCluster]:
+    """Count entities using each spelling, without guessing preferred forms."""
+    groups = (
+        ("United", "Utd"), ("City", "Cty"), ("Town", "Twn"),
+        ("Athletic", "Ath"), ("Association", "Assoc"),
+        ("International", "Intl"), ("Saint", "St.", "St"),
+        ("Sporting", "Sp"), ("Wanderers", "Wand"), ("FC", "F.C."),
+    )
+    terms = {term.casefold(): (number, term)
+             for number, group in enumerate(groups) for term in group}
+    expression = re.compile(r"(?<!\w)(?:" + "|".join(
+        re.escape(term) for term in sorted(terms, key=len, reverse=True)) + r")(?!\w)", re.I)
+    counts = [{term: [] for term in group} for group in groups]
+    for entity in entities:
+        found = set()
+        for slot, entries in entity.slots.items():
+            if slot not in TEXT_SLOTS:
+                continue
+            for entry in entries:
+                for match in expression.finditer(entry.name):
+                    found.add(terms[match.group().casefold()])
+        for number, term in found:
+            counts[number][term].append(entity)
+    return [TerminologyCluster(" / ".join(group),
+                               [(term, counts[number][term]) for term in group
+                                if counts[number][term]])
+            for number, group in enumerate(groups)
+            if sum(bool(items) for items in counts[number].values()) > 1]
 
 
 def list_version_dirs(db_root: Path) -> list[Path]:
@@ -4916,7 +5231,7 @@ JOBS_INLINE = False
 
 def run_gui(paths):
     from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEventLoop,
-                                QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
+                                QItemSelection, QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
                                 QSize, QSortFilterProxyModel, Qt, QTimer, Signal)
     from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence,
                                QPainter, QPen, QUndoCommand, QUndoStack)
@@ -5990,6 +6305,513 @@ def run_gui(paths):
                 f"{count_of(len(new_rules.sponsors), 'sponsor')}, "
                 f"{count_of(len(new_rules.exceptions), 'never-change entity', 'never-change entities')}. "
                 "The next run starts from them.")
+
+    class BatchPreviewModel(QAbstractTableModel):
+        """The batch preview keeps ticks on the edits, including hidden rows."""
+
+        ticks_changed = Signal()
+        HEADERS = ("Use", "ID", "Entity name", "Field", "Current value", "Proposed value")
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.rows = []
+            self.bold = QFont()
+            self.bold.setBold(True)
+
+        def set_rows(self, edits):
+            self.beginResetModel()
+            self.rows = list(edits)
+            self.endResetModel()
+
+        def rowCount(self, parent=QModelIndex()):
+            return 0 if parent.isValid() else len(self.rows)
+
+        def columnCount(self, parent=QModelIndex()):
+            return 0 if parent.isValid() else len(self.HEADERS)
+
+        def headerData(self, section, orientation, role=DISPLAY):
+            if orientation == Qt.Horizontal and role == DISPLAY:
+                return self.HEADERS[section] if 0 <= section < len(self.HEADERS) else None
+            return None
+
+        def flags(self, index):
+            if not index.isValid():
+                return Qt.NoItemFlags
+            flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+            edit = self.rows[index.row()]
+            if index.column() == 0 and edit.before != edit.after:
+                flags |= Qt.ItemIsUserCheckable
+            return flags
+
+        def data(self, index, role=DISPLAY):
+            if not index.isValid() or not 0 <= index.row() < len(self.rows):
+                return None
+            edit = self.rows[index.row()]
+            column = index.column()
+            changed = edit.before != edit.after
+            if role == Qt.CheckStateRole and column == 0:
+                return Qt.Checked if changed and edit.included else Qt.Unchecked
+            if role == DISPLAY:
+                entity = edit.entity
+                labels = {slot: label for slot, label, _cmd in FAMILY_FIELDS[entity.family]}
+                values = ("", entity.id, entity.name_in("long") or entity.name_in("name")
+                          or entity.name_in("short"), labels.get(edit.slot, edit.slot),
+                          edit.before, edit.after if changed else "(No change)")
+                return values[column]
+            if role == FONT and column == 5 and changed:
+                return self.bold
+            if role == FOREGROUND and column == 5 and changed:
+                return COLOURS["edited"]
+            if role == TOOLTIP:
+                if column == 5 and changed:
+                    start = 0
+                    while (start < min(len(edit.before), len(edit.after))
+                           and edit.before[start] == edit.after[start]):
+                        start += 1
+                    end_before, end_after = len(edit.before), len(edit.after)
+                    while (end_before > start and end_after > start
+                           and edit.before[end_before - 1] == edit.after[end_after - 1]):
+                        end_before -= 1
+                        end_after -= 1
+                    return (f"Changed text: {edit.before[start:end_before]!r} → "
+                            f"{edit.after[start:end_after]!r}")
+                return f"{edit.entry.doc.path.name}, line {edit.entry.lineno}"
+            return None
+
+        def setData(self, index, value, role=EDIT):
+            if (not index.isValid() or index.column() != 0
+                    or role != Qt.CheckStateRole):
+                return False
+            edit = self.rows[index.row()]
+            if edit.before == edit.after:
+                return False
+            edit.included = value == Qt.Checked or value == Qt.Checked.value
+            self.dataChanged.emit(index, index, [Qt.CheckStateRole])
+            self.ticks_changed.emit()
+            return True
+
+        def refresh_ticks(self):
+            if self.rows:
+                self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, 0),
+                                      [Qt.CheckStateRole])
+            self.ticks_changed.emit()
+
+    class BatchRenameDialog(QDialog):
+        """Preview selected name lines; the window records and applies the accepted edit."""
+
+        MODES = (("Replace text", "replace"), ("Add prefix", "add_prefix"),
+                 ("Remove prefix", "remove_prefix"), ("Add suffix", "add_suffix"),
+                 ("Remove suffix", "remove_suffix"), ("Regular expression", "regex"))
+        PRESETS = tuple((label, source, target, mode)
+                        for label, mode, source, target in BATCH_RENAME_PRESETS)
+
+        def __init__(self, parent, entities, docs, initial_token="", replacement="",
+                     regex=False):
+            super().__init__(parent)
+            self.entities = list(entities)
+            self.docs = list(docs)
+            self.edits = []
+            self.applied = 0
+            self._ready = False
+            self.setWindowTitle("Batch rename selected names")
+            self.setStyleSheet(theme_style_sheet())
+            self.resize(920, 620)
+            layout = QVBoxLayout(self)
+            documents = {entry.doc for entity in self.entities for entry in entity.entries()}
+            lines = sum(1 for entity in self.entities for _entry in entity.entries())
+            families = {entity.family for entity in self.entities}
+            family = (FAMILY_LABELS[next(iter(families))].lower() if len(families) == 1
+                      else "entities")
+            self.scope_label = QLabel(
+                f"Targeting {len(self.entities):,} selected {family} "
+                f"({lines:,} total lines across {count_of(len(documents), 'document')})")
+            self.scope_label.setWordWrap(True)
+            layout.addWidget(self.scope_label)
+            note = QLabel("Preview first. Apply changes only in memory; Save or Deploy writes "
+                          "the reviewed changes. Existing overrides only; no fields are added.")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            form = QGridLayout()
+            self.mode_box = QComboBox()
+            for label, key in self.MODES:
+                self.mode_box.addItem(label, key)
+            self.mode_box.setCurrentIndex(self.mode_box.findData("regex" if regex else "replace"))
+            self.preset_box = QComboBox()
+            self.preset_box.addItem("Choose a football preset…", None)
+            for label, source, target, mode in self.PRESETS:
+                self.preset_box.addItem(label, (source, target, mode))
+            form.addWidget(QLabel("Mode:"), 0, 0)
+            form.addWidget(self.mode_box, 0, 1)
+            form.addWidget(QLabel("Quick preset:"), 0, 2)
+            form.addWidget(self.preset_box, 0, 3)
+            self.find_edit = QLineEdit(initial_token)
+            self.replace_edit = QLineEdit(replacement)
+            self.find_label = QLabel("Find:")
+            self.replace_label = QLabel("Replace with:")
+            form.addWidget(self.find_label, 1, 0)
+            form.addWidget(self.find_edit, 1, 1)
+            form.addWidget(self.replace_label, 1, 2)
+            form.addWidget(self.replace_edit, 1, 3)
+            layout.addLayout(form)
+            fields = QHBoxLayout()
+            fields.addWidget(QLabel("Fields:"))
+            self.target_long = QCheckBox("Long name / name")
+            self.target_short = QCheckBox("Short name")
+            self.target_code = QCheckBox("Code")
+            self.target_long.setChecked(True)
+            self.target_short.setChecked(True)
+            self.target_code.setToolTip("Change existing code overrides only.")
+            for check in (self.target_long, self.target_short, self.target_code):
+                fields.addWidget(check)
+            fields.addStretch(1)
+            layout.addLayout(fields)
+            options = QHBoxLayout()
+            self.whole_word = QCheckBox("Whole word only")
+            self.whole_word.setChecked(True)
+            self.case_sensitive = QCheckBox("Case sensitive")
+            self.match_accents = QCheckBox("Match accents")
+            self.match_accents.setChecked(True)
+            self.preserve_case = QCheckBox("Preserve capitalisation")
+            self.preserve_case.setChecked(True)
+            self.preserve_case.setToolTip("Use capitals for an all-capital match and lower case "
+                                         "for a lower-case match.")
+            for check in (self.whole_word, self.case_sensitive, self.match_accents,
+                          self.preserve_case):
+                options.addWidget(check)
+            options.addStretch(1)
+            layout.addLayout(options)
+            self.auto_sync_short = QCheckBox("Also transform short names with no unsaved edits")
+            self.auto_sync_short.setToolTip("Transform an existing short name only when every "
+                                           "line for it still matches the disk baseline.")
+            layout.addWidget(self.auto_sync_short)
+            self.problem_label = QLabel()
+            self.problem_label.setObjectName("warning")
+            self.problem_label.setWordWrap(True)
+            layout.addWidget(self.problem_label)
+            controls = QHBoxLayout()
+            self.tick_all_btn = QPushButton("Tick all")
+            self.untick_all_btn = QPushButton("Untick all")
+            self.invert_ticks_btn = QPushButton("Invert ticks")
+            self.tick_all_btn.clicked.connect(lambda: self.set_all_ticks(True))
+            self.untick_all_btn.clicked.connect(lambda: self.set_all_ticks(False))
+            self.invert_ticks_btn.clicked.connect(self.invert_ticks)
+            for button in (self.tick_all_btn, self.untick_all_btn, self.invert_ticks_btn):
+                controls.addWidget(button)
+            self.hide_unchanged = QCheckBox("Hide unchanged rows")
+            self.hide_unchanged.setChecked(True)
+            self.hide_unchanged.toggled.connect(self.show_preview_rows)
+            controls.addWidget(self.hide_unchanged)
+            controls.addStretch(1)
+            layout.addLayout(controls)
+            self.counter_label = QLabel()
+            layout.addWidget(self.counter_label)
+            self.table = QTableView()
+            self.preview_model = BatchPreviewModel(self)
+            self.table.setModel(self.preview_model)
+            self.table.setItemDelegateForColumn(0, TickDelegate(self.table))
+            self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.table.setAlternatingRowColors(True)
+            self.table.setWordWrap(False)
+            self.table.verticalHeader().setVisible(False)
+            self.table.horizontalHeader().setStretchLastSection(True)
+            self.preview_model.ticks_changed.connect(self.update_apply)
+            layout.addWidget(self.table, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+            self.apply_btn = buttons.addButton("Apply changes", QDialogButtonBox.AcceptRole)
+            self.apply_btn.setObjectName("review")
+            self.apply_btn.setAutoDefault(False)
+            buttons.accepted.connect(self.accept_edits)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+            self.apply_shortcut = QAction(self)
+            self.apply_shortcut.setShortcuts(
+                [QKeySequence("Ctrl+Return"), QKeySequence("Ctrl+Enter")])
+            self.apply_shortcut.triggered.connect(self.accept_edits)
+            self.addAction(self.apply_shortcut)
+            self.preview_timer = QTimer(self)
+            self.preview_timer.setSingleShot(True)
+            self.preview_timer.setInterval(120)
+            self.preview_timer.timeout.connect(self.refresh_preview)
+            for check in (self.target_long, self.target_short, self.target_code,
+                          self.whole_word, self.case_sensitive, self.match_accents,
+                          self.preserve_case, self.auto_sync_short):
+                check.toggled.connect(self.queue_preview)
+            self.mode_box.currentIndexChanged.connect(self.queue_preview)
+            self.find_edit.textChanged.connect(self.queue_preview)
+            self.replace_edit.textChanged.connect(self.queue_preview)
+            self.preset_box.activated.connect(self.choose_preset)
+            self._ready = True
+            self.refresh_preview()
+            screen = self.screen().availableGeometry()
+            self.resize(min(920, screen.width() - 40), min(620, screen.height() - 40))
+
+        @property
+        def description(self):
+            mode = self.mode_box.currentData()
+            if mode in ("replace", "regex"):
+                return f"{self.find_edit.text()} → {self.replace_edit.text()}"
+            return f"{self.mode_box.currentText().lower()}: " + (
+                self.replace_edit.text() if mode.startswith("add_") else self.find_edit.text())
+
+        def current_rule(self):
+            return BatchRenameRule(
+                mode=self.mode_box.currentData(), find=self.find_edit.text(),
+                replacement=self.replace_edit.text(), whole_word=self.whole_word.isChecked(),
+                case_sensitive=self.case_sensitive.isChecked(),
+                match_accents=self.match_accents.isChecked(),
+                preserve_case=self.preserve_case.isChecked())
+
+        def sync_options(self):
+            mode = self.mode_box.currentData()
+            regex = mode == "regex"
+            add = mode in ("add_prefix", "add_suffix")
+            remove = mode in ("remove_prefix", "remove_suffix")
+            self.find_edit.setEnabled(not add)
+            self.replace_edit.setEnabled(not remove)
+            self.find_label.setText("Remove:" if remove else "Find:")
+            self.replace_label.setText("Add:" if add else "Replace with:")
+            self.whole_word.setEnabled(not regex and not add)
+            self.match_accents.setEnabled(not regex and not add)
+            self.preserve_case.setEnabled(not regex and not add and not remove)
+            self.auto_sync_short.setEnabled(not self.target_short.isChecked())
+            self.find_edit.setToolTip("Python regular expression; replacements accept \\1 and "
+                                     "\\g<name>." if regex else "Text to match.")
+
+        def queue_preview(self, *_args):
+            if not self._ready:
+                return
+            self.sync_options()
+            self.apply_btn.setEnabled(False)
+            self.apply_shortcut.setEnabled(False)
+            self.preview_timer.start()
+
+        def refresh_preview(self):
+            self.preview_timer.stop()
+            self.sync_options()
+            slots = []
+            if self.target_long.isChecked():
+                slots.extend(("long", "name"))
+            if self.target_short.isChecked():
+                slots.append("short")
+            if self.target_code.isChecked():
+                slots.append("code")
+            try:
+                self.edits = preview_batch_rename(
+                    self.entities, self.current_rule(), slots=slots,
+                    auto_sync_short=(self.auto_sync_short.isChecked()
+                                     and not self.target_short.isChecked()),
+                    include_unchanged=True)
+                self.problem_label.setText("")
+            except (ValueError, re.error) as exc:
+                self.edits = []
+                self.problem_label.setText(f"Preview unavailable: {exc}")
+            self.show_preview_rows()
+
+        def show_preview_rows(self, *_args):
+            rows = [edit for edit in self.edits
+                    if not self.hide_unchanged.isChecked() or edit.before != edit.after]
+            self.preview_model.set_rows(rows)
+            fit_columns(self.table, {
+                0: ["Use"], 1: [edit.entity.id for edit in rows],
+                2: [edit.entity.name_in("long") or edit.entity.name_in("name") for edit in rows],
+                3: ["Long name", "Short name", "Code"],
+                4: [edit.before for edit in rows], 5: [edit.after for edit in rows]},
+                {0: 52, 1: 96, 2: 210, 3: 125, 4: 240, 5: 240})
+            self.update_apply()
+
+        def ticked(self):
+            return sum(edit.included and edit.before != edit.after for edit in self.edits)
+
+        def update_apply(self):
+            ticked = self.ticked()
+            total = sum(edit.before != edit.after for edit in self.edits)
+            self.counter_label.setText(f"{ticked:,} of {total:,} changes selected")
+            self.apply_btn.setText(f"Apply {ticked:,} ticked edits")
+            enabled = bool(ticked) and not self.preview_timer.isActive()
+            self.apply_btn.setEnabled(enabled)
+            self.apply_shortcut.setEnabled(enabled)
+
+        def set_all_ticks(self, on):
+            for edit in self.edits:
+                edit.included = bool(on) and edit.before != edit.after
+            self.preview_model.refresh_ticks()
+
+        def invert_ticks(self):
+            for edit in self.edits:
+                edit.included = not edit.included and edit.before != edit.after
+            self.preview_model.refresh_ticks()
+
+        def choose_preset(self, index):
+            preset = self.preset_box.itemData(index)
+            if preset:
+                source, target, mode = preset
+                self.apply_preset(source, target, mode)
+
+        def apply_preset(self, source, target, mode="replace"):
+            self.mode_box.setCurrentIndex(self.mode_box.findData(mode))
+            self.find_edit.setText(source)
+            self.replace_edit.setText(target)
+            self.whole_word.setChecked(True)
+            self.refresh_preview()
+
+        def accept_edits(self):
+            if self.preview_timer.isActive():
+                self.refresh_preview()
+            if self.ticked():
+                self.accept()
+
+        def apply_edits(self):
+            self.applied = apply_batch_rename(self.edits, self.docs)
+            return self.applied
+
+    class HarmoniseDialog(QDialog):
+        """Choose a terminology direction, then review it in the batch preview."""
+
+        def __init__(self, parent, entities, findings=None):
+            super().__init__(parent)
+            self.setWindowTitle("Harmonise terminology")
+            self.resize(680, 450)
+            self.choice = None
+            self.findings = (find_naming_inconsistencies(entities) if findings is None
+                             else list(findings))
+            layout = QVBoxLayout(self)
+            note = QLabel("Mixed full and abbreviated forms in loaded club names. Choose a "
+                          "direction, then review and tick each change before applying it.")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            self.opportunities = QListWidget()
+            for cluster in self.findings:
+                detail = "; ".join(f"{term}: {len(matches):,} clubs"
+                                   for term, matches in cluster.variants)
+                self.opportunities.addItem(f"{cluster.label} — {detail}")
+            layout.addWidget(self.opportunities, 1)
+            self.direction_box = QComboBox()
+            layout.addWidget(self.direction_box)
+            self.hint = QLabel("No mixed terminology was found." if not self.findings else "")
+            self.hint.setWordWrap(True)
+            layout.addWidget(self.hint)
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            self.review_btn = buttons.addButton("Review this standardisation…",
+                                               QDialogButtonBox.AcceptRole)
+            self.review_btn.setEnabled(False)
+            buttons.rejected.connect(self.reject)
+            buttons.accepted.connect(self.choose_direction)
+            layout.addWidget(buttons)
+            self.opportunities.currentRowChanged.connect(self.fill_directions)
+            if self.findings:
+                self.opportunities.setCurrentRow(0)
+
+        def fill_directions(self, row):
+            self.direction_box.clear()
+            if not 0 <= row < len(self.findings):
+                self.review_btn.setEnabled(False)
+                return
+            variants = self.findings[row].variants
+            for source, entities in variants:
+                for target, _matches in variants:
+                    if source != target:
+                        self.direction_box.addItem(
+                            f"Standardise {len(entities):,} '{source}' clubs to '{target}'",
+                            (harmonisation_pattern(source) if source == "St" else source,
+                             target, list(entities), source == "St"))
+            self.review_btn.setEnabled(self.direction_box.count() > 0)
+
+        def choose_direction(self):
+            choice = self.direction_box.currentData()
+            if choice:
+                self.choice = choice
+                self.accept()
+
+    class CommandPaletteDialog(QDialog):
+        """Search the available commands; one extra choice selects a name word."""
+
+        def __init__(self, parent, commands):
+            super().__init__(parent)
+            self.setWindowTitle("Command palette")
+            self.resize(720, 440)
+            self.commands = list(commands)
+            self.matches = []
+            self.chosen = None
+            layout = QVBoxLayout(self)
+            self.search_edit = QLineEdit()
+            self.search_edit.setPlaceholderText("Type a command, saved search, collection or name word…")
+            layout.addWidget(self.search_edit)
+            self.list_widget = QListWidget()
+            layout.addWidget(self.list_widget, 1)
+            hint = QLabel("Enter runs the highlighted command. Escape closes this window.")
+            layout.addWidget(hint)
+            buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+            self.run_btn = buttons.addButton("Run", QDialogButtonBox.AcceptRole)
+            buttons.accepted.connect(self.run_selected)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+            self.search_edit.textChanged.connect(self.refresh_matches)
+            self.search_edit.returnPressed.connect(self.run_selected)
+            self.list_widget.itemActivated.connect(lambda _item: self.run_selected())
+            self.search_edit.installEventFilter(self)
+            self.refresh_matches()
+            self.search_edit.setFocus()
+
+        @staticmethod
+        def search_score(query, label):
+            query, label = query.casefold(), label.casefold()
+            if not query:
+                return 0
+            if query in label:
+                return label.index(query)
+            if all(word in label for word in query.split()):
+                return 100
+            position = 0
+            for letter in query.replace(" ", ""):
+                position = label.find(letter, position)
+                if position < 0:
+                    return None
+                position += 1
+            return 200 + position
+
+        def refresh_matches(self, *_args):
+            query = self.search_edit.text().strip()
+            ranked = []
+            for command in self.commands:
+                label, shortcut, callback, enabled = command
+                score = self.search_score(query, label)
+                if score is not None:
+                    ranked.append((score, label.casefold(), command))
+            ranked.sort(key=lambda row: (row[0], row[1]))
+            self.matches = [row[2] for row in ranked]
+            parent = self.parent()
+            if query and hasattr(parent, "select_entities_by_token"):
+                self.matches.append((f"Select visible names containing '{query}'", "",
+                                     lambda word=query: parent.select_entities_by_token(word),
+                                     not getattr(parent, "busy", False)))
+            self.list_widget.clear()
+            for label, shortcut, _callback, enabled in self.matches:
+                item = QListWidgetItem(label + (f"    {shortcut}" if shortcut else ""))
+                if not enabled:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+                self.list_widget.addItem(item)
+            first = next((row for row, command in enumerate(self.matches) if command[3]), -1)
+            self.list_widget.setCurrentRow(first)
+            self.run_btn.setEnabled(first >= 0)
+
+        def run_selected(self):
+            row = self.list_widget.currentRow()
+            if 0 <= row < len(self.matches) and self.matches[row][3]:
+                self.chosen = self.matches[row][2]
+                self.accept()
+
+        def eventFilter(self, watched, event):
+            if (watched is self.search_edit and event.type() == event.Type.KeyPress
+                    and event.key() in (Qt.Key_Down, Qt.Key_Up)):
+                step = 1 if event.key() == Qt.Key_Down else -1
+                row = self.list_widget.currentRow() + step
+                while 0 <= row < len(self.matches):
+                    if self.matches[row][3]:
+                        self.list_widget.setCurrentRow(row)
+                        return True
+                    row += step
+                return True
+            return super().eventFilter(watched, event)
 
     def confirm_game_write(parent, preflight: Preflight, question: str, note: str = "") -> bool:
         """Show a preflight result and ask once. True means the write may go ahead.
@@ -7349,6 +8171,12 @@ def run_gui(paths):
             self.metrics = QLabel()
             self.metrics.setObjectName("metrics")
             self.statusBar().addPermanentWidget(self.metrics)
+            self.selection_pill = QPushButton()
+            self.selection_pill.setObjectName("small")
+            self.selection_pill.setToolTip("Batch rename the selected entities (Ctrl+B)")
+            self.selection_pill.clicked.connect(lambda: self.open_batch_rename())
+            self.selection_pill.hide()
+            self.statusBar().insertPermanentWidget(0, self.selection_pill)
             self.copyright_label = QLabel(COPYRIGHT_SHORT)
             self.copyright_label.setObjectName("metrics")
             self.copyright_label.setToolTip(
@@ -7405,8 +8233,11 @@ def run_gui(paths):
                 self.add_to_collection_menu.menuAction(),
                 self.new_collection_act, self.rename_collection_act,
                 self.delete_collection_act, self.remove_from_collection_act,
-                self.overrides_act]
+                self.overrides_act, self.batch_rename_act, self.harmonise_act,
+                self.select_word_act, self.select_pattern_act, self.select_section_act,
+                self.invert_selection_act, self.clear_selection_act, self.palette_act]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
+            self.busy_widgets.append(self.selection_pill)
             self._enabled_before: dict = {}
 
             self.restore_view()
@@ -7476,6 +8307,26 @@ def run_gui(paths):
             self.bulk_act = a(
                 "Bulk tools...", self.open_bulk, (),
                 "Strip affixes, remove sponsors, or title-case the names shown")
+            self.batch_rename_act = a(
+                "Batch rename selected...", lambda: self.open_batch_rename(), ["Ctrl+B"],
+                "Preview transformations of selected names; apply them as one undo step")
+            self.select_word_act = a(
+                "Select all matching word...", self.prompt_select_word, ["Ctrl+Shift+W"])
+            self.select_pattern_act = a(
+                "Select by pattern / regex...", self.prompt_select_pattern,
+                ["Ctrl+Shift+S", "Ctrl+Shift+F"])
+            self.select_section_act = a(
+                "Select same file section", self.select_same_section, ["Ctrl+Alt+S"])
+            self.invert_selection_act = a(
+                "Invert selection", self.invert_entity_selection, ["Ctrl+Shift+I"])
+            self.clear_selection_act = a(
+                "Clear selection", self.clear_entity_selection, ["Ctrl+D"])
+            self.harmonise_act = a(
+                "Harmonise terminology...", self.open_harmoniser, (),
+                "Find mixed football terms in loaded clubs, then preview a chosen spelling")
+            self.palette_act = a(
+                "Command palette...", self.open_command_palette, ["Ctrl+Shift+P"],
+                "Search menu commands, saved searches, collections and name words")
 
             self.entities_act = a("Entities", lambda _checked=False: self.tabs.setCurrentIndex(0),
                                   ["Ctrl+1"])
@@ -7589,6 +8440,15 @@ def run_gui(paths):
             self.edit_menu = menu(
                 "&Edit", self.undo_act, self.redo_act, None, self.edit_cell_act,
                 self.revert_act, None, self.find_act, self.replace_act, self.bulk_act)
+            self.edit_menu.addAction(self.batch_rename_act)
+            self.selection_menu = self.edit_menu.addMenu("&Selection")
+            for action in (self.select_word_act, self.select_pattern_act,
+                           self.select_section_act, self.invert_selection_act,
+                           self.clear_selection_act):
+                self.selection_menu.addAction(action)
+            self.edit_menu.addSeparator()
+            self.edit_menu.addAction(self.palette_act)
+            self.tools_menu = menu("&Tools", self.harmonise_act)
             self.view_menu = menu("&View", self.entities_act, self.lines_act, self.changes_act,
                                   None, self.inspector_act, self.reset_widths_act)
             self.packs_menu = menu("&Packs", self.export_act, self.import_pack_act)
@@ -7735,6 +8595,7 @@ def run_gui(paths):
             self.entity_view = QTableView()
             self.entity_view.setModel(self.entity_proxy)
             self.entity_view.setSelectionBehavior(QTableView.SelectRows)
+            self.entity_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.entity_view.setAlternatingRowColors(True)
             self.entity_view.setWordWrap(False)
             self.entity_view.verticalHeader().setVisible(False)
@@ -8034,6 +8895,7 @@ def run_gui(paths):
                     action.setEnabled(False)
                 for widget in self.busy_widgets:
                     widget.setEnabled(False)
+                self.update_selection_actions()
                 QApplication.setOverrideCursor(Qt.BusyCursor)
                 self.statusBar().showMessage(text)
                 return
@@ -8041,6 +8903,7 @@ def run_gui(paths):
                 action.setEnabled(enabled)
             for widget in self.busy_widgets:
                 widget.setEnabled(True)
+            self.update_selection_actions()
             QApplication.restoreOverrideCursor()
             self.statusBar().clearMessage()
 
@@ -8311,6 +9174,7 @@ def run_gui(paths):
                 "No problem lines found.")
 
         def refresh_status(self, *_):
+            self.update_selection_actions()
             total = len(self.line_model.rows)
             changed = sum(1 for entry in self.line_model.rows if entry.changed)
             changed += sum(len(doc.removed_rows) for doc in self.docs)
@@ -8667,9 +9531,218 @@ def run_gui(paths):
             self.apply_entity_filter()
 
         def selected_entities(self) -> list[NameEntity]:
-            rows = {self.entity_proxy.mapToSource(index).row()
-                    for index in self.entity_view.selectionModel().selectedRows()}
+            rows = {self.entity_proxy.mapToSource(self.entity_proxy.index(row, 0)).row()
+                    for row in self.selected_entity_rows()}
             return [self.entity_model.rows[row] for row in sorted(rows)]
+
+        def selected_entity_rows(self) -> list[int]:
+            """Read row ranges without asking Qt to check every selected cell's flags."""
+            return sorted({row for block in self.entity_view.selectionModel().selection()
+                           for row in range(block.top(), block.bottom() + 1)})
+
+        def select_entities_matching(self, predicate) -> int:
+            """Replace the selection with matching visible entities in one update."""
+            self.tabs.setCurrentIndex(0)
+            selection = QItemSelection()
+            first = last = None
+            count = 0
+            columns = self.entity_proxy.columnCount()
+            for row in range(self.entity_proxy.rowCount()):
+                index = self.entity_proxy.index(row, 0)
+                source = self.entity_proxy.mapToSource(index)
+                if predicate(self.entity_model.rows[source.row()]):
+                    count += 1
+                    if first is None:
+                        first = row
+                    last = row
+                elif first is not None:
+                    selection.select(self.entity_proxy.index(first, 0),
+                                     self.entity_proxy.index(last, columns - 1))
+                    first = last = None
+            if first is not None:
+                selection.select(self.entity_proxy.index(first, 0),
+                                 self.entity_proxy.index(last, columns - 1))
+            model = self.entity_view.selectionModel()
+            model.select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            if not selection.isEmpty():
+                model.setCurrentIndex(selection.first().topLeft(), QItemSelectionModel.NoUpdate)
+            else:
+                model.setCurrentIndex(QModelIndex(), QItemSelectionModel.NoUpdate)
+            self.update_selection_actions()
+            self.statusBar().showMessage(
+                f"Selected {count_of(count, 'visible entity', 'visible entities')}. "
+                "Existing filters are kept.", 8000)
+            return count
+
+        def select_entities_by_token(self, token: str, case_sensitive: bool = False) -> int:
+            return self.select_entities_matching(
+                lambda entity: entity_matches_token(entity, token, case_sensitive))
+
+        def select_by_pattern(self, pattern: str, regex: bool = False) -> int:
+            if not pattern.strip():
+                raise ValueError("Enter a name pattern first.")
+            try:
+                compiled = re.compile(pattern if regex else fnmatch.translate(pattern), re.IGNORECASE)
+            except re.error as exc:
+                raise ValueError(f"Invalid regular expression: {exc}") from exc
+            return self.select_entities_matching(
+                lambda entity: any(compiled.search(entry.name)
+                                   for slot in TEXT_SLOTS
+                                   for entry in entity.slots.get(slot, ())))
+
+        def prompt_selection(self, pattern: bool = False) -> None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Select by name pattern" if pattern else "Select matching word")
+            layout = QVBoxLayout(dialog)
+            hint = ("Wildcards match a whole name: *United* or Manchester ?. "
+                    "Regular expressions search within names." if pattern else
+                    "Match a whole word in long or short names.")
+            label = QLabel(hint + " Only visible rows are selected.")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            text = QLineEdit()
+            layout.addWidget(text)
+            regex = QCheckBox("Regular expression")
+            regex.setVisible(pattern)
+            layout.addWidget(regex)
+            problem = QLabel()
+            problem.setObjectName("warning")
+            problem.setWordWrap(True)
+            layout.addWidget(problem)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.button(QDialogButtonBox.Ok).setText("Select")
+            layout.addWidget(buttons)
+
+            def choose():
+                try:
+                    if not text.text().strip():
+                        raise ValueError("Enter a word or pattern first.")
+                    if pattern:
+                        self.select_by_pattern(text.text(), regex.isChecked())
+                    else:
+                        self.select_entities_by_token(text.text().strip())
+                except ValueError as exc:
+                    problem.setText(str(exc))
+                    return
+                dialog.accept()
+
+            buttons.accepted.connect(choose)
+            buttons.rejected.connect(dialog.reject)
+            dialog.resize(520, 200)
+            text.setFocus()
+            dialog.exec()
+
+        def prompt_select_word(self) -> None:
+            self.prompt_selection()
+
+        def prompt_select_pattern(self) -> None:
+            self.prompt_selection(True)
+
+        def select_same_section(self) -> int:
+            index = self.entity_view.currentIndex()
+            source = self.entity_proxy.mapToSource(index)
+            entity = (self.entity_model.rows[source.row()] if source.isValid()
+                      else self.inspector_entity)
+            if entity is None:
+                return 0
+            return self.select_entities_matching(lambda candidate: candidate.section == entity.section)
+
+        def invert_entity_selection(self) -> int:
+            chosen = {entity_key(entity) for entity in self.selected_entities()}
+            return self.select_entities_matching(lambda entity: entity_key(entity) not in chosen)
+
+        def clear_entity_selection(self) -> None:
+            self.entity_view.clearSelection()
+            self.update_selection_actions()
+
+        def update_selection_actions(self) -> None:
+            if not hasattr(self, "selection_pill"):
+                return
+            count = len(self.selected_entity_rows())
+            available = count > 0 and self.entity_view.isEnabled()
+            self.batch_rename_act.setEnabled(available)
+            self.selection_pill.setVisible(count > 1 and self.tabs.currentIndex() == 0)
+            family = {"club": ("club", "clubs"), "comp": ("competition", "competitions")}
+            noun, plural = family.get(self.family, ("entity", "entities"))
+            self.selection_pill.setText(
+                f"{count_of(count, noun, plural)} selected | Batch rename (Ctrl+B)")
+
+        def open_batch_rename(self, entities=None, initial_token: str = "",
+                              replacement: str = "", regex: bool = False) -> None:
+            if not self.entity_view.isEnabled():
+                return
+            entities = self.selected_entities() if entities is None else list(entities)
+            if not entities:
+                self.statusBar().showMessage("Select one or more entity rows first.", 6000)
+                return
+            dialog = BatchRenameDialog(self, entities, self.docs, initial_token, replacement, regex)
+            if not dialog.exec():
+                return
+            try:
+                with self.recording("batch rename") as operation:
+                    applied = dialog.apply_edits()
+                    operation.label = f"batch rename: {count_of(applied, 'name')} ({dialog.description})"
+            except ValueError as exc:
+                QMessageBox.warning(self, APP_NAME, str(exc))
+                return
+            if applied:
+                changed_entities = len({entity_key(edit.entity) for edit in dialog.edits
+                                        if edit.included and edit.before != edit.after})
+                self.reload_views()
+                self.statusBar().showMessage(
+                    f"Batch rename: updated {count_of(changed_entities, 'entity', 'entities')} "
+                    f"({count_of(applied, 'name')}; {dialog.description}). "
+                    "Nothing is written until Save or Deploy.", 12000)
+
+        def open_harmoniser(self) -> None:
+            entities = [entity for entity in self.all_entities if entity.family == "club"]
+            if not entities:
+                self.statusBar().showMessage("Open club name files first.", 6000)
+                return
+            dialog = HarmoniseDialog(self, entities)
+            if dialog.exec() and dialog.choice is not None:
+                source, target, chosen, regex = dialog.choice
+                self.open_batch_rename(chosen, source, target, regex)
+
+        def palette_commands(self) -> list:
+            commands = []
+
+            def add_menu(menu, path):
+                for action in menu.actions():
+                    if action.isSeparator() or not action.text():
+                        continue
+                    label = action.text().replace("&", "")
+                    if action.menu() is not None:
+                        add_menu(action.menu(), f"{path} > {label}")
+                    elif action is not self.palette_act:
+                        keys = " / ".join(key.toString(QKeySequence.NativeText)
+                                          for key in action.shortcuts())
+                        commands.append((f"{path} > {label}", keys, action.trigger,
+                                         action.isEnabled()))
+
+            self.fill_add_to_menu()
+            for menu in self.menus:
+                add_menu(menu, menu.title().replace("&", ""))
+            for search in self.saved_searches:
+                commands.append((f"Saved search > {search.name}", "",
+                                 lambda item=search: self.apply_saved_search(item), True))
+            for collection in self.collections.collections:
+                commands.append((f"Collection > {collection.name}", "",
+                                 lambda name=collection.name: self.show_palette_collection(name), True))
+            return commands
+
+        def show_palette_collection(self, name: str) -> None:
+            self.tabs.setCurrentIndex(0)
+            for row in range(self.collection_list.count()):
+                item = self.collection_list.item(row)
+                if item.data(Qt.UserRole) == name:
+                    self.collection_list.setCurrentItem(item)
+                    break
+
+        def open_command_palette(self) -> None:
+            dialog = CommandPaletteDialog(self, self.palette_commands())
+            if dialog.exec() and dialog.chosen is not None:
+                dialog.chosen()
 
         def store_collections(self, done: str) -> bool:
             """Write collections.json and show the result. A failed write puts the
@@ -8785,10 +9858,35 @@ def run_gui(paths):
             self.store_collections(f"Deleted the collection {collection.name}.")
 
         def grid_menu(self) -> QMenu:
-            """The grid's right-click menu: collections, Edit cell, Revert, and the
-            cross-file override inspector."""
+            """Build contextual name selection and editing actions without opening it."""
             menu = QMenu(self)
-            menu.addMenu(self.add_to_collection_menu)
+            index = self.entity_view.currentIndex()
+            source = self.entity_proxy.mapToSource(index)
+            entity = (self.entity_model.rows[source.row()] if source.isValid()
+                      else self.inspector_entity)
+            if entity is not None:
+                tokens = extract_name_tokens(" ".join(entity.name_in(slot) for slot in TEXT_SLOTS))
+                similar = QMenu("Select similar names", menu)
+                visible = self.visible_entities()
+                for token in tokens:
+                    total = sum(entity_matches_token(item, token) for item in self.entity_model.rows)
+                    shown = (total if len(visible) == len(self.entity_model.rows) else
+                             sum(entity_matches_token(item, token) for item in visible))
+                    if total < 2:
+                        continue
+                    scope = f"{total} entities" if shown == total else f"{total} entities; {shown} shown"
+                    action = similar.addAction(f"Select all containing '{token}' ({scope})")
+                    action.setEnabled(shown > 0)
+                    action.setToolTip("Select matching whole words in visible long or short names")
+                    action.triggered.connect(
+                        lambda _checked=False, word=token: self.select_entities_by_token(word))
+                if not similar.isEmpty():
+                    menu.addMenu(similar)
+            menu.addAction(self.batch_rename_act)
+            count = len(self.selected_entities())
+            self.fill_add_to_menu()
+            collections = menu.addMenu(f"Add selection to collection ({count})")
+            collections.addActions(self.add_to_collection_menu.actions())
             menu.addAction(self.remove_from_collection_act)
             menu.addSeparator()
             menu.addAction(self.edit_cell_act)
@@ -8798,6 +9896,12 @@ def run_gui(paths):
             return menu
 
         def show_grid_menu(self, point) -> None:
+            index = self.entity_view.indexAt(point)
+            if index.isValid():
+                selection = self.entity_view.selectionModel()
+                if not selection.isRowSelected(index.row(), QModelIndex()):
+                    selection.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
             self.grid_menu().exec(self.entity_view.viewport().mapToGlobal(point))
 
         def show_overrides(self) -> None:
@@ -8928,13 +10032,14 @@ def run_gui(paths):
             self.apply_entity_filter()
 
         def on_entity_selection(self) -> None:
+            self.update_selection_actions()
             if self._updating or self._filling:
                 return
-            indexes = self.entity_view.selectionModel().selectedRows()
-            if not indexes:
+            rows = self.selected_entity_rows()
+            if not rows:
                 self.show_inspector(None)
                 return
-            source = self.entity_proxy.mapToSource(indexes[0])
+            source = self.entity_proxy.mapToSource(self.entity_proxy.index(rows[0], 0))
             if not source.isValid():
                 return
             self.show_inspector(self.entity_model.rows[source.row()])
@@ -9276,15 +10381,21 @@ def run_gui(paths):
         def shortcut_rows(self) -> list[tuple[str, str]]:
             """Every key the editor knows, read from the menus, then the keys inside the tables."""
             rows = []
-            for menu in self.menus:
+            def add_menu(menu, path):
                 for action in menu.actions():
+                    name = action.text().replace('&', '')
+                    if action.menu() is not None:
+                        add_menu(action.menu(), f"{path} > {name}")
+                        continue
                     keys = [key.toString(QKeySequence.NativeText) for key in action.shortcuts()]
                     if not keys or not action.text():
                         continue
                     name = {self.undo_act: "Undo", self.redo_act: "Redo"}.get(
                         action, action.text())
                     rows.append((" or ".join(keys),
-                                 f"{menu.title().replace('&', '')} > {name.replace('&', '')}"))
+                                 f"{path} > {name.replace('&', '')}"))
+            for menu in self.menus:
+                add_menu(menu, menu.title().replace('&', ''))
             rows.extend([
                 ("Double-click", "Edit a cell; on the Changes tab, go to its line"),
                 ("Enter", "Keep what was typed in a cell or an inspector field"),
