@@ -2675,7 +2675,9 @@ class Session6Window(unittest.TestCase):
             self._open(win, tmp)
             self.assertEqual([action.text() for action in win.edit_menu.actions()],
                              ["Undo", "Redo", "", "Edit cell", "Revert selected", "",
-                              "Find", "Replace...", "Bulk tools..."])     # Session 7
+                              "Find", "Replace...", "Bulk tools...",       # Session 7
+                              "Batch rename selected...", "&Selection", "",
+                              "Command palette..."])                      # Session 15
             self.assertFalse(win.undo_act.isEnabled())
             self.assertEqual(win.undo_act.shortcut().toString(), "Ctrl+Z")
             self.assertIn("Ctrl+Y", [key.toString() for key in win.redo_act.shortcuts()])
