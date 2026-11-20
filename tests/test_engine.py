@@ -6983,5 +6983,464 @@ win.close()
             self.assertTrue(dialog["reachable"], dialog)
 
 
+class Session16TokenIndex(unittest.TestCase):
+    """Per-family whole-word token index and shared-word helpers."""
+
+    def document(self, tmp, names):
+        path = Path(tmp) / "names.lnc"
+        text = "# English clubs\r\n"
+        for number, name in enumerate(names, start=1):
+            text += f'"CLUB_NAME_CHANGE"\t{number}\t"{name}"\t""\r\n'
+        write_lnc(path, text)
+        return editor.LncDoc(path)
+
+    def entities(self, tmp, names):
+        doc = self.document(tmp, names)
+        return doc, editor.build_entities([doc])
+
+    def test_two_letter_football_marks_are_kept_and_other_two_letter_words_drop(self):
+        tokens = editor.extract_name_tokens("AC Milan SC Braga FK Partizan SK Rapid")
+        for mark in ("AC", "SC", "FK", "SK"):
+            self.assertIn(mark, tokens)
+        tokens = editor.extract_name_tokens("CF Peralada FC Bayern")
+        for mark in ("CF", "FC"):
+            self.assertIn(mark, tokens)
+        # Short football marks sort behind the richer tokens.
+        self.assertEqual(editor.extract_name_tokens("FC Bayern")[-1], "FC")
+        # Plain two-letter words are dropped.
+        for word in ("GO Ahead", "KO Tent", "OK Store"):
+            tokens = editor.extract_name_tokens(word)
+            self.assertEqual(len(tokens[0]), len(word.split()[1]))
+
+    def test_city_matches_whole_word_only(self):
+        self.assertEqual(editor.extract_name_tokens("Cityside Hall"), ["Cityside", "Hall"])
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, entities = self.entities(tmp, ["Cityside Hall", "Bristol City"])
+            self.assertFalse(editor.entity_matches_token(entities[0], "City"))
+            self.assertTrue(editor.entity_matches_token(entities[1], "City"))
+            folds = editor.entity_token_set(entities[0])
+            self.assertIn("cityside", folds)
+            self.assertNotIn("city", folds)
+
+    def test_bracketed_qualifiers_and_stop_words_drop(self):
+        tokens = editor.extract_name_tokens("The United (Reserves) of {Fictional} [Country]")
+        self.assertEqual(tokens, ["United"])
+        tokens = editor.extract_name_tokens("de del des von of and the La")
+        self.assertEqual(tokens, [])
+
+    def test_unicode_accents_fold_for_the_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, entities = self.entities(tmp, ["Atlético Madrid", "Atletico Reserves"])
+            index = editor.FamilyTokenIndex()
+            index.rebuild(entities)
+            fold = "atlético".casefold()
+            without = "atletico".casefold()
+            keys = index.entities_with("club", fold) | index.entities_with("club", without)
+            self.assertEqual({k[1] for k in keys}, {"1", "2"})
+            # Entity token set preserves the two folded forms as read.
+            self.assertIn(fold, editor.entity_token_set(entities[0]))
+            self.assertIn(without, editor.entity_token_set(entities[1]))
+
+    def test_family_token_index_matches_a_fresh_scan_after_load_edit_and_undo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = make_window(self)
+            try:
+                path = Path(tmp) / "names.lnc"
+                text = "# English clubs\r\n"
+                for number, name in enumerate(
+                        ["Manchester United", "Leeds United", "Bristol City"], start=1):
+                    text += f'"CLUB_NAME_CHANGE"\t{number}\t"{name}"\t""\r\n'
+                write_lnc(path, text)
+                win.load([str(path)])
+                fresh = editor.FamilyTokenIndex()
+                fresh.rebuild(win.all_entities)
+                self.assertEqual(win.token_index.by_family, fresh.by_family)
+                # Edit a name through the recording path so Undo can take it back.
+                entity = next(e for e in win.all_entities if e.id == "3")
+                with win.recording("rename") as operation:
+                    entity.slots["long"][0].set_name("Bristol Rovers")
+                    operation.label = "rename Bristol City to Bristol Rovers"
+                win.after_edit()
+                fresh.rebuild(win.all_entities)
+                self.assertEqual(win.token_index.by_family, fresh.by_family)
+                self.assertIn("rovers", win.token_index.by_family["club"])
+                self.assertNotIn("city", win.token_index.by_family["club"])
+                # Undo brings Bristol City back; the index should too.
+                win.undo_act.trigger()
+                fresh.rebuild(win.all_entities)
+                self.assertEqual(win.token_index.by_family, fresh.by_family)
+                self.assertIn("city", win.token_index.by_family["club"])
+                win.redo_act.trigger()
+                fresh.rebuild(win.all_entities)
+                self.assertEqual(win.token_index.by_family, fresh.by_family)
+            finally:
+                close_window(win)
+
+    def test_shared_entity_tokens_orders_by_shared_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, entities = self.entities(
+                tmp, ["Manchester United", "Leeds United", "Manchester City",
+                      "Birmingham City"])
+            shared = editor.shared_entity_tokens(entities)
+            counts = dict(shared)
+            self.assertEqual(counts.get("united"), 2)
+            self.assertEqual(counts.get("city"), 2)
+            self.assertEqual(counts.get("manchester"), 2)
+            self.assertNotIn("leeds", counts)   # only one entity contains it
+            shared = editor.shared_entity_tokens(entities[:3])
+            counts = dict(shared)
+            self.assertEqual(counts.get("manchester"), 2)
+            self.assertEqual(counts.get("united"), 2)
+            self.assertNotIn("city", counts)    # one entity in the group
+
+    def test_suggest_batch_token_prefers_the_most_shared_longer_word(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, entities = self.entities(
+                tmp, ["Manchester United", "Leeds United", "Birmingham United FC"])
+            fold, count, total = editor.suggest_batch_token(entities)
+            self.assertEqual((fold, count, total), ("united", 3, 3))
+            # Short football marks are picked only when no richer token wins.
+            _doc, entities = self.entities(tmp, ["AC Milan", "AC Monza"])
+            fold, _count, _total = editor.suggest_batch_token(entities)
+            self.assertEqual(fold, "ac")
+            _doc, entities = self.entities(tmp, ["AC Milan", "Bologna"])
+            fold, count, _total = editor.suggest_batch_token(entities)
+            self.assertEqual((fold, count), ("", 0))
+
+    def test_token_index_rebuilds_a_full_family_under_one_second(self):
+        from time import perf_counter
+
+        names = [f"Club {number} United" for number in range(4300)]
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc, entities = self.entities(tmp, names)
+            index = editor.FamilyTokenIndex()
+            elapsed = []
+            for _attempt in range(2):
+                started = perf_counter()
+                index.rebuild(entities)
+                elapsed.append(perf_counter() - started)
+                if elapsed[-1] < 1:
+                    break
+            self.assertLess(min(elapsed), 1, elapsed)
+            self.assertEqual(index.count("club", "united"), 4300)
+            # One lookup across 4,300 entities answers well under a second.
+            started = perf_counter()
+            for _ in range(1000):
+                index.count("club", "united")
+            self.assertLess(perf_counter() - started, 0.5)
+
+
+class Session16SharedWordMenu(unittest.TestCase):
+    """Right-click menu leads with the words a multi-row selection shares."""
+
+    def window(self, tmp, names):
+        path = Path(tmp) / "names.lnc"
+        text = "# English clubs\r\n"
+        for number, name in enumerate(names, start=1):
+            text += f'"CLUB_NAME_CHANGE"\t{number}\t"{name}"\t""\r\n'
+        write_lnc(path, text)
+        win = make_window(self)
+        win.load([str(path)])
+        return win
+
+    def _similar_submenu(self, menu):
+        for action in menu.actions():
+            if action.menu() and "similar" in action.text().lower():
+                return action.menu()
+        return None
+
+    def test_multi_row_menu_leads_with_shared_words_most_shared_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Each shared word has at least one unselected match, so clicking
+            # the menu item adds a new row rather than shrinking the selection.
+            win = self.window(tmp, [
+                "Manchester United", "Leeds United", "Newcastle United",
+                "Reading United", "Manchester City", "Manchester Palace",
+                "Birmingham City", "Bristol Rovers"])
+            try:
+                win.select_entities_matching(
+                    lambda entity: entity.name_in("long") in {
+                        "Manchester United", "Leeds United", "Newcastle United",
+                        "Manchester City"})
+                menu = win.grid_menu()
+                similar = self._similar_submenu(menu)
+                self.assertIsNotNone(similar)
+                texts = [action.text() for action in similar.actions()]
+                united = next(i for i, text in enumerate(texts) if "'United'" in text)
+                manchester = next(i for i, text in enumerate(texts) if "'Manchester'" in text)
+                self.assertLess(united, manchester)
+                self.assertIn("3 of 4 selected", texts[united])
+                self.assertIn("2 of 4 selected", texts[manchester])
+                # City is in only one selected row, so it doesn't lead; it still
+                # appears for the cursor row if that row has it.
+            finally:
+                close_window(win)
+
+    def test_a_word_matching_only_the_already_selected_rows_is_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Special only appears in the selected rows, Rovers appears in all
+            # four, so a menu entry for Special would only shrink the selection
+            # whereas Rovers would expand it.
+            win = self.window(tmp, [
+                "Alpha Special Rovers", "Beta Special Rovers",
+                "Charlie Rovers", "Delta Rovers"])
+            try:
+                win.select_entities_matching(
+                    lambda entity: entity.name_in("long") in {
+                        "Alpha Special Rovers", "Beta Special Rovers"})
+                menu = win.grid_menu()
+                similar = self._similar_submenu(menu)
+                self.assertIsNotNone(similar)
+                texts = [action.text() for action in similar.actions()]
+                self.assertFalse(any("'Special'" in text for text in texts), texts)
+                self.assertTrue(any("'Rovers'" in text for text in texts), texts)
+            finally:
+                close_window(win)
+
+    def test_counts_split_total_and_visible_under_a_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "names.lnc"
+            text = (
+                "# England\r\n"
+                '"CLUB_NAME_CHANGE" 1 "Manchester United" ""\r\n'
+                '"CLUB_NAME_CHANGE" 2 "Leeds United" ""\r\n'
+                '"CLUB_NAME_CHANGE" 3 "Bristol City" ""\r\n'
+                "# North\r\n"
+                '"CLUB_NAME_CHANGE" 4 "Newcastle United" ""\r\n')
+            write_lnc(path, text)
+            win = make_window(self)
+            try:
+                win.load([str(path)])
+                win.section_filter = "England"
+                win.apply_entity_filter()
+                win.select_entities_matching(
+                    lambda entity: entity.name_in("long") in {
+                        "Manchester United", "Leeds United"})
+                menu = win.grid_menu()
+                similar = self._similar_submenu(menu)
+                self.assertIsNotNone(similar)
+                united = next(action for action in similar.actions()
+                              if "'United'" in action.text())
+                # Three United rows in the family, two shown by the filter.
+                self.assertIn("3", united.text())
+                self.assertIn("2 shown of 3", united.text())
+                united.trigger()
+                # The hidden Newcastle United row stays out of the selection.
+                self.assertEqual({entity.name_in("long") for entity in
+                                  win.selected_entities()},
+                                 {"Manchester United", "Leeds United"})
+            finally:
+                close_window(win)
+
+    def test_single_row_menu_matches_the_release_3_2_behaviour(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, ["Manchester United", "Newcastle United",
+                                    "Manchester City"])
+            try:
+                win.select_entities_matching(
+                    lambda entity: entity.name_in("long") == "Manchester United")
+                menu = win.grid_menu()
+                similar = self._similar_submenu(menu)
+                self.assertIsNotNone(similar)
+                united = next(action for action in similar.actions()
+                              if "'United'" in action.text())
+                self.assertIn("2 entities", united.text())
+                united.trigger()
+                self.assertEqual({entity.name_in("long") for entity in
+                                  win.selected_entities()},
+                                 {"Manchester United", "Newcastle United"})
+            finally:
+                close_window(win)
+
+
+class Session16BatchFromSelection(unittest.TestCase):
+    """Ctrl+B opens aimed at the selection; short-name context rules apply."""
+
+    def window(self, tmp, rows):
+        path = Path(tmp) / "names.lnc"
+        text = "# English clubs\r\n"
+        for row in rows:
+            text += row + "\r\n"
+        write_lnc(path, text)
+        win = make_window(self)
+        win.load([str(path)])
+        return win
+
+    def capture(self, win):
+        """Open the batch dialog with a stand-in and return it."""
+        from PySide6.QtWidgets import QDialog
+
+        seen = []
+        with mock.patch.object(QDialog, "exec", lambda dialog: seen.append(dialog) or 0):
+            win.open_batch_rename()
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_suggestion_fills_the_preset_and_states_its_basis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                f'"CLUB_NAME_CHANGE" {n} "Club {n} United" ""'
+                for n in range(1, 4)])
+            try:
+                win.select_entities_by_token("United")
+                dialog = self.capture(win)
+                self.assertEqual(dialog.find_edit.text(), "United")
+                self.assertEqual(dialog.replace_edit.text(), "Utd")
+                self.assertIsNotNone(dialog.suggestion)
+                self.assertEqual(dialog.suggestion[:3], ("United", 3, 3))
+                self.assertTrue(dialog.suggestion_label.isVisible()
+                                or dialog.suggestion_label.text())
+                self.assertIn("3", dialog.suggestion_label.text())
+                self.assertIn("United", dialog.suggestion_label.text())
+                self.assertIn("Utd", dialog.suggestion_label.text())
+            finally:
+                close_window(win)
+
+    def test_partial_coverage_states_how_many_of_the_selection_share_the_word(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                '"CLUB_NAME_CHANGE" 1 "Manchester United" ""',
+                '"CLUB_NAME_CHANGE" 2 "Leeds United" ""',
+                '"CLUB_NAME_CHANGE" 3 "Bristol City" ""'])
+            try:
+                win.select_entities_matching(lambda entity: True)
+                dialog = self.capture(win)
+                self.assertEqual(dialog.suggestion[:3], ("United", 2, 3))
+                self.assertIn("2 of 3", dialog.suggestion_label.text())
+            finally:
+                close_window(win)
+
+    def test_short_name_already_reading_the_target_starts_unticked_with_a_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                '"CLUB_NAME_CHANGE" 1 "Manchester United" ""',
+                '"CLUB_SHORT_NAME_CHANGE" 1 "Utd" ""',
+                '"CLUB_NAME_CHANGE" 2 "Leeds United" ""',
+                '"CLUB_SHORT_NAME_CHANGE" 2 "Leeds" ""'])
+            try:
+                win.select_entities_by_token("United")
+                dialog = self.capture(win)
+                already = [edit for edit in dialog.edits
+                           if edit.slot == "short" and edit.reason]
+                self.assertEqual(len(already), 1)
+                self.assertEqual(already[0].before, "Utd")
+                self.assertFalse(already[0].included)
+                self.assertIn("Utd", already[0].reason)
+                # The informational row stays visible even with Hide unchanged on.
+                dialog.hide_unchanged.setChecked(True)
+                dialog.show_preview_rows()
+                visible_reasons = [edit.reason for edit in dialog.preview_model.rows
+                                   if edit.reason]
+                self.assertEqual(len(visible_reasons), 1)
+            finally:
+                close_window(win)
+
+    def test_different_wording_short_name_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                '"CLUB_NAME_CHANGE" 1 "Manchester United" ""',
+                '"CLUB_SHORT_NAME_CHANGE" 1 "Man Utd" ""'])
+            try:
+                win.select_entities_matching(lambda entity: entity.id == "1")
+                # Add a second entity so the suggestion engages.
+                win.select_entities_matching(lambda entity: True)
+                dialog = self.capture(win)
+                changed = [edit for edit in dialog.edits
+                           if edit.before != edit.after]
+                changed_shorts = [edit for edit in changed if edit.slot == "short"]
+                self.assertEqual(changed_shorts, [], changed)
+                # The short name on disk is unchanged.
+                dialog.accept_edits()
+            finally:
+                close_window(win)
+
+    def test_code_overrides_stay_unticked_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                '"CLUB_NAME_CHANGE" 1 "Manchester United" ""',
+                '"CLUB_3LETTER_NAME_CHANGE" 1 "United" ""',
+                '"CLUB_NAME_CHANGE" 2 "Leeds United" ""'])
+            try:
+                win.select_entities_by_token("United")
+                dialog = self.capture(win)
+                self.assertFalse(dialog.target_code.isChecked())
+                # The code field is not in the preview by default.
+                self.assertFalse(any(edit.slot == "code" for edit in dialog.edits))
+            finally:
+                close_window(win)
+
+    def test_stale_preview_is_refused_before_any_line_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                '"CLUB_NAME_CHANGE" 1 "Alpha United" ""',
+                '"CLUB_NAME_CHANGE" 2 "Beta United" ""'])
+            try:
+                win.select_entities_by_token("United")
+                dialog = self.capture(win)
+                dialog.edits[-1].entry.set_name("A later edit")
+                with self.assertRaises(ValueError):
+                    editor.apply_batch_rename(dialog.edits, win.docs)
+                self.assertEqual(dialog.edits[0].entry.name, "Alpha United")
+                self.assertEqual(dialog.edits[-1].entry.name, "A later edit")
+            finally:
+                close_window(win)
+
+    def test_applying_the_batch_is_one_undo_step(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self.window(tmp, [
+                f'"CLUB_NAME_CHANGE" {n} "Club {n} United" ""'
+                for n in range(1, 6)])
+            try:
+                win.select_entities_by_token("United")
+                original = [doc.to_bytes() for doc in win.docs]
+
+                def apply(dialog):
+                    self.assertEqual(dialog.find_edit.text(), "United")
+                    self.assertEqual(dialog.replace_edit.text(), "Utd")
+                    dialog.accept_edits()
+                    return dialog.result()
+
+                with mock.patch.object(QDialog, "exec", apply):
+                    win.open_batch_rename()
+                self.assertEqual(win.undo_stack.count(), 1)
+                self.assertTrue(all("Utd" in entry.name for doc in win.docs
+                                    for entry in doc.names()))
+                win.undo_act.trigger()
+                self.assertEqual([doc.to_bytes() for doc in win.docs], original)
+            finally:
+                close_window(win)
+
+    def test_applying_the_batch_preserves_untouched_bytes_in_utf8_and_utf16(self):
+        from PySide6.QtWidgets import QDialog
+
+        for encoding, bom, newline in (("utf-8", BOM, b"\n"),
+                                       ("utf-16-le", b"\xff\xfe", b"\r\n")):
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"mixed.{encoding}.lnc"
+                text = ("# untouched\r\n"
+                        '"CLUB_NAME_CHANGE"\t1\t"Alpha United"\t""\n'
+                        '"CLUB_NAME_CHANGE"\t2\t"Beta United"\t""\r\n')
+                original = bom + text.encode(encoding)
+                path.write_bytes(original)
+                win = make_window(self)
+                try:
+                    win.load([str(path)])
+                    win.select_entities_by_token("United")
+
+                    def apply(dialog):
+                        dialog.accept_edits()
+                        return dialog.result()
+
+                    with mock.patch.object(QDialog, "exec", apply):
+                        win.open_batch_rename()
+                    expected = bom + text.replace("United", "Utd").encode(encoding)
+                    self.assertEqual(win.docs[0].to_bytes(), expected)
+                    self.assertEqual(path.read_bytes(), original)   # not written yet
+                finally:
+                    close_window(win)
+
+
 if __name__ == "__main__":
     unittest.main()

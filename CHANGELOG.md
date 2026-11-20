@@ -6,6 +6,16 @@ Application on disk: 3.2
 
 The program on disk reports `VERSION = "3.2"`. The launcher banner says v3.2.
 
+## [Unreleased]
+
+Session 16 — shared-word selection and a batch recipe taken from the selection (first of Release 3.3):
+
+- **Select similar leads with the words the rows already share.** With two or more rows selected, the right-click menu starts with the significant words those rows have in common, most shared first, with an honest count of visible and total matches. Words that would only reselect the rows already chosen are left off. A single-row right-click behaves as it did in 3.2.
+- **One whole-word token index per family.** Built when the files load or reload, and refreshed after any edit or undo. Opening the menu only reads the index, so the full-family scan Session 15 did on every right-click is gone. Two-letter football marks (AC, SC, CF, FK, SK, FC) are kept; other two-letter words are not. Accents are ignored for matching, bracketed qualifiers and stop words are dropped, and *City* does not match *Cityside*.
+- **Batch rename opens aimed at the selection.** Ctrl+B looks at the selected names, chooses the word shared by the most of them, and fills the preview with the matching football preset ("United → Utd" and the rest) as a suggestion — the find and replace boxes are still yours to clear or change. The suggestion line states the basis in plain words, including when the word is only in some of the selection ("United in 40 of 57 selected names"). A short-name row that already reads the other form (Utd) starts unticked with the reason on the row; a short name with different wording (Man Utd) is left alone, never rewritten. Missing short names and codes are not invented, and code overrides stay off unless you tick them.
+- **One undo step, memory only.** Unchanged from 3.2: the whole ticked preview is checked before any line changes, a stale preview is refused with a plain message, nothing is written by the dialogue, and one Undo takes the whole batch back. Save and Deploy still own every file write.
+- **Verification.** New `Session16TokenIndex`, `Session16SharedWordMenu`, and `Session16BatchFromSelection` tests cover the extended token rules, the per-family index matching a fresh scan after load/edit/undo/redo, a 4,300-entity rebuild and lookup under a second, shared-word ordering with an honest filter count, hidden rows never selected, the omitted no-gain word, single-row parity with 3.2, the suggestion wording for full and partial coverage, short-name unticking with the reason on the row, different-wording shorts left alone, codes off by default, stale previews refused, one Undo reverting the batch, and untouched bytes preserved for UTF-8 and UTF-16.
+
 ## 3.2 (20 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.2 adds smart selection and batch renaming: select similar names from a right-click, the Edit > Selection commands, a ticked Batch rename preview applied as one undo step, Harmonise terminology, and a command palette. Session 15 closes 3.2.

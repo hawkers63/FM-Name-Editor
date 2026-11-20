@@ -335,8 +335,13 @@ USER_GUIDE = (
     ("Select similar names and batch rename",
      "Right-click a name and use Select similar names, or Edit > Selection to select "
      "a word (Ctrl+Shift+W), wildcard or regular expression (Ctrl+Shift+S). Only visible "
-     "rows are selected. Ctrl+B opens Batch rename selected: replace text, add or "
-     "remove a prefix or suffix, choose a football preset, or use a regular expression. "
+     "rows are selected. With two or more rows selected, Select similar names leads "
+     "with the words those rows already share, most shared first, with an honest count "
+     "of visible and total matches; words that would only reselect the current rows "
+     "are left off. Ctrl+B opens Batch rename selected: when the selection has a "
+     "shared word, the dialogue states the basis in plain words and fills the preview "
+     "with the matching preset (United → Utd and the rest), which you can clear or "
+     "change. Short names already in the other form start unticked with a reason. "
      "Choose long names, short names or existing codes, review the live preview and "
      "untick any change to leave it out. Apply is one undo step and writes nothing. "
      "Tools > Harmonise terminology finds mixed club spellings and opens the same "
@@ -2082,7 +2087,7 @@ class BulkEdit:
     ``included`` is the row's tick: apply_bulk changes only included rows.
     """
 
-    __slots__ = ("entity", "slot", "entry", "before", "after", "included")
+    __slots__ = ("entity", "slot", "entry", "before", "after", "included", "reason")
 
     def __init__(self, entity: NameEntity, slot: str, entry: Entry, before: str, after: str):
         self.entity = entity
@@ -2091,6 +2096,7 @@ class BulkEdit:
         self.before = before
         self.after = after
         self.included = True
+        self.reason = ""            # auto-untick note, shown as a row tooltip
 
 
 def _transform_name(kind: str, before: str, sponsors: list[str], rules: "Rules | None" = None) -> str:
@@ -2157,6 +2163,10 @@ COMMON_FOOTBALL_STOP_WORDS = frozenset({
     "da", "la", "le", "el", "of",
 })
 
+# Two-letter football marks worth keeping: a club-name descriptor, not a
+# distinctive word of its own, so it sorts behind longer tokens in a menu.
+SHORT_FOOTBALL_MARKS = frozenset({"ac", "sc", "cf", "fk", "sk", "fc"})
+
 # label, mode, find, replacement; codes are never selected by a preset.
 BATCH_RENAME_PRESETS = (
     ("United → Utd", "replace", "United", "Utd"),
@@ -2175,8 +2185,23 @@ BATCH_RENAME_PRESETS = (
 )
 
 
+def find_batch_preset_for_token(token: str) -> tuple[str, str] | None:
+    """Return the Replace preset ``(source, target)`` whose source matches, or None."""
+    fold = token.casefold()
+    for _label, mode, source, target in BATCH_RENAME_PRESETS:
+        if mode == "replace" and source.casefold() == fold:
+            return source, target
+    return None
+
+
 def extract_name_tokens(name: str) -> list[str]:
-    """Return significant words, with the short football descriptor FC last."""
+    """Return significant whole words, with short football marks last.
+
+    Whole words only; bracketed qualifiers and stop words are dropped. A
+    two-letter word is kept only when it is in SHORT_FOOTBALL_MARKS (AC, SC,
+    CF, FK, SK, FC); other two-letter words drop. Marks go after the richer
+    tokens so a menu leads with distinctive words.
+    """
     text = re.sub(r"\([^)]*\)|\[[^]]*\]|\{[^}]*\}", " ",
                   unicodedata.normalize("NFC", name))
     tokens, descriptors, seen = [], [], set()
@@ -2184,10 +2209,10 @@ def extract_name_tokens(name: str) -> list[str]:
         key = token.casefold()
         if key in seen or key in COMMON_FOOTBALL_STOP_WORDS:
             continue
-        if len(token) < 3 and key != "fc":
+        if len(token) < 3 and key not in SHORT_FOOTBALL_MARKS:
             continue
         seen.add(key)
-        (descriptors if key == "fc" else tokens).append(token)
+        (descriptors if key in SHORT_FOOTBALL_MARKS else tokens).append(token)
     return tokens + descriptors
 
 
@@ -2260,6 +2285,146 @@ def entity_matches_token(entity: NameEntity, token: str,
                     continue
             return True
     return False
+
+
+def entity_token_set(entity: NameEntity) -> frozenset:
+    """Folded whole-word tokens across an entity's text-name overrides."""
+    folds = set()
+    for slot in TEXT_SLOTS:
+        for entry in entity.slots.get(slot) or []:
+            for token in extract_name_tokens(entry.name):
+                folds.add(token.casefold())
+    return frozenset(folds)
+
+
+class FamilyTokenIndex:
+    """Per-family whole-word token index for selection menus.
+
+    Built once when a family is loaded or reloaded, refreshed per entity
+    for a later edit or undo/redo. Opening a menu only reads it: a lookup
+    is O(1) and the whole-family build is a single pass over the entities.
+    A match on a fold ignores accents and capitals, the same as the menu's
+    reselection uses. The index stores ``(family, id, lang)`` keys so an
+    entity can be rebuilt and still match its old rows.
+    """
+
+    __slots__ = ("by_family", "entity_tokens", "display")
+
+    def __init__(self):
+        self.by_family: dict[str, dict[str, set]] = {}
+        self.entity_tokens: dict[tuple, frozenset] = {}
+        self.display: dict[str, str] = {}
+
+    def rebuild(self, entities) -> None:
+        """Replace every family's map from the entities given."""
+        self.by_family = {}
+        self.entity_tokens = {}
+        self.display = {}
+        for entity in entities:
+            self._record(entity, entity_token_set(entity))
+
+    def refresh(self, entity: NameEntity) -> None:
+        """Rewrite one entity's tokens; removes stale folds from the family."""
+        key = (entity.family, entity.id, entity.lang)
+        family_map = self.by_family.setdefault(entity.family, {})
+        before = self.entity_tokens.get(key, frozenset())
+        after = entity_token_set(entity)
+        for fold in before - after:
+            bucket = family_map.get(fold)
+            if bucket is not None:
+                bucket.discard(key)
+                if not bucket:
+                    family_map.pop(fold, None)
+        if after:
+            for fold in after - before:
+                family_map.setdefault(fold, set()).add(key)
+            self.entity_tokens[key] = after
+        else:
+            self.entity_tokens.pop(key, None)
+        self._record_display(entity, after)
+
+    def entities_with(self, family: str, fold: str) -> set:
+        """Entity keys in ``family`` whose names contain this folded token."""
+        return self.by_family.get(family, {}).get(fold, set())
+
+    def count(self, family: str, fold: str) -> int:
+        return len(self.entities_with(family, fold))
+
+    def entity_folds(self, entity: NameEntity) -> frozenset:
+        return self.entity_tokens.get(
+            (entity.family, entity.id, entity.lang), frozenset())
+
+    def display_for(self, fold: str) -> str:
+        """The first display spelling seen for the fold, or the fold itself."""
+        return self.display.get(fold, fold)
+
+    def _record(self, entity: NameEntity, folds: frozenset) -> None:
+        key = (entity.family, entity.id, entity.lang)
+        if folds:
+            self.entity_tokens[key] = folds
+            family_map = self.by_family.setdefault(entity.family, {})
+            for fold in folds:
+                family_map.setdefault(fold, set()).add(key)
+        self._record_display(entity, folds)
+
+    def _record_display(self, entity: NameEntity, folds: frozenset) -> None:
+        if not folds:
+            return
+        for slot in TEXT_SLOTS:
+            for entry in entity.slots.get(slot) or []:
+                for token in extract_name_tokens(entry.name):
+                    fold = token.casefold()
+                    if fold in folds and fold not in self.display:
+                        self.display[fold] = token
+
+
+def shared_entity_tokens(entities, index: "FamilyTokenIndex | None" = None
+                         ) -> list[tuple[str, int]]:
+    """Fold → count across the entities, two or more occurrences only.
+
+    Highest count first, ties broken by the folded token for stable menu
+    order. ``index`` is used when given, so repeat calls on the same
+    selection do not re-tokenise a name.
+    """
+    counts: dict[str, int] = {}
+    for entity in entities:
+        folds = (index.entity_folds(entity) if index is not None
+                 else entity_token_set(entity))
+        for fold in folds:
+            counts[fold] = counts.get(fold, 0) + 1
+    shared = [(fold, count) for fold, count in counts.items() if count >= 2]
+    shared.sort(key=lambda row: (-row[1], row[0]))
+    return shared
+
+
+def suggest_batch_token(entities, index: "FamilyTokenIndex | None" = None
+                        ) -> tuple[str, int, int]:
+    """The significant word in the most of the given names, and how it ranks.
+
+    Returns ``(fold, count, total)``: the folded token present in the most
+    entities (ties broken by length, then by the fold), the count, and the
+    size of the selection. ``("", 0, total)`` when no word is shared by at
+    least two of them. Short football marks (AC, SC, CF, FK, SK, FC) win
+    only when no longer token shares the same count.
+    """
+    total = sum(1 for _ in entities)
+    counts: dict[str, int] = {}
+    for entity in entities:
+        folds = (index.entity_folds(entity) if index is not None
+                 else entity_token_set(entity))
+        for fold in folds:
+            counts[fold] = counts.get(fold, 0) + 1
+    shared = {fold: count for fold, count in counts.items() if count >= 2}
+    if not shared:
+        return "", 0, total
+
+    def rank(item):
+        fold, count = item
+        mark = 1 if fold in SHORT_FOOTBALL_MARKS else 0
+        return -count, mark, -len(fold), fold
+
+    fold, count = min(shared.items(), key=rank)
+    return fold, count, total
 
 
 class BatchRenameRule:
@@ -6353,20 +6518,25 @@ def run_gui(paths):
             edit = self.rows[index.row()]
             column = index.column()
             changed = edit.before != edit.after
+            reason = getattr(edit, "reason", "")
             if role == Qt.CheckStateRole and column == 0:
                 return Qt.Checked if changed and edit.included else Qt.Unchecked
             if role == DISPLAY:
                 entity = edit.entity
                 labels = {slot: label for slot, label, _cmd in FAMILY_FIELDS[entity.family]}
+                after_text = (edit.after if changed
+                              else (f"(unticked: {reason})" if reason else "(No change)"))
                 values = ("", entity.id, entity.name_in("long") or entity.name_in("name")
                           or entity.name_in("short"), labels.get(edit.slot, edit.slot),
-                          edit.before, edit.after if changed else "(No change)")
+                          edit.before, after_text)
                 return values[column]
             if role == FONT and column == 5 and changed:
                 return self.bold
             if role == FOREGROUND and column == 5 and changed:
                 return COLOURS["edited"]
             if role == TOOLTIP:
+                if reason:
+                    return reason
                 if column == 5 and changed:
                     start = 0
                     while (start < min(len(edit.before), len(edit.after))
@@ -6410,13 +6580,17 @@ def run_gui(paths):
                         for label, mode, source, target in BATCH_RENAME_PRESETS)
 
         def __init__(self, parent, entities, docs, initial_token="", replacement="",
-                     regex=False):
+                     regex=False, suggestion=None):
             super().__init__(parent)
             self.entities = list(entities)
             self.docs = list(docs)
             self.edits = []
             self.applied = 0
             self._ready = False
+            # The selection suggestion (basis, count, total, source, target), or
+            # None; the label states it in plain words, the preview takes the
+            # preset when one exists but Apply still requires a tick.
+            self.suggestion = suggestion
             self.setWindowTitle("Batch rename selected names")
             self.setStyleSheet(theme_style_sheet())
             self.resize(920, 620)
@@ -6431,6 +6605,21 @@ def run_gui(paths):
                 f"({lines:,} total lines across {count_of(len(documents), 'document')})")
             self.scope_label.setWordWrap(True)
             layout.addWidget(self.scope_label)
+            self.suggestion_label = QLabel()
+            self.suggestion_label.setObjectName("muted")
+            self.suggestion_label.setWordWrap(True)
+            self.suggestion_label.setVisible(bool(self.suggestion))
+            if self.suggestion is not None:
+                basis, count, total, source, target = self.suggestion
+                if target:
+                    detail = f"suggested {source} → {target}"
+                else:
+                    detail = "no built-in preset; type a replacement to continue"
+                scope = (f"in all {total} selected names" if count == total
+                         else f"in {count} of {total} selected names")
+                self.suggestion_label.setText(
+                    f"Based on '{basis}' {scope} — {detail}. Clear or type your own below.")
+            layout.addWidget(self.suggestion_label)
             note = QLabel("Preview first. Apply changes only in memory; Save or Deploy writes "
                           "the reviewed changes. Existing overrides only; no fields are added.")
             note.setWordWrap(True)
@@ -6605,15 +6794,64 @@ def run_gui(paths):
                     auto_sync_short=(self.auto_sync_short.isChecked()
                                      and not self.target_short.isChecked()),
                     include_unchanged=True)
+                self._mark_short_already_target()
                 self.problem_label.setText("")
             except (ValueError, re.error) as exc:
                 self.edits = []
                 self.problem_label.setText(f"Preview unavailable: {exc}")
             self.show_preview_rows()
 
+        def _mark_short_already_target(self):
+            """Flag short-name rows that already read the Replace target.
+
+            When the long-name of an entity is being transformed and its
+            short-name already uses the other form of the pair, show the
+            short-name row unticked with a reason ("short name already
+            reads Utd"). The row stays visible when "Hide unchanged" is on.
+            A different-wording short (Man Utd) is left alone: it has no
+            match for the needle as a whole word.
+            """
+            rule = self.current_rule()
+            if rule.mode != "replace" or not rule.find or not rule.replacement:
+                return
+            needle = rule.replacement.strip()
+            if not needle:
+                return
+            changed_long = {id(edit.entity) for edit in self.edits
+                            if edit.slot in {"long", "name"}
+                            and edit.before != edit.after}
+            if not changed_long:
+                return
+            flags = 0 if rule.case_sensitive else re.IGNORECASE
+            pattern = re.compile(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", flags)
+            # Mark existing no-change short-name edits that already read the target.
+            seen_entries = set()
+            for edit in self.edits:
+                seen_entries.add(id(edit.entry))
+                if (edit.slot == "short" and edit.before == edit.after
+                        and id(edit.entity) in changed_long
+                        and pattern.search(edit.before)):
+                    edit.included = False
+                    edit.reason = f"short name already reads {needle}"
+            # If the short slot was not in the preview, add informational rows.
+            for entity in self.entities:
+                if id(entity) not in changed_long:
+                    continue
+                for entry in entity.slots.get("short") or []:
+                    if id(entry) in seen_entries:
+                        continue
+                    if pattern.search(entry.name):
+                        info = BulkEdit(entity, "short", entry, entry.name, entry.name)
+                        info.included = False
+                        info.reason = f"short name already reads {needle}"
+                        self.edits.append(info)
+                        seen_entries.add(id(entry))
+
         def show_preview_rows(self, *_args):
             rows = [edit for edit in self.edits
-                    if not self.hide_unchanged.isChecked() or edit.before != edit.after]
+                    if not self.hide_unchanged.isChecked()
+                    or edit.before != edit.after
+                    or getattr(edit, "reason", "")]
             self.preview_model.set_rows(rows)
             fit_columns(self.table, {
                 0: ["Use"], 1: [edit.entity.id for edit in rows],
@@ -8115,6 +8353,9 @@ def run_gui(paths):
             super().__init__()
             self.docs: list[LncDoc] = []
             self.all_entities: list[NameEntity] = []
+            # Session 16: per-family whole-word token index, built on reload and
+            # refreshed after any edit or undo. Right-click menus read it once.
+            self.token_index = FamilyTokenIndex()
             self.family = "club"
             self.status_mode = "all"
             self.section_filter = ""
@@ -8845,7 +9086,8 @@ def run_gui(paths):
 
             A view is filtered again only when its filter reads the names (a
             search, Changed only, Edited); otherwise repainting it is enough.
-            Then the counts, and the inspector, are brought up to date.
+            Then the counts, and the inspector, are brought up to date, and
+            the token index is refreshed for any entity whose names changed.
             """
             if self.line_proxy.words or self.line_proxy.changed_only:
                 relayout(self.line_model)
@@ -8856,6 +9098,12 @@ def run_gui(paths):
             else:
                 self.entity_view.viewport().update()
             self.refresh_status()
+            # Any of the paths that reach here (cell or inspector edit, undo
+            # or redo without a structural change) may have moved a name
+            # across entities; a per-entity refresh cannot see that, so the
+            # index is rebuilt. Rebuilding is one pass over the entities,
+            # about 4 ms for the FM27 pair, so the menu stays under a second.
+            self.token_index.rebuild(self.all_entities)
             if self.inspector_entity is not None:
                 self.show_inspector(self.inspector_entity)
 
@@ -9286,6 +9534,7 @@ def run_gui(paths):
             self._updating = True
             try:
                 self.all_entities = build_entities(self.docs)
+                self.token_index.rebuild(self.all_entities)
                 self.rebuild_type_filter()
                 self.line_proxy.configure(self.line_search.text(),
                                           self.type_box.currentData() or "",
@@ -9679,7 +9928,22 @@ def run_gui(paths):
             if not entities:
                 self.statusBar().showMessage("Select one or more entity rows first.", 6000)
                 return
-            dialog = BatchRenameDialog(self, entities, self.docs, initial_token, replacement, regex)
+            suggestion = None
+            # Pick up a suggestion from the selection when the caller did not
+            # pass one of its own (Harmonise, saved search, etc. still win).
+            if (not initial_token and not replacement and not regex
+                    and len(entities) >= 2):
+                fold, count, total = suggest_batch_token(entities, self.token_index)
+                if fold and count >= 2:
+                    basis = self.token_index.display_for(fold)
+                    preset = find_batch_preset_for_token(basis)
+                    if preset is not None:
+                        initial_token, replacement = preset
+                    else:
+                        initial_token = basis
+                    suggestion = (basis, count, total, initial_token, replacement)
+            dialog = BatchRenameDialog(self, entities, self.docs, initial_token, replacement,
+                                       regex, suggestion=suggestion)
             if not dialog.exec():
                 return
             try:
@@ -9868,24 +10132,56 @@ def run_gui(paths):
             source = self.entity_proxy.mapToSource(index)
             entity = (self.entity_model.rows[source.row()] if source.isValid()
                       else self.inspector_entity)
+            selected = self.selected_entities()
+            visible = self.visible_entities()
+            similar = QMenu("Select similar names", menu)
+            shown_folds: set[str] = set()
+            family = (entity.family if entity is not None
+                      else (selected[0].family if selected else self.family))
+            visible_keys = ({entity_key(item) for item in visible}
+                            if len(visible) < len(self.entity_model.rows) else None)
+            selected_keys = {entity_key(item) for item in selected}
+
+            def add_item(fold: str, display: str, shared_count: int = 0) -> bool:
+                if fold in shown_folds:
+                    return False
+                matches = self.token_index.entities_with(family, fold)
+                total = len(matches)
+                if total < 2:
+                    return False
+                # A word that matches only rows already selected adds no new row.
+                if selected and matches.issubset(selected_keys):
+                    return False
+                visible_count = (total if visible_keys is None
+                                 else sum(1 for key in matches if key in visible_keys))
+                if shared_count >= 2:
+                    scope = f"{shared_count} of {len(selected)} selected, "
+                    scope += (f"{total} entities total" if visible_count == total
+                              else f"{visible_count} shown of {total}")
+                else:
+                    scope = (f"{total} entities" if visible_count == total
+                             else f"{total} entities; {visible_count} shown")
+                action = similar.addAction(f"Select all containing '{display}' ({scope})")
+                action.setEnabled(visible_count > 0)
+                action.setToolTip("Select matching whole words in visible long or short names")
+                action.triggered.connect(
+                    lambda _checked=False, word=display: self.select_entities_by_token(word))
+                shown_folds.add(fold)
+                return True
+
+            # When 2+ rows are selected, lead with the words they share.
+            if len(selected) >= 2:
+                for fold, selected_count in shared_entity_tokens(selected, self.token_index):
+                    display = self.token_index.display_for(fold)
+                    add_item(fold, display, selected_count)
+
+            # Then the cursor row's own words, skipping any already shown above.
             if entity is not None:
-                tokens = extract_name_tokens(" ".join(entity.name_in(slot) for slot in TEXT_SLOTS))
-                similar = QMenu("Select similar names", menu)
-                visible = self.visible_entities()
-                for token in tokens:
-                    total = sum(entity_matches_token(item, token) for item in self.entity_model.rows)
-                    shown = (total if len(visible) == len(self.entity_model.rows) else
-                             sum(entity_matches_token(item, token) for item in visible))
-                    if total < 2:
-                        continue
-                    scope = f"{total} entities" if shown == total else f"{total} entities; {shown} shown"
-                    action = similar.addAction(f"Select all containing '{token}' ({scope})")
-                    action.setEnabled(shown > 0)
-                    action.setToolTip("Select matching whole words in visible long or short names")
-                    action.triggered.connect(
-                        lambda _checked=False, word=token: self.select_entities_by_token(word))
-                if not similar.isEmpty():
-                    menu.addMenu(similar)
+                for token in extract_name_tokens(
+                        " ".join(entity.name_in(slot) for slot in TEXT_SLOTS)):
+                    add_item(token.casefold(), token)
+            if not similar.isEmpty():
+                menu.addMenu(similar)
             menu.addAction(self.batch_rename_act)
             count = len(self.selected_entities())
             self.fill_add_to_menu()
