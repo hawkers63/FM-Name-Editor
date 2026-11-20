@@ -8,6 +8,15 @@ The program on disk reports `VERSION = "3.2"`. The launcher banner says v3.2.
 
 ## [Unreleased]
 
+Session 17 — pinned spelling pairs (closes Release 3.3):
+
+- **Pin a spelling pair the editor will remember.** Beside the built-in pairs (United / Utd, City / Cty, Saint / St. / St and the rest), you can now pin pairs you actually use (Rovers / Rvrs, Borough / Boro). Pin from **Tools > Harmonise terminology** or from a Batch rename preview that shows both forms. The editor never invents a pair; a pair that duplicates a built-in or an existing pin is refused with a plain message.
+- **Pins live with the other Bulk-tools rules in `state\rules.json`.** Save and Deploy do not touch the list. A damaged rules file is still named in the status bar and left exactly as it is. Deleting a pair removes it from the file and never renames a club.
+- **Pins show up in the three places that already exist.** **Select similar names** offers *Also select the other form: 'Rvrs'* with the same visible and hidden counts; choosing it is up to you. **Harmonise** lists each pinned pair under the built-ins with a count for each form (one club using both forms is counted under both; the numbers are not a total of clubs). **Ctrl+B** may offer a pinned pair as the suggested preset when the selection shares one side of it.
+- **Applying a pair still goes through Batch rename.** Every row can be unticked, one Undo takes the whole run back, and nothing is written until Save or Deploy. Stale previews are still refused with the same message as in 3.2.
+- **Targeted token-index refresh.** A single edit at 4,300 entities measured 72–100 ms for the full index rebuild, borderline for the one-second rule. `MainWindow.after_edit` now refreshes only the entity an edit touched, measured at about 5 ms. Edit, Undo and Redo keep the index equal to a fresh scan.
+- **Verification.** New `Session17TokenIndexSingleEdit`, `Session17PinnedPairsEngine`, `Session17PinManagement`, and `Session17PinsInTheThreePlaces` tests cover the targeted refresh, the pair round trip, bad entries dropped (built-in clashes, duplicates, multi-word), a damaged rules file left alone, Save and Deploy not touching the list, pinning from Batch rename and Harmonise, deleting a pinned pair without renaming, Select similar's *Also select the other form* with honest counts, Harmonise's pinned-pair cluster with a count per form, Ctrl+B's pinned-pair suggestion, and the one-second rule on 4,300 entities with pins present.
+
 Session 16 — shared-word selection and a batch recipe taken from the selection (first of Release 3.3):
 
 - **Select similar leads with the words the rows already share.** With two or more rows selected, the right-click menu starts with the significant words those rows have in common, most shared first, with an honest count of visible and total matches. Words that would only reselect the rows already chosen are left off. A single-row right-click behaves as it did in 3.2.

@@ -52,6 +52,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 **New in 3.2:** right-click **Select similar names**, **Edit > Selection**, **Batch rename selected** (Ctrl+B), **Tools > Harmonise terminology**, and a **Command palette** (Ctrl+Shift+P). Select the visible rows you want, open Batch rename, choose the fields and transformation, and review the inclusion ticks before Apply. Apply changes memory as one undo step; Save or Deploy still reviews and writes the changes.
 
+**Planned for 3.3:** shared-word selection from the right-click menu when two or more rows are selected, a batch recipe taken from the selection as the Ctrl+B suggestion, and **pinned spelling pairs** &mdash; pin pairs you use (Rovers / Rvrs, Borough / Boro) and Harmonise lists them under the built-ins, Select similar offers *Also select the other form*, and Ctrl+B may suggest them. Pins live in `state\rules.json`; Save and Deploy never touch the list, and deleting a pin never renames a club.
+
 | | |
 | --- | --- |
 | 🧩 **Entities grid** | A club or competition is one row: long name, short name, and code. Tabs for clubs, competitions, stadiums, cities, nations, and awards; **All lines** keeps the full table |

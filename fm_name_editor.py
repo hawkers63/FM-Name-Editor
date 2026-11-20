@@ -347,6 +347,16 @@ USER_GUIDE = (
      "Tools > Harmonise terminology finds mixed club spellings and opens the same "
      "preview for a chosen direction. Ctrl+Shift+P searches commands, saved searches, "
      "collections and name words; F1 still lists keyboard shortcuts."),
+    ("Pinned spelling pairs",
+     "Beside the built-in pairs (United / Utd, City / Cty, Saint / St. / St and the "
+     "rest), pin pairs you actually use (Rovers / Rvrs, Borough / Boro). Pin from "
+     "Harmonise or from a Batch rename preview that shows both forms. Once pinned, "
+     "Select similar offers \"Also select the other form\" with the same counts, "
+     "Harmonise lists the pair under the built-ins with a count for each form, and "
+     "the Ctrl+B suggestion may offer the pair from the selection. The editor never "
+     "invents a pair, and deleting a pin never renames a club. Pins live in "
+     "state\\rules.json with the other Bulk-tools rules; Save and Deploy do not "
+     "touch the list."),
     ("Save and Deploy",
      "Only Save (Ctrl+S) and Deploy (Ctrl+Shift+D) write files, and only through "
      "Review changes, where each change has a tick. Unticked changes are left out and "
@@ -1318,6 +1328,16 @@ class Operation:
     def structural(self) -> bool:
         """True when lines were added, removed, or swapped, not only renamed."""
         return any(before != after for before, after in self._docs.values())
+
+    @property
+    def touched_entries(self) -> list:
+        """Entries whose name or ending this operation changed, in note order."""
+        seen: dict = {}
+        for entry in self._lines:
+            seen[entry] = None
+        for entry in self._endings:
+            seen.setdefault(entry, None)
+        return list(seen)
 
     @property
     def docs(self) -> list:
@@ -2590,14 +2610,20 @@ def harmonisation_pattern(source: str) -> str:
     return r"(?<!\w)" + re.escape(source) + ending
 
 
+# Built-in terminology groups: used by find_naming_inconsistencies and to
+# reject a pinned pair that would duplicate one of them. Dotted and undotted
+# forms stay distinct (St vs St.), the way harmonisation_pattern uses them.
+BUILTIN_TERM_GROUPS = (
+    ("United", "Utd"), ("City", "Cty"), ("Town", "Twn"),
+    ("Athletic", "Ath"), ("Association", "Assoc"),
+    ("International", "Intl"), ("Saint", "St.", "St"),
+    ("Sporting", "Sp"), ("Wanderers", "Wand"), ("FC", "F.C."),
+)
+
+
 def find_naming_inconsistencies(entities) -> list[TerminologyCluster]:
     """Count entities using each spelling, without guessing preferred forms."""
-    groups = (
-        ("United", "Utd"), ("City", "Cty"), ("Town", "Twn"),
-        ("Athletic", "Ath"), ("Association", "Assoc"),
-        ("International", "Intl"), ("Saint", "St.", "St"),
-        ("Sporting", "Sp"), ("Wanderers", "Wand"), ("FC", "F.C."),
-    )
+    groups = BUILTIN_TERM_GROUPS
     terms = {term.casefold(): (number, term)
              for number, group in enumerate(groups) for term in group}
     expression = re.compile(r"(?<!\w)(?:" + "|".join(
@@ -2618,6 +2644,128 @@ def find_naming_inconsistencies(entities) -> list[TerminologyCluster]:
                                 if counts[number][term]])
             for number, group in enumerate(groups)
             if sum(bool(items) for items in counts[number].values()) > 1]
+
+
+def builtin_pair_folds() -> frozenset:
+    """Every unordered pair of case-folded sides inside a built-in group.
+
+    A pair the user tries to pin is refused when its two sides match one of
+    these pairs: those spellings are already Harmonise's offer. Dotted and
+    undotted forms stay distinct, so {"st", "st."} is here as a built-in but
+    {"st", "saint"} and {"st.", "saint"} are too.
+    """
+    pairs = set()
+    for group in BUILTIN_TERM_GROUPS:
+        for first in range(len(group)):
+            for second in range(first + 1, len(group)):
+                pairs.add(frozenset({group[first].casefold(),
+                                     group[second].casefold()}))
+    return frozenset(pairs)
+
+
+BUILTIN_PAIR_FOLDS = builtin_pair_folds()
+# A side of a pinned pair is one whole word: no whitespace, no double quote,
+# and no control character (any of these would split or break a .lnc line).
+_PINNED_PAIR_SIDE = re.compile(r"^[^\s\"\r\n\t]+$")
+
+
+def _pair_fold(full: str, short: str) -> frozenset:
+    return frozenset({full.casefold(), short.casefold()})
+
+
+def pinned_pair_problem(full: str, short: str, pinned_pairs=(),
+                        built_ins: "frozenset | None" = None) -> str:
+    """Return a plain reason the pair cannot be pinned, or "" if it can.
+
+    Both sides must be non-empty text, with no internal whitespace, no
+    double quote, and no control character. A pair is refused when it would
+    duplicate a built-in pair or an existing pinned pair. Dotted and
+    undotted forms stay distinct, so "St" and "St." could be a legal pair
+    if they were not already one of the built-ins.
+    """
+    full_stripped, short_stripped = full.strip(), short.strip()
+    if not full_stripped or not short_stripped:
+        return "Both spellings must be filled in."
+    for side in (full_stripped, short_stripped):
+        if not _PINNED_PAIR_SIDE.match(side):
+            return (f"A pinned pair is one whole word on each side: "
+                    f"'{side}' is not.")
+    if not name_is_legal(full_stripped) or not name_is_legal(short_stripped):
+        return ("A pinned pair cannot contain a double quote, a line break, "
+                "or another control character.")
+    if full_stripped.casefold() == short_stripped.casefold():
+        return "The two spellings are the same."
+    fold = _pair_fold(full_stripped, short_stripped)
+    if built_ins is None:
+        built_ins = BUILTIN_PAIR_FOLDS
+    if fold in built_ins:
+        return "That pair is already one of the built-in pairs."
+    for existing_full, existing_short in pinned_pairs:
+        if _pair_fold(existing_full, existing_short) == fold:
+            return "That pair is already pinned."
+    return ""
+
+
+def find_pinned_pair_for_token(token: str, pinned_pairs
+                               ) -> "tuple[str, str] | None":
+    """Return ``(source, target)`` if the token matches one side of a pin."""
+    fold = token.casefold()
+    for full, short in pinned_pairs:
+        if full.casefold() == fold:
+            return full, short
+        if short.casefold() == fold:
+            return short, full
+    return None
+
+
+def count_pair_matches(full: str, short: str, entities
+                       ) -> "tuple[list, list]":
+    """Return ``(entities_using_full, entities_using_short)`` for one pair.
+
+    One entity using both forms is counted under both; the two lists are
+    not disjoint totals of clubs. Matching uses harmonisation_pattern, so
+    "St" does not match the "St" inside "St.".
+    """
+    full_expression = re.compile(harmonisation_pattern(full), re.IGNORECASE)
+    short_expression = re.compile(harmonisation_pattern(short), re.IGNORECASE)
+    full_matches, short_matches = [], []
+    for entity in entities:
+        full_found = False
+        short_found = False
+        for slot, entries in entity.slots.items():
+            if slot not in TEXT_SLOTS:
+                continue
+            for entry in entries:
+                if not full_found and full_expression.search(entry.name):
+                    full_found = True
+                if not short_found and short_expression.search(entry.name):
+                    short_found = True
+                if full_found and short_found:
+                    break
+            if full_found and short_found:
+                break
+        if full_found:
+            full_matches.append(entity)
+        if short_found:
+            short_matches.append(entity)
+    return full_matches, short_matches
+
+
+def pinned_pair_clusters(pairs, entities) -> list[TerminologyCluster]:
+    """A TerminologyCluster per pinned pair, with both forms kept.
+
+    Unlike find_naming_inconsistencies, a cluster with only one side used is
+    still returned, so the user sees every pinned pair under Harmonise. The
+    count of clubs on each side is not a total: a club using both forms is
+    counted under both.
+    """
+    clusters = []
+    for full, short in pairs:
+        full_matches, short_matches = count_pair_matches(full, short, entities)
+        clusters.append(TerminologyCluster(
+            f"{full} / {short}",
+            [(full, tuple(full_matches)), (short, tuple(short_matches))]))
+    return clusters
 
 
 def list_version_dirs(db_root: Path) -> list[Path]:
@@ -2775,14 +2923,19 @@ class Rules:
     starts: "shown" (the entities in the current filter), "family" (every
     entity of the family shown), or "selected" (the selected rows);
     ``exceptions`` are (family, id, language) keys no bulk run ever changes.
+    ``pinned_pairs`` are ``(full, short)`` whole-word spellings Harmonise
+    and Select similar know about beside the built-ins; the editor never
+    invents one.
     A missing file loads the built-in defaults; a damaged file is named in the
     status bar and left alone, as with ``state/settings.json`` (decision 38).
     """
 
-    __slots__ = ("sponsors", "small_words", "affixes", "casing", "scope", "exceptions")
+    __slots__ = ("sponsors", "small_words", "affixes", "casing", "scope",
+                 "exceptions", "pinned_pairs")
 
     def __init__(self, sponsors=None, small_words=None, affixes=None,
-                 casing=DEFAULT_CASING, scope=DEFAULT_SCOPE, exceptions=None):
+                 casing=DEFAULT_CASING, scope=DEFAULT_SCOPE, exceptions=None,
+                 pinned_pairs=None):
         self.sponsors = (list(sponsors) if sponsors is not None
                          else list(STARTER_SPONSORS))
         self.small_words = (list(small_words) if small_words is not None
@@ -2792,6 +2945,8 @@ class Rules:
         self.scope = scope if scope in BULK_SCOPES else DEFAULT_SCOPE
         self.exceptions = sorted({tuple(key) for key in (exceptions or ())},
                                  key=_key_order)
+        self.pinned_pairs = [(str(full), str(short))
+                             for full, short in (pinned_pairs or ())]
 
     def exception_keys(self) -> frozenset:
         return frozenset(self.exceptions)
@@ -2807,8 +2962,35 @@ class Rules:
             "scope": self.scope,
             "exceptions": [{"family": family, "id": id_, "language": lang}
                            for family, id_, lang in self.exceptions],
+            "pinned_pairs": [{"full": full, "short": short}
+                             for full, short in self.pinned_pairs],
         }
         return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+    def add_pinned_pair(self, full: str, short: str) -> None:
+        """Validate the pair against built-ins and this list, then append it.
+
+        Raises ``ValueError`` with the reason when a pair cannot be pinned:
+        empty, multi-word, a repeat of a built-in or an existing pin, or
+        containing a character .lnc cannot carry.
+        """
+        problem = pinned_pair_problem(full, short, self.pinned_pairs)
+        if problem:
+            raise ValueError(problem)
+        self.pinned_pairs.append((full.strip(), short.strip()))
+
+    def remove_pinned_pair(self, full: str, short: str) -> bool:
+        """Drop the pair matching the two sides (case-insensitive).
+
+        Returns True when a pair was removed; False when nothing matched.
+        Removing a pair never renames any club.
+        """
+        fold = _pair_fold(full, short)
+        for position, (existing_full, existing_short) in enumerate(self.pinned_pairs):
+            if _pair_fold(existing_full, existing_short) == fold:
+                self.pinned_pairs.pop(position)
+                return True
+        return False
 
 
 def _text_list(raw, name: str):
@@ -2833,6 +3015,28 @@ def _clean_exceptions(value) -> list[tuple]:
                 and isinstance(lang, str)):
             keys.append((family, id_, lang))
     return keys
+
+
+def _clean_pinned_pairs(value) -> list[tuple[str, str]]:
+    """The usable ``(full, short)`` pairs in a saved list; bad entries drop.
+
+    A wrongly typed or blank pair, a pair that repeats a built-in, and a
+    pair that repeats one already read earlier all drop. The rest of the
+    list is kept, as the other ``state/rules.json`` fields are (decision 58).
+    """
+    pairs: list[tuple[str, str]] = []
+    if not isinstance(value, list):
+        return pairs
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        full, short = item.get("full"), item.get("short")
+        if not isinstance(full, str) or not isinstance(short, str):
+            continue
+        if pinned_pair_problem(full, short, pairs):
+            continue
+        pairs.append((full.strip(), short.strip()))
+    return pairs
 
 
 def read_rules(root) -> tuple["Rules", str]:
@@ -2869,6 +3073,7 @@ def read_rules(root) -> tuple["Rules", str]:
         casing=casing if isinstance(casing, str) else DEFAULT_CASING,
         scope=scope if isinstance(scope, str) else DEFAULT_SCOPE,
         exceptions=_clean_exceptions(raw.get("exceptions")),
+        pinned_pairs=_clean_pinned_pairs(raw.get("pinned_pairs")),
     ), ""
 
 
@@ -6580,7 +6785,7 @@ def run_gui(paths):
                         for label, mode, source, target in BATCH_RENAME_PRESETS)
 
         def __init__(self, parent, entities, docs, initial_token="", replacement="",
-                     regex=False, suggestion=None):
+                     regex=False, suggestion=None, pinned_pairs=()):
             super().__init__(parent)
             self.entities = list(entities)
             self.docs = list(docs)
@@ -6645,6 +6850,16 @@ def run_gui(paths):
             form.addWidget(self.find_edit, 1, 1)
             form.addWidget(self.replace_label, 1, 2)
             form.addWidget(self.replace_edit, 1, 3)
+            # Pin the current Replace pair, so Harmonise and Select similar
+            # can offer it next time. Enabled only when the preview shows
+            # both forms: Replace mode with non-empty Find and Replace with.
+            self.pinned_pairs = tuple(pinned_pairs)
+            self.pin_pair_btn = QPushButton("Pin this pair…")
+            self.pin_pair_btn.setToolTip(
+                "Save Find → Replace with as a pinned pair for later "
+                "selections and Harmonise.")
+            self.pin_pair_btn.clicked.connect(self._pin_current_pair)
+            form.addWidget(self.pin_pair_btn, 2, 3)
             layout.addLayout(form)
             fields = QHBoxLayout()
             fields.addWidget(QLabel("Fields:"))
@@ -6769,6 +6984,27 @@ def run_gui(paths):
             self.auto_sync_short.setEnabled(not self.target_short.isChecked())
             self.find_edit.setToolTip("Python regular expression; replacements accept \\1 and "
                                      "\\g<name>." if regex else "Text to match.")
+            # Pin is only meaningful when the preview shows both forms: a
+            # Replace with two non-empty sides. Everything else is refused.
+            full = self.find_edit.text().strip()
+            short = self.replace_edit.text().strip()
+            self.pin_pair_btn.setEnabled(
+                mode == "replace" and bool(full) and bool(short))
+
+        def _pin_current_pair(self) -> None:
+            """Ask the window to pin the current Replace pair.
+
+            The parent window is the holder of the ``Rules`` and ``state/rules.json``;
+            it writes the file and shows the result. Save and Deploy do not
+            touch the pin list (brief acceptance for Stage 1).
+            """
+            parent = self.parent()
+            full = self.find_edit.text().strip()
+            short = self.replace_edit.text().strip()
+            if not hasattr(parent, "pin_pair_requested"):
+                return
+            if parent.pin_pair_requested(full, short, source=self):
+                self.pinned_pairs = tuple(parent.rules.pinned_pairs)
 
         def queue_preview(self, *_args):
             if not self._ready:
@@ -6907,31 +7143,59 @@ def run_gui(paths):
             return self.applied
 
     class HarmoniseDialog(QDialog):
-        """Choose a terminology direction, then review it in the batch preview."""
+        """Choose a terminology direction, then review it in the batch preview.
 
-        def __init__(self, parent, entities, findings=None):
+        The built-in pairs (United/Utd, City/Cty, Saint/St./St and so on) are
+        shown first; pinned pairs the user keeps in ``state/rules.json`` are
+        listed under them, with counts for each form. The pin list is managed
+        from this dialog: Pin new pair… and Delete pinned pair.
+        """
+
+        def __init__(self, parent, entities, findings=None, pinned_pairs=()):
             super().__init__(parent)
             self.setWindowTitle("Harmonise terminology")
-            self.resize(680, 450)
+            self.resize(720, 520)
             self.choice = None
-            self.findings = (find_naming_inconsistencies(entities) if findings is None
-                             else list(findings))
+            self.entities = list(entities)
+            self.pinned_pairs = tuple(pinned_pairs)
+            # built-ins first, then pinned pairs (always shown even with a zero
+            # count so the user sees every pin).
+            if findings is None:
+                self.builtin_findings = find_naming_inconsistencies(self.entities)
+            else:
+                self.builtin_findings = list(findings)
+            self.pinned_findings = pinned_pair_clusters(self.pinned_pairs, self.entities)
+            self.findings = self.builtin_findings + self.pinned_findings
             layout = QVBoxLayout(self)
-            note = QLabel("Mixed full and abbreviated forms in loaded club names. Choose a "
-                          "direction, then review and tick each change before applying it.")
+            note = QLabel("Mixed full and abbreviated forms in loaded club names. "
+                          "Pinned pairs are shown under the built-ins, with counts "
+                          "for each form. One club using both forms is counted "
+                          "under both: the numbers are not a total of clubs.")
             note.setWordWrap(True)
             layout.addWidget(note)
             self.opportunities = QListWidget()
-            for cluster in self.findings:
-                detail = "; ".join(f"{term}: {len(matches):,} clubs"
-                                   for term, matches in cluster.variants)
-                self.opportunities.addItem(f"{cluster.label} — {detail}")
+            self._fill_opportunities()
             layout.addWidget(self.opportunities, 1)
             self.direction_box = QComboBox()
             layout.addWidget(self.direction_box)
-            self.hint = QLabel("No mixed terminology was found." if not self.findings else "")
+            self.hint = QLabel("" if self.findings
+                               else "No mixed terminology or pinned pairs were found.")
             self.hint.setWordWrap(True)
             layout.addWidget(self.hint)
+            manage = QHBoxLayout()
+            self.pin_new_btn = QPushButton("Pin new pair…")
+            self.pin_new_btn.setToolTip(
+                "Add a whole-word pair the editor will remember.")
+            self.pin_new_btn.clicked.connect(self._pin_new_pair)
+            self.delete_pin_btn = QPushButton("Delete pinned pair")
+            self.delete_pin_btn.setToolTip(
+                "Remove the selected pinned pair. No club is renamed.")
+            self.delete_pin_btn.setEnabled(False)
+            self.delete_pin_btn.clicked.connect(self._delete_selected_pin)
+            manage.addWidget(self.pin_new_btn)
+            manage.addWidget(self.delete_pin_btn)
+            manage.addStretch(1)
+            layout.addLayout(manage)
             buttons = QDialogButtonBox(QDialogButtonBox.Close)
             self.review_btn = buttons.addButton("Review this standardisation…",
                                                QDialogButtonBox.AcceptRole)
@@ -6939,9 +7203,26 @@ def run_gui(paths):
             buttons.rejected.connect(self.reject)
             buttons.accepted.connect(self.choose_direction)
             layout.addWidget(buttons)
-            self.opportunities.currentRowChanged.connect(self.fill_directions)
+            self.opportunities.currentRowChanged.connect(self._on_row)
             if self.findings:
                 self.opportunities.setCurrentRow(0)
+
+        def _fill_opportunities(self) -> None:
+            """Fill the list widget with built-in and pinned clusters."""
+            self.opportunities.clear()
+            pinned_offset = len(self.builtin_findings)
+            for row, cluster in enumerate(self.findings):
+                prefix = "Pinned: " if row >= pinned_offset else ""
+                detail = "; ".join(f"{term}: {len(matches):,} clubs"
+                                   for term, matches in cluster.variants)
+                self.opportunities.addItem(f"{prefix}{cluster.label} — {detail}")
+
+        def _on_row(self, row: int) -> None:
+            """Fill the direction box and update the Delete button for the row."""
+            self.fill_directions(row)
+            pinned_offset = len(self.builtin_findings)
+            self.delete_pin_btn.setEnabled(row >= pinned_offset
+                                           and row < len(self.findings))
 
         def fill_directions(self, row):
             self.direction_box.clear()
@@ -6950,6 +7231,8 @@ def run_gui(paths):
                 return
             variants = self.findings[row].variants
             for source, entities in variants:
+                if not entities:    # a pinned pair with no club on this side
+                    continue
                 for target, _matches in variants:
                     if source != target:
                         self.direction_box.addItem(
@@ -6963,6 +7246,96 @@ def run_gui(paths):
             if choice:
                 self.choice = choice
                 self.accept()
+
+        def _pin_new_pair(self) -> None:
+            """Ask the window to open the pair-input dialog and pin the result."""
+            parent = self.parent()
+            if not hasattr(parent, "pin_new_pair_via_dialog"):
+                return
+            if parent.pin_new_pair_via_dialog(self):
+                self._refresh_pinned()
+
+        def _delete_selected_pin(self) -> None:
+            """Remove the selected pinned pair from the list."""
+            row = self.opportunities.currentRow()
+            offset = len(self.builtin_findings)
+            if row < offset or row >= len(self.findings):
+                return
+            full, short = self.pinned_pairs[row - offset]
+            parent = self.parent()
+            if not hasattr(parent, "delete_pinned_pair"):
+                return
+            if parent.delete_pinned_pair(full, short, source=self):
+                self._refresh_pinned()
+
+        def _refresh_pinned(self) -> None:
+            """Re-read the parent's pin list and refill the opportunity list."""
+            parent = self.parent()
+            self.pinned_pairs = tuple(parent.rules.pinned_pairs)
+            self.pinned_findings = pinned_pair_clusters(self.pinned_pairs, self.entities)
+            self.findings = self.builtin_findings + self.pinned_findings
+            previous = self.opportunities.currentRow()
+            self._fill_opportunities()
+            if self.findings:
+                row = min(previous, len(self.findings) - 1) if previous >= 0 else 0
+                self.opportunities.setCurrentRow(row)
+            else:
+                self.delete_pin_btn.setEnabled(False)
+                self.review_btn.setEnabled(False)
+
+    class PinPairDialog(QDialog):
+        """Ask for a whole-word pair and validate it against the rules.
+
+        ``check`` returns why the pair cannot be used, or "". The problem is
+        shown under the fields and the dialog stays open, so the text the
+        user typed is never thrown away. Dotted and undotted forms stay
+        distinct, so "St" and "St." are refused only when they would
+        duplicate a built-in or an existing pin.
+        """
+
+        def __init__(self, parent, check):
+            super().__init__(parent)
+            self.setWindowTitle("Pin a spelling pair")
+            self.check = check
+            lay = QVBoxLayout(self)
+            note = QLabel(
+                "Pin a pair of whole-word spellings. Harmonise lists them "
+                "under the built-ins, Select similar offers the other form, "
+                "and Batch rename may suggest them from the selection. "
+                "Applying a pair still goes through Batch rename.")
+            note.setWordWrap(True)
+            lay.addWidget(note)
+            form = QFormLayout()
+            self.full_edit = QLineEdit()
+            self.full_edit.setPlaceholderText("Rovers")
+            self.short_edit = QLineEdit()
+            self.short_edit.setPlaceholderText("Rvrs")
+            for widget in (self.full_edit, self.short_edit):
+                widget.setMaxLength(80)
+            form.addRow("Full spelling", self.full_edit)
+            form.addRow("Short spelling", self.short_edit)
+            lay.addLayout(form)
+            self.problem = QLabel("")
+            self.problem.setObjectName("warning")
+            self.problem.setWordWrap(True)
+            lay.addWidget(self.problem)
+            box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            box.accepted.connect(self.try_accept)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.resize(480, self.sizeHint().height())
+
+        def try_accept(self) -> None:
+            full, short = self.full_edit.text(), self.short_edit.text()
+            problem = self.check(full, short)
+            if problem:
+                self.problem.setText(problem)
+                self.full_edit.setFocus()
+                return
+            self.accept()
+
+        def values(self) -> tuple[str, str]:
+            return self.full_edit.text().strip(), self.short_edit.text().strip()
 
     class CommandPaletteDialog(QDialog):
         """Search the available commands; one extra choice selects a name word."""
@@ -8356,6 +8729,15 @@ def run_gui(paths):
             # Session 16: per-family whole-word token index, built on reload and
             # refreshed after any edit or undo. Right-click menus read it once.
             self.token_index = FamilyTokenIndex()
+            # Session 17: targeted refresh. ``_entry_entity`` maps every open
+            # Entry to its NameEntity, rebuilt in reload_views; ``_pending_token_refresh``
+            # is the set of entries an edit touched since the last rebuild,
+            # or ``None`` for "rebuild everything on the next after_edit". A
+            # measurement on 4,300 entities put a full rebuild at 72-100 ms on
+            # this PC, so touched-entity refresh keeps the window under the
+            # one-second rule.
+            self._entry_entity: dict = {}
+            self._pending_token_refresh: "set | None" = None
             self.family = "club"
             self.status_mode = "all"
             self.section_filter = ""
@@ -9071,10 +9453,39 @@ def run_gui(paths):
 
         def push_operation(self, operation: Operation) -> None:
             if operation.changed:
+                self._queue_token_refresh(operation)
                 self.undo_stack.push(EditCommand(self, operation))
+
+        def _queue_token_refresh(self, operation: Operation) -> None:
+            """Note which entries ``after_edit`` has to refresh in the token index.
+
+            A structural operation (a line added, removed, or swapped) may
+            have moved a name across entities, so the whole family is rebuilt
+            and the pending set goes back to ``None``. A non-structural
+            operation touches only the entries it recorded; those are added
+            to the pending set so after_edit refreshes just their entities.
+            """
+            if operation.structural:
+                self._pending_token_refresh = None
+                return
+            if self._pending_token_refresh is None:
+                self._pending_token_refresh = set()
+            self._pending_token_refresh.update(operation.touched_entries)
+
+        def _queue_token_refresh_for_entries(self, entries) -> None:
+            """Queue refresh for a list of entries that bypassed recording.
+
+            Revert paths change line names directly without an ``Operation``
+            around them; they still need the token index to catch up before
+            the next right-click reads it.
+            """
+            if self._pending_token_refresh is None:
+                self._pending_token_refresh = set()
+            self._pending_token_refresh.update(entries)
 
         def after_undo(self, operation: Operation, verb: str) -> None:
             """Show the files as an undo or redo left them."""
+            self._queue_token_refresh(operation)
             if operation.structural:
                 self.reload_views()
             else:
@@ -9098,14 +9509,41 @@ def run_gui(paths):
             else:
                 self.entity_view.viewport().update()
             self.refresh_status()
-            # Any of the paths that reach here (cell or inspector edit, undo
-            # or redo without a structural change) may have moved a name
-            # across entities; a per-entity refresh cannot see that, so the
-            # index is rebuilt. Rebuilding is one pass over the entities,
-            # about 4 ms for the FM27 pair, so the menu stays under a second.
-            self.token_index.rebuild(self.all_entities)
+            self._refresh_token_index()
             if self.inspector_entity is not None:
                 self.show_inspector(self.inspector_entity)
+
+        def _refresh_token_index(self) -> None:
+            """Refresh the token index for the entities an edit touched.
+
+            When the pending set covers every touched entry, each unique
+            entity is refreshed in place; the rest of the family is left as
+            it is. ``None`` (the default, and the post-structural state)
+            rebuilds the whole index, and so does an unknown entry (one
+            whose entity the map does not hold yet, for example after a
+            structural change the caller forgot to flag).
+            """
+            pending = self._pending_token_refresh
+            self._pending_token_refresh = None
+            if pending is None:
+                self.token_index.rebuild(self.all_entities)
+                return
+            entities: list = []
+            seen = set()
+            for entry in pending:
+                entity = self._entry_entity.get(entry)
+                if entity is None:
+                    # An entry that was not in the map on the last reload:
+                    # safest to rebuild the whole index.
+                    self.token_index.rebuild(self.all_entities)
+                    return
+                key = id(entity)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entities.append(entity)
+            for entity in entities:
+                self.token_index.refresh(entity)
 
         def say_refused(self, problem: str) -> None:
             """A typed name or ending was not used: say why, instead of nothing."""
@@ -9384,6 +9822,7 @@ def run_gui(paths):
             entries = [self.change_model.rows[row].entry for row in sorted(rows)
                        if self.change_model.rows[row].state in ("edited", "restored", "added")]
             counts = revert_entries(entries)
+            self._queue_token_refresh_for_entries(entries)
             self.after_edit()
             self._revert_message(counts)
             return counts
@@ -9392,7 +9831,9 @@ def run_gui(paths):
             rows = {self.line_proxy.mapToSource(index).row()
                     for index in self.line_view.selectionModel().selectedIndexes()}
             # One refresh for the lot: a refresh per reverted line took seconds for hundreds.
-            counts = revert_entries(self.line_model.rows[row] for row in sorted(rows))
+            entries = [self.line_model.rows[row] for row in sorted(rows)]
+            counts = revert_entries(entries)
+            self._queue_token_refresh_for_entries(entries)
             self.after_edit()
             self._revert_message(counts)
             return counts
@@ -9403,6 +9844,7 @@ def run_gui(paths):
             entries = [entry for row in sorted(rows)
                        for entry in self.entity_model.rows[row].entries()]
             counts = revert_entries(entries)
+            self._queue_token_refresh_for_entries(entries)
             self.after_edit()
             self._revert_message(counts)
             return counts
@@ -9535,6 +9977,10 @@ def run_gui(paths):
             try:
                 self.all_entities = build_entities(self.docs)
                 self.token_index.rebuild(self.all_entities)
+                self._entry_entity = {entry: entity
+                                      for entity in self.all_entities
+                                      for entry in entity.entries()}
+                self._pending_token_refresh = None  # the rebuild above is fresh
                 self.rebuild_type_filter()
                 self.line_proxy.configure(self.line_search.text(),
                                           self.type_box.currentData() or "",
@@ -9931,19 +10377,26 @@ def run_gui(paths):
             suggestion = None
             # Pick up a suggestion from the selection when the caller did not
             # pass one of its own (Harmonise, saved search, etc. still win).
+            # Built-in presets win first; pinned pairs are consulted next so
+            # a word like "Rovers" can suggest "Rvrs" after the user pins it.
             if (not initial_token and not replacement and not regex
                     and len(entities) >= 2):
                 fold, count, total = suggest_batch_token(entities, self.token_index)
                 if fold and count >= 2:
                     basis = self.token_index.display_for(fold)
                     preset = find_batch_preset_for_token(basis)
+                    pinned = (None if preset is not None
+                              else find_pinned_pair_for_token(basis, self.rules.pinned_pairs))
                     if preset is not None:
                         initial_token, replacement = preset
+                    elif pinned is not None:
+                        initial_token, replacement = pinned
                     else:
                         initial_token = basis
                     suggestion = (basis, count, total, initial_token, replacement)
             dialog = BatchRenameDialog(self, entities, self.docs, initial_token, replacement,
-                                       regex, suggestion=suggestion)
+                                       regex, suggestion=suggestion,
+                                       pinned_pairs=tuple(self.rules.pinned_pairs))
             if not dialog.exec():
                 return
             try:
@@ -9967,10 +10420,73 @@ def run_gui(paths):
             if not entities:
                 self.statusBar().showMessage("Open club name files first.", 6000)
                 return
-            dialog = HarmoniseDialog(self, entities)
+            dialog = HarmoniseDialog(self, entities,
+                                     pinned_pairs=tuple(self.rules.pinned_pairs))
             if dialog.exec() and dialog.choice is not None:
                 source, target, chosen, regex = dialog.choice
                 self.open_batch_rename(chosen, source, target, regex)
+
+        # ----- pinned spelling pairs (Session 17) -----
+        def pin_pair_requested(self, full: str, short: str, source=None) -> bool:
+            """Add a pair to ``state/rules.json``; returns True on success.
+
+            Validation lives in ``Rules.add_pinned_pair`` (whole-word on each
+            side, no duplicate of a built-in or existing pin). A damaged
+            rules file blocks the write; ``keep_rules`` names it, and no
+            rules are written for the rest of the run (decision 38 / 56).
+            Save and Deploy never touch the list (brief acceptance).
+            """
+            holder = source if source is not None else self
+            try:
+                self.rules.add_pinned_pair(full, short)
+            except ValueError as exc:
+                QMessageBox.warning(holder, APP_NAME,
+                                    f"That pair cannot be pinned.\n\n{exc}")
+                return False
+            problem = self.keep_rules(self.rules)
+            if problem:
+                self.rules.remove_pinned_pair(full, short)
+                QMessageBox.warning(holder, APP_NAME,
+                                    f"The pinned pair was not saved.\n\n{problem}")
+                return False
+            self.statusBar().showMessage(
+                f"Pinned {full} ↔ {short}. Harmonise and Select similar now know about it.",
+                8000)
+            return True
+
+        def pin_new_pair_via_dialog(self, source) -> bool:
+            """Open the pair-input dialog and pin the result. Returns True on success.
+
+            The caller refreshes its own view when True comes back.
+            """
+            def check(full: str, short: str) -> str:
+                return pinned_pair_problem(full, short, self.rules.pinned_pairs)
+
+            dialog = PinPairDialog(source, check)
+            if not dialog.exec():
+                return False
+            full, short = dialog.values()
+            return self.pin_pair_requested(full, short, source=source)
+
+        def delete_pinned_pair(self, full: str, short: str, source=None) -> bool:
+            """Remove a pinned pair from ``state/rules.json``. Never renames a club."""
+            holder = source if source is not None else self
+            if not self.rules.remove_pinned_pair(full, short):
+                return False
+            problem = self.keep_rules(self.rules)
+            if problem:
+                # Put the pair back so disk and memory stay in step.
+                try:
+                    self.rules.add_pinned_pair(full, short)
+                except ValueError:
+                    pass
+                QMessageBox.warning(holder, APP_NAME,
+                                    f"The pinned pair was not removed.\n\n{problem}")
+                return False
+            self.statusBar().showMessage(
+                f"Deleted the pinned pair {full} ↔ {short}. No club was renamed.",
+                8000)
+            return True
 
         def palette_commands(self) -> list:
             commands = []
@@ -10180,6 +10696,42 @@ def run_gui(paths):
                 for token in extract_name_tokens(
                         " ".join(entity.name_in(slot) for slot in TEXT_SLOTS)):
                     add_item(token.casefold(), token)
+
+            # Pinned pairs: when the context contains one side, offer the
+            # other form as an "Also select" item. The user chooses it; the
+            # menu never adds it to the selection on its own (brief).
+            def add_pinned_other(fold: str, display: str,
+                                 label_prefix: str = "") -> bool:
+                if fold in shown_folds:
+                    return False
+                matches = self.token_index.entities_with(family, fold)
+                total = len(matches)
+                if total < 1:
+                    return False
+                visible_count = (total if visible_keys is None
+                                 else sum(1 for key in matches if key in visible_keys))
+                scope = (f"{total} entities" if visible_count == total
+                         else f"{total} entities; {visible_count} shown")
+                action = similar.addAction(
+                    f"{label_prefix}'{display}' ({scope})")
+                action.setEnabled(visible_count > 0)
+                action.setToolTip(
+                    "Pinned pair: select the other form in visible names")
+                action.triggered.connect(
+                    lambda _checked=False, word=display: self.select_entities_by_token(word))
+                shown_folds.add(fold)
+                return True
+
+            context_entities = selected if selected else (
+                [entity] if entity is not None else [])
+            if context_entities:
+                for full, short in getattr(self.rules, "pinned_pairs", ()) or ():
+                    for side, other in ((full, short), (short, full)):
+                        if any(entity_matches_token(e, side) for e in context_entities):
+                            add_pinned_other(other.casefold(), other,
+                                             label_prefix="Also select the other form: ")
+                            break        # one offer per pair, not both
+
             if not similar.isEmpty():
                 menu.addMenu(similar)
             menu.addAction(self.batch_rename_act)
