@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.1](https://img.shields.io/badge/Release-v3.1-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.2](https://img.shields.io/badge/Release-v3.2-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-232%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-262%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.1
+Release: 3.2
 Status: released
-Application on disk: 3.1
+Application on disk: 3.2
 </sub>
 
 </div>
@@ -50,7 +50,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 ## ✨ Key features
 
-The source also contains **unreleased Session 15 work**: right-click **Select similar names**, **Edit > Selection**, **Batch rename selected** (Ctrl+B), **Tools > Harmonise terminology**, and a **Command palette** (Ctrl+Shift+P). Select the visible rows you want, open Batch rename, choose the fields and transformation, and review the inclusion ticks before Apply. Apply changes memory as one undo step; Save or Deploy still reviews and writes the changes. The downloadable 3.1 release predates these additions; release verification is pending.
+**New in 3.2:** right-click **Select similar names**, **Edit > Selection**, **Batch rename selected** (Ctrl+B), **Tools > Harmonise terminology**, and a **Command palette** (Ctrl+Shift+P). Select the visible rows you want, open Batch rename, choose the fields and transformation, and review the inclusion ticks before Apply. Apply changes memory as one undo step; Save or Deploy still reviews and writes the changes.
 
 | | |
 | --- | --- |
@@ -177,6 +177,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.2**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.2) | 20&nbsp;Nov&nbsp;2026 | ✏️ Select similar names, Batch rename (Ctrl+B) as one undo step, Harmonise terminology, and a command palette |
 | [**3.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.1) | 18&nbsp;Nov&nbsp;2026 | 🎨 Named colours and type badges, the rest of the saved Bulk-tools rules, a user guide, and the version in the header |
 | [**3.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.0) | 18&nbsp;Nov&nbsp;2026 | 🔄 Carry a profile's spellings forward when the game's database updates; an override inspector, review hints, saved rules, and a sharper icon |
 | [**2.6.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.6.1) | 17&nbsp;Nov&nbsp;2026 | 🔗 The public repository link in **Help > About** and the status bar; a steadier speed test |
@@ -189,6 +190,21 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.2 adds</b> &nbsp;·&nbsp; 20&nbsp;Nov&nbsp;2026</summary>
+
+3.2 adds smart selection and batch renaming, so a change to many names is one reviewed step.
+
+- **Select similar names.** Right-click an entity to select rows that share a word from its names, with a count for each match. The current filters are kept.
+- **Edit > Selection.** Select by word (Ctrl+Shift+W), by wildcard or regular expression (Ctrl+Shift+S or Ctrl+Shift+F), or by the same file section (Ctrl+Alt+S); **Invert selection** is Ctrl+Shift+I and **Clear selection** is Ctrl+D.
+- **Batch rename selected (Ctrl+B).** Replace text, whole words, prefixes and suffixes, football abbreviation presets, or a regular expression with capture groups, with case, accent and capitalisation options. A live preview has a tick on every row, and **Apply** changes only the ticked rows. Missing overrides are not invented.
+- **One undo step, memory only.** The whole preview is checked before any line changes; a stale preview or an invalid result is refused. One Undo takes back the batch, and nothing is written until Save or Deploy.
+- **Tools > Harmonise terminology.** Lists full and abbreviated club spellings in the loaded files with a count for each form. You choose the direction, then review it in Batch rename.
+- **Command palette (Ctrl+Shift+P).** Search menu commands, saved searches and collections by text, or select visible names by a word.
+- **Status-bar selection button.** While several entity rows are selected, a button in the status bar opens Batch rename. F1 stays **Keyboard shortcuts**, which now lists the Selection keys too.
+
+</details>
 
 <details>
 <summary><b>What 3.1 adds</b> &nbsp;·&nbsp; 18&nbsp;Nov&nbsp;2026</summary>
@@ -326,7 +342,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Optional polish:** an illustrative table, scoreboard, and ticker preview of long, short, and code spellings, and a name-level restore from a backup, only if wanted after 3.1.
+- **Optional polish:** an illustrative table, scoreboard, and ticker preview of long, short, and code spellings, and a name-level restore from a backup, only if wanted after 3.2.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 

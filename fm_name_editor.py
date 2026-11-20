@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.1
+FM Name Editor v3.2
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -38,6 +38,10 @@ pass: every rule on the Bulk tools dialog is kept, a tick on each
 preview row chooses what is applied, and the window gains named
 colours, type badges, the remaining keys, a user guide, and the
 version in the header.
+Release 3.2 adds smart selection and batch renaming: select similar
+names, Edit > Selection, Batch rename selected (Ctrl+B) with a ticked
+preview applied as one undo step, Tools > Harmonise terminology, and
+a command palette (Ctrl+Shift+P).
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -83,7 +87,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.1"
+VERSION = "3.2"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")
