@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.2
+FM Name Editor v3.3
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -42,6 +42,9 @@ Release 3.2 adds smart selection and batch renaming: select similar
 names, Edit > Selection, Batch rename selected (Ctrl+B) with a ticked
 preview applied as one undo step, Tools > Harmonise terminology, and
 a command palette (Ctrl+Shift+P).
+Release 3.3 adds shared-word selection from a multi-row right-click,
+a Batch rename suggestion taken from the selection, and pinned spelling
+pairs that Harmonise, Select similar and Ctrl+B all pick up.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -87,7 +90,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.2"
+VERSION = "3.3"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

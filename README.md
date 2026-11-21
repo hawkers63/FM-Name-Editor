@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.2](https://img.shields.io/badge/Release-v3.2-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.3](https://img.shields.io/badge/Release-v3.3-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-262%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-297%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.2
+Release: 3.3
 Status: released
-Application on disk: 3.2
+Application on disk: 3.3
 </sub>
 
 </div>
@@ -52,7 +52,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 **New in 3.2:** right-click **Select similar names**, **Edit > Selection**, **Batch rename selected** (Ctrl+B), **Tools > Harmonise terminology**, and a **Command palette** (Ctrl+Shift+P). Select the visible rows you want, open Batch rename, choose the fields and transformation, and review the inclusion ticks before Apply. Apply changes memory as one undo step; Save or Deploy still reviews and writes the changes.
 
-**Planned for 3.3:** shared-word selection from the right-click menu when two or more rows are selected, a batch recipe taken from the selection as the Ctrl+B suggestion, and **pinned spelling pairs** &mdash; pin pairs you use (Rovers / Rvrs, Borough / Boro) and Harmonise lists them under the built-ins, Select similar offers *Also select the other form*, and Ctrl+B may suggest them. Pins live in `state\rules.json`; Save and Deploy never touch the list, and deleting a pin never renames a club.
+**New in 3.3:** shared-word selection from the right-click menu when two or more rows are selected, a batch recipe taken from the selection as the Ctrl+B suggestion, and **pinned spelling pairs** &mdash; pin pairs you use (Rovers / Rvrs, Borough / Boro) and Harmonise lists them under the built-ins, Select similar offers *Also select the other form*, and Ctrl+B may suggest them. Pins live in `state\rules.json`; Save and Deploy never touch the list, and deleting a pin never renames a club.
 
 | | |
 | --- | --- |
@@ -179,6 +179,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.3**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.3) | 21&nbsp;Nov&nbsp;2026 | 📌 Shared-word selection, a Batch rename suggestion from the selection, and pinned spelling pairs |
 | [**3.2**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.2) | 20&nbsp;Nov&nbsp;2026 | ✏️ Select similar names, Batch rename (Ctrl+B) as one undo step, Harmonise terminology, and a command palette |
 | [**3.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.1) | 18&nbsp;Nov&nbsp;2026 | 🎨 Named colours and type badges, the rest of the saved Bulk-tools rules, a user guide, and the version in the header |
 | [**3.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.0) | 18&nbsp;Nov&nbsp;2026 | 🔄 Carry a profile's spellings forward when the game's database updates; an override inspector, review hints, saved rules, and a sharper icon |
@@ -192,6 +193,20 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.3 adds</b> &nbsp;·&nbsp; 21&nbsp;Nov&nbsp;2026</summary>
+
+3.3 adds shared-word selection, a Batch rename suggestion taken from the rows you have selected, and pinned spelling pairs you can reuse.
+
+- **Select similar leads with the words the rows already share.** With two or more rows selected, the right-click menu starts with the significant words those rows have in common, most shared first, with a count of visible and total matches. Words that would only reselect the current rows are left off. A single-row right-click behaves as it did in 3.2.
+- **Batch rename opens aimed at the selection.** Ctrl+B chooses the word shared by the most of the selected names and fills the preview with the matching football preset ("United → Utd") as a suggestion you can clear or change. The suggestion line states its basis in plain words. A short-name row that already reads the other form starts unticked with the reason on the row; a short name with different wording is left alone. Missing short names and codes are not invented.
+- **Pinned spelling pairs.** Beside the built-in pairs (United / Utd, City / Cty, Saint / St. / St and the rest), you can pin pairs you actually use (Rovers / Rvrs, Borough / Boro) from **Tools > Harmonise terminology** or from a Batch rename preview. Pins live in `state\rules.json`. Save and Deploy never touch the list, and deleting a pin never renames a club.
+- **Pins show up in the three places that already exist.** **Select similar names** offers *Also select the other form* with the same visible and hidden counts. **Harmonise** lists each pinned pair under the built-ins with a count for each form. **Ctrl+B** may offer a pinned pair as the suggested preset when the selection shares one side of it.
+- **Applying a pair still goes through Batch rename.** Every row can be unticked, one Undo takes the whole run back, and nothing is written until Save or Deploy. Stale previews are still refused.
+- **Targeted token-index refresh.** After a single edit the token index now refreshes only the entity that changed, so the right-click menu stays inside the one-second rule on a large file. Edit, Undo and Redo keep the index equal to a fresh scan.
+
+</details>
 
 <details>
 <summary><b>What 3.2 adds</b> &nbsp;·&nbsp; 20&nbsp;Nov&nbsp;2026</summary>
@@ -344,7 +359,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Optional polish:** an illustrative table, scoreboard, and ticker preview of long, short, and code spellings, and a name-level restore from a backup, only if wanted after 3.2.
+- **Optional polish:** an illustrative table, scoreboard, and ticker preview of long, short, and code spellings, and a name-level restore from a backup, only if wanted after 3.3.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 
