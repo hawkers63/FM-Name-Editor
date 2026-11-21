@@ -289,6 +289,12 @@ QComboBox QAbstractItemView {
 QSplitter::handle { background: $rule; }
 QLabel { background: transparent; }
 QCheckBox, QRadioButton { background: transparent; spacing: 6px; }
+QFrame#preview_frame { background: $panel; border: 1px solid $rule; border-radius: 4px; }
+QLabel#preview_cell { background: transparent; color: $text; padding: 2px 4px; }
+QWidget#illustrative_card { background: $panel; border: 1px solid $rule; border-radius: 4px; }
+QWidget#illustrative_header { background: transparent; }
+QLabel#scoreboard_name { background: transparent; color: $text; }
+QLabel#ticker_label { background: transparent; color: $muted; }
 """
 
 
@@ -325,9 +331,10 @@ USER_GUIDE = (
      "the buttons above the grid, narrow it with the search box (Ctrl+F), a file "
      "section, or a collection, and edit a cell with F2 or a double-click. The "
      "inspector on the right (F4 shows or hides it) shows the text on disk above the "
-     "proposed text for the selected row, and the line as it stands in the file. "
-     "All lines lists every name line and person rule; Changes lists every difference "
-     "from the files on disk."),
+     "proposed text for the selected row, the line as it stands in the file, and an "
+     "Illustrative card with table-row, scoreboard and ticker previews of the long, "
+     "short and code spellings. All lines lists every name line and person rule; "
+     "Changes lists every difference from the files on disk."),
     ("Tools change memory only",
      "Bulk tools, Replace, Import older edits, name packs, profile Apply and Migrate, "
      "and restoring a backup change the open files in memory and mark them unsaved. "
@@ -374,9 +381,12 @@ USER_GUIDE = (
      "the game has not changed itself."),
     ("Backups and overrides",
      "Backups > Browse and restore compares a backup with the open files and restores "
-     "it into memory. Right-click a row and choose Show overrides across files to see "
-     "every line in the database folder that names the same entity. The editor does "
-     "not know the game's load order and does not claim to."),
+     "it into memory. The diff table has a Restore checkbox for each name; tick the "
+     "names you want and press Restore selected names to restore only those spellings "
+     "as one undo step. Whole-file restore is still available. Right-click a row and "
+     "choose Show overrides across files to see every line in the database folder that "
+     "names the same entity. The editor does not know the game's load order and does "
+     "not claim to."),
     ("Where your files live",
      "Backups, spelling profiles, and settings (the remembered view, saved searches, "
      "collections, and the Bulk-tools rules in state\\rules.json) are kept in the "
@@ -5609,7 +5619,8 @@ JOBS_INLINE = False
 def run_gui(paths):
     from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEventLoop,
                                 QItemSelection, QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
-                                QSize, QSortFilterProxyModel, Qt, QTimer, Signal)
+                                QSize, QSortFilterProxyModel, Qt, QTimer, Signal, QPropertyAnimation,
+                                QEasingCurve, QParallelAnimationGroup)
     from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence,
                                QPainter, QPen, QUndoCommand, QUndoStack)
     from PySide6.QtWidgets import (
@@ -5618,7 +5629,8 @@ def run_gui(paths):
         QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
         QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
         QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableView,
-        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+        QToolButton)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
@@ -5789,6 +5801,284 @@ def run_gui(paths):
             if index.data(BADGE_ROLE):
                 size.setWidth(size.width() + BADGE_SPACE)
             return size
+
+    class IllustrativePreviewCard(QWidget):
+        """A collapsible card showing the selected entity's spellings in three illustrative formats.
+
+        Table row: like the entity grid, with long, short, and code side by side.
+        Scoreboard: large text for the primary name, with short and code below.
+        Ticker: a scrolling marquee showing the names in sequence.
+
+        Absent overrides are shown honestly using the existing "No X override" text.
+        Updates only from selection/edits; no file I/O during paint. Collapsible at small sizes.
+        """
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName("illustrative_card")
+            self._expanded = True
+            self._animation = None
+            self._content_height = 0
+            self._entity = None
+
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+
+            # Header with toggle button
+            header = QWidget()
+            header.setObjectName("illustrative_header")
+            header_lay = QHBoxLayout(header)
+            header_lay.setContentsMargins(8, 6, 8, 6)
+            self.title_label = QLabel("Illustrative")
+            self.title_label.setObjectName("heading")
+            self.toggle_btn = QToolButton()
+            self.toggle_btn.setArrowType(Qt.DownArrow)
+            self.toggle_btn.setCheckable(True)
+            self.toggle_btn.setChecked(True)
+            self.toggle_btn.setToolTip("Collapse/expand illustrative previews")
+            self.toggle_btn.clicked.connect(self._on_toggle)
+            header_lay.addWidget(self.title_label)
+            header_lay.addStretch(1)
+            header_lay.addWidget(self.toggle_btn)
+            lay.addWidget(header)
+
+            # Content area (will be animated)
+            self.content = QWidget()
+            self.content_lay = QVBoxLayout(self.content)
+            self.content_lay.setContentsMargins(8, 4, 8, 8)
+            self.content_lay.setSpacing(8)
+
+            # Three preview widgets
+            self.table_preview = self._make_table_preview()
+            self.scoreboard_preview = self._make_scoreboard_preview()
+            self.ticker_preview = self._make_ticker_preview()
+
+            self.content_lay.addWidget(self.table_preview)
+            self.content_lay.addWidget(self.scoreboard_preview)
+            self.content_lay.addWidget(self.ticker_preview)
+
+            lay.addWidget(self.content)
+
+            # Set initial size
+            self.content.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+
+        def _make_table_preview(self) -> QWidget:
+            """Create the table row preview: long | short | code side by side."""
+            frame = QFrame()
+            frame.setObjectName("preview_frame")
+            frame.setFrameShape(QFrame.StyledPanel)
+            lay = QVBoxLayout(frame)
+            lay.setContentsMargins(8, 6, 8, 6)
+            lay.setSpacing(4)
+
+            title = QLabel("Table row")
+            title.setObjectName("muted")
+            title.setFont(QFont(title.font().family(), title.font().pointSize(), QFont.Bold))
+            lay.addWidget(title)
+
+            row = QHBoxLayout()
+            row.setSpacing(8)
+
+            self.table_long = QLabel()
+            self.table_long.setObjectName("preview_cell")
+            self.table_long.setWordWrap(True)
+            self.table_long.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            self.table_short = QLabel()
+            self.table_short.setObjectName("preview_cell")
+            self.table_short.setWordWrap(True)
+            self.table_short.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            self.table_code = QLabel()
+            self.table_code.setObjectName("preview_cell")
+            self.table_code.setWordWrap(True)
+            self.table_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            for lbl, widget in (("Long", self.table_long), ("Short", self.table_short), ("Code", self.table_code)):
+                col = QVBoxLayout()
+                col.setSpacing(2)
+                cap = QLabel(lbl)
+                cap.setObjectName("muted")
+                cap.setFont(QFont(cap.font().family(), max(7, cap.font().pointSize() - 1)))
+                col.addWidget(cap)
+                col.addWidget(widget)
+                row.addLayout(col, 1)
+
+            lay.addLayout(row)
+            return frame
+
+        def _make_scoreboard_preview(self) -> QWidget:
+            """Create the scoreboard preview: large primary name with short/code below."""
+            frame = QFrame()
+            frame.setObjectName("preview_frame")
+            frame.setFrameShape(QFrame.StyledPanel)
+            lay = QVBoxLayout(frame)
+            lay.setContentsMargins(8, 6, 8, 6)
+            lay.setSpacing(6)
+
+            title = QLabel("Scoreboard")
+            title.setObjectName("muted")
+            title.setFont(QFont(title.font().family(), title.font().pointSize(), QFont.Bold))
+            lay.addWidget(title)
+
+            self.scoreboard_name = QLabel()
+            self.scoreboard_name.setObjectName("scoreboard_name")
+            self.scoreboard_name.setWordWrap(True)
+            self.scoreboard_name.setAlignment(Qt.AlignHCenter)
+            self.scoreboard_name.setFont(QFont(self.scoreboard_name.font().family(), 18, QFont.Bold))
+            self.scoreboard_name.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lay.addWidget(self.scoreboard_name)
+
+            detail_row = QHBoxLayout()
+            detail_row.setSpacing(16)
+
+            self.scoreboard_short = QLabel()
+            self.scoreboard_short.setObjectName("muted")
+            self.scoreboard_short.setAlignment(Qt.AlignHCenter)
+            self.scoreboard_short.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            self.scoreboard_code = QLabel()
+            self.scoreboard_code.setObjectName("muted")
+            self.scoreboard_code.setAlignment(Qt.AlignHCenter)
+            self.scoreboard_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            detail_row.addStretch(1)
+            detail_row.addWidget(self.scoreboard_short)
+            detail_row.addWidget(self.scoreboard_code)
+            detail_row.addStretch(1)
+            lay.addLayout(detail_row)
+
+            return frame
+
+        def _make_ticker_preview(self) -> QWidget:
+            """Create the ticker preview: a scrolling marquee of the names."""
+            frame = QFrame()
+            frame.setObjectName("preview_frame")
+            frame.setFrameShape(QFrame.StyledPanel)
+            lay = QVBoxLayout(frame)
+            lay.setContentsMargins(8, 6, 8, 6)
+            lay.setSpacing(4)
+
+            title = QLabel("Ticker")
+            title.setObjectName("muted")
+            title.setFont(QFont(title.font().family(), title.font().pointSize(), QFont.Bold))
+            lay.addWidget(title)
+
+            self.ticker_label = QLabel()
+            self.ticker_label.setObjectName("ticker_label")
+            self.ticker_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            self.ticker_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.ticker_label.setMinimumHeight(28)
+            self.ticker_label.setFont(QFont(self.ticker_label.font().family(), 12))
+            lay.addWidget(self.ticker_label)
+
+            # Simple timer-based scrolling (no complex animation needed for MVP)
+            self._ticker_timer = QTimer(self)
+            self._ticker_timer.setInterval(3000)  # Change every 3 seconds
+            self._ticker_timer.timeout.connect(self._advance_ticker)
+            self._ticker_texts = []
+            self._ticker_index = 0
+
+            return frame
+
+        def _advance_ticker(self) -> None:
+            if not self._ticker_texts:
+                return
+            self._ticker_index = (self._ticker_index + 1) % len(self._ticker_texts)
+            self.ticker_label.setText(self._ticker_texts[self._ticker_index])
+
+        def _on_toggle(self, checked: bool) -> None:
+            self._expanded = checked
+            self.toggle_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            self._animate_content(checked)
+
+        def _animate_content(self, expand: bool) -> None:
+            if self._animation and self._animation.state() == QPropertyAnimation.Running:
+                self._animation.stop()
+
+            if expand:
+                self.content.show()
+                # Calculate the content's preferred height
+                self.content_lay.activate()
+                target_height = self.content.sizeHint().height()
+                self._animation = QPropertyAnimation(self.content, b"maximumHeight")
+                self._animation.setDuration(150)
+                self._animation.setEasingCurve(QEasingCurve.OutCubic)
+                self._animation.setStartValue(0)
+                self._animation.setEndValue(target_height)
+                self._animation.start()
+            else:
+                self._animation = QPropertyAnimation(self.content, b"maximumHeight")
+                self._animation.setDuration(150)
+                self._animation.setEasingCurve(QEasingCurve.InCubic)
+                self._animation.setStartValue(self.content.maximumHeight())
+                self._animation.setEndValue(0)
+                self._animation.finished.connect(lambda: self.content.hide())
+                self._animation.start()
+
+        def update_from_entity(self, entity) -> None:
+            """Update all three previews from the given entity."""
+            self._entity = entity
+            if entity is None:
+                self._clear_all()
+                return
+
+            family = entity.family
+            # Get names for each slot
+            long_name = entity.name_in("long") if "long" in [s for s, _, _ in FAMILY_FIELDS[family]] else ""
+            short_name = entity.name_in("short") if "short" in [s for s, _, _ in FAMILY_FIELDS[family]] else ""
+            code_name = entity.name_in("code") if "code" in [s for s, _, _ in FAMILY_FIELDS[family]] else ""
+
+            # For families without certain slots (e.g., stadium only has long), use honest "No override" text
+            if not long_name and "long" in [s for s, _, _ in FAMILY_FIELDS[family]]:
+                long_name = no_override_text(family, "long")
+            if not short_name and "short" in [s for s, _, _ in FAMILY_FIELDS[family]]:
+                short_name = no_override_text(family, "short")
+            if not code_name and "code" in [s for s, _, _ in FAMILY_FIELDS[family]]:
+                code_name = no_override_text(family, "code")
+
+            # Table row preview
+            self.table_long.setText(long_name)
+            self.table_short.setText(short_name)
+            self.table_code.setText(code_name)
+
+            # Scoreboard preview - use long name as primary, or first available
+            primary = long_name if long_name != no_override_text(family, "long") else (
+                short_name if short_name != no_override_text(family, "short") else code_name)
+            self.scoreboard_name.setText(primary)
+            self.scoreboard_short.setText(f"Short: {short_name}")
+            self.scoreboard_code.setText(f"Code: {code_name}")
+
+            # Ticker preview - cycle through available names
+            self._ticker_texts = []
+            if long_name and long_name != no_override_text(family, "long"):
+                self._ticker_texts.append(f"Long: {long_name}")
+            if short_name and short_name != no_override_text(family, "short"):
+                self._ticker_texts.append(f"Short: {short_name}")
+            if code_name and code_name != no_override_text(family, "code"):
+                self._ticker_texts.append(f"Code: {code_name}")
+            if not self._ticker_texts:
+                # All are "No override" - show one message
+                self._ticker_texts = [f"No overrides for {ENTITY_KINDS.get(family, family).lower()}"]
+            self._ticker_index = 0
+            self.ticker_label.setText(self._ticker_texts[0])
+            self._ticker_timer.start()
+
+        def _clear_all(self) -> None:
+            """Clear all previews when no entity is selected."""
+            for lbl in (self.table_long, self.table_short, self.table_code,
+                        self.scoreboard_name, self.scoreboard_short, self.scoreboard_code):
+                lbl.setText("")
+            self._ticker_texts = []
+            self.ticker_label.setText("")
+            self._ticker_timer.stop()
+
+        def set_expanded(self, expanded: bool) -> None:
+            """Programmatically set expanded state."""
+            if self._expanded != expanded:
+                self.toggle_btn.setChecked(expanded)
+                self._on_toggle(expanded)
 
     def report_write_failure(parent, operation: str, exc: Exception) -> None:
         """Tell the user why a write stopped and where each file stands."""
@@ -7867,9 +8157,9 @@ def run_gui(paths):
             self.summary = QLabel("")
             self.summary.setWordWrap(True)
             lay.addWidget(self.summary)
-            self.table = QTableWidget(0, 6)
+            self.table = QTableWidget(0, 7)
             self.table.setHorizontalHeaderLabels(
-                ["Type", "ID", "Language", "Open file", "Backup", "Note"])
+                ["Restore", "Type", "ID", "Language", "Open file", "Backup", "Note"])
             self.table.verticalHeader().setVisible(False)
             self.table.setEditTriggers(QTableWidget.NoEditTriggers)
             self.table.horizontalHeader().setStretchLastSection(True)
@@ -7880,6 +8170,13 @@ def run_gui(paths):
             self.restore_btn.setEnabled(False)
             box.addButton(self.restore_btn, QDialogButtonBox.ActionRole)
             self.restore_btn.clicked.connect(self.restore)
+            self.restore_selected_btn = QPushButton("Restore selected names")
+            self.restore_selected_btn.setEnabled(False)
+            self.restore_selected_btn.setToolTip(
+                "Restore only the ticked names from the backup into the open file. "
+                "Each restored name is marked as a pending restore until Save or Deploy.")
+            box.addButton(self.restore_selected_btn, QDialogButtonBox.ActionRole)
+            self.restore_selected_btn.clicked.connect(self.restore_selected_names)
             box.rejected.connect(self.reject)
             lay.addWidget(box)
             self.archive_list.currentRowChanged.connect(self.show_archive)
@@ -7983,6 +8280,7 @@ def run_gui(paths):
         def show_diff(self):
             self.table.setRowCount(0)
             self.restore_btn.setEnabled(False)
+            self.restore_selected_btn.setEnabled(False)
             path = self.selected_file()
             if path is None:
                 self.origin.setText("")
@@ -8011,6 +8309,13 @@ def run_gui(paths):
                 return
             self.table.setRowCount(len(rows))
             for index, row in enumerate(rows):
+                # Column 0: checkbox for per-name restore
+                checkbox = QTableWidgetItem()
+                checkbox.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                checkbox.setCheckState(Qt.Unchecked)
+                checkbox.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(index, 0, checkbox)
+                # Columns 1-6: diff data
                 values = [
                     friendly(row["command"]),
                     row["id"],
@@ -8020,7 +8325,7 @@ def run_gui(paths):
                     row["note"],
                 ]
                 for column, value in enumerate(values):
-                    self.table.setItem(index, column, QTableWidgetItem(value))
+                    self.table.setItem(index, column + 1, QTableWidgetItem(value))
             self.table.resizeColumnsToContents()
             text = describe_backup_match(len(rows), identical)
             if doc.dirty:
@@ -8030,6 +8335,7 @@ def run_gui(paths):
                          "not the file this copy came from.")
             self.summary.setText(text)
             self.restore_btn.setEnabled(True)
+            self.restore_selected_btn.setEnabled(True)
 
         def restore(self):
             path = self.selected_file()
@@ -8061,6 +8367,137 @@ def run_gui(paths):
                        lambda: prepare_restore(doc, path),
                        lambda prepared: self.finish_restore(doc, path, prepared),
                        self.restore_failed)
+
+        def restore_selected_names(self):
+            """Restore only the ticked names from the backup into the open file.
+
+            Each restored name is marked as a pending restore until Save or Deploy.
+            This is one Operation/undo step. The original backup is never modified.
+            A stale diff (open file changed since diff was shown) is refused.
+            """
+            path = self.selected_file()
+            doc = None if path is None else self.matching_doc(path)[0]
+            if path is None or doc is None:
+                return
+
+            # Collect ticked rows
+            ticked_rows = []
+            for row in range(self.table.rowCount()):
+                checkbox = self.table.item(row, 0)
+                if checkbox and checkbox.checkState() == Qt.Checked:
+                    # Get the diff data for this row
+                    cmd = self.table.item(row, 1).text()
+                    id_ = self.table.item(row, 2).text()
+                    lang = self.table.item(row, 3).text()
+                    working = self.table.item(row, 4).text()
+                    archived = self.table.item(row, 5).text()
+                    note = self.table.item(row, 6).text()
+                    ticked_rows.append({
+                        "command": cmd,
+                        "id": id_,
+                        "language": lang,
+                        "working": working,
+                        "archived": archived,
+                        "note": note,
+                    })
+
+            if not ticked_rows:
+                QMessageBox.information(self, APP_NAME, "No names selected for restore.")
+                return
+
+            # Check for stale diff: compare the current open file with the backup again
+            # If the diff has changed, refuse the restore
+            try:
+                current_rows, _ = compare_with_backup(doc, path)
+            except (OSError, UnicodeError) as exc:
+                QMessageBox.critical(self, APP_NAME, f"Could not re-read the backup:\n{exc}")
+                return
+
+            # Build a set of keys from the current diff
+            current_keys = set()
+            for r in current_rows:
+                key = (r["command"], r["id"], r["language"])
+                current_keys.add(key)
+
+            # Build a set of keys from the ticked rows
+            ticked_keys = set()
+            for r in ticked_rows:
+                key = (r["command"], r["id"], r["language"])
+                ticked_keys.add(key)
+
+            # If any ticked key is not in the current diff, the diff is stale
+            if not ticked_keys.issubset(current_keys):
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    "The comparison has changed since it was shown. "
+                    "Please refresh the diff before restoring.")
+                self.show_diff()
+                return
+
+            # Confirm the restore
+            count = len(ticked_rows)
+            answer = QMessageBox.question(
+                self, APP_NAME,
+                f"Restore {count} selected name(s) from {path.name} into the open file?\n\n"
+                "Each restored name is marked as a pending restore. "
+                "Nothing is written until you Save or Deploy.",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+
+            # Perform the restore as one Operation
+            operation = Operation(f"restore {count} name(s) from {path.parent.name}")
+            with operation:
+                self._apply_selected_restore(doc, path, ticked_rows)
+
+            parent = self.parent()
+            if parent is not None:
+                parent.push_operation(operation)
+                parent.reload_views()
+            self.docs = parent.docs if parent is not None else self.docs
+            self.show_diff()
+            self.summary.setText(
+                f"Restored {count} name(s) from {path.name}. Save or Deploy to write them.")
+
+        def _apply_selected_restore(self, doc: LncDoc, backup_path: Path, ticked_rows: list[dict]) -> None:
+            """Apply the selected restore by updating the open document with archived values.
+
+            This marks the changed lines with reason "restore" and sets restore_pending.
+            """
+            # Read the backup file to get the archived entries
+            backup_doc = LncDoc(backup_path)
+
+            # Build a lookup: (command, id, language) -> list of archived entries
+            archived_lookup: dict[tuple, list[Entry]] = {}
+            for entry in backup_doc.editable():
+                key = (entry.cmd, entry.id, entry.lang.casefold())
+                archived_lookup.setdefault(key, []).append(entry)
+
+            # For each ticked row, find the matching entry in the open document and update it
+            for row in ticked_rows:
+                cmd = row["command"]
+                id_ = row["id"]
+                lang = row["language"]
+                archived_name = row["archived"]
+
+                # Find the matching entry in the open document
+                key = (cmd, id_, lang.casefold())
+                archived_entries = archived_lookup.get(key, [])
+                if not archived_entries:
+                    continue
+
+                # Find the corresponding entry in the open document
+                for entry in doc.editable():
+                    if entry.cmd == cmd and entry.id == id_ and entry.lang.casefold() == lang.casefold():
+                        # Update the entry with the archived name
+                        entry.set_name(archived_name, "restore")
+                        break
+
+            # Mark the document as having pending restores
+            doc.restore_pending = True
+            doc.restored_from = backup_path
+            doc.whole_excluded = False
+            doc.touch()
 
         def finish_restore(self, doc, path: Path, prepared) -> None:
             self.close_btn.setEnabled(True)
@@ -11001,6 +11438,11 @@ def run_gui(paths):
                 self.inspector_fields[slot] = {"marker": marker, "disk": disk, "edit": edit,
                                                "where": where, "raw": raw,
                                                "problem": problem, "hint": hint}
+
+            # Illustrative preview card (Session 18)
+            self.illustrative_card = IllustrativePreviewCard(self)
+            self.inspector_lay.addWidget(self.illustrative_card)
+
             self.inspector_revert = QPushButton("Revert")
             self.inspector_revert.setToolTip(
                 "Put the selected rows' lines back to the text on disk. Added lines stay.")
@@ -11041,6 +11483,8 @@ def run_gui(paths):
                         self.show_field_problem(widgets, "")
                         widgets["hint"].setText("")
                         widgets["hint"].hide()
+                    if hasattr(self, "illustrative_card"):
+                        self.illustrative_card.update_from_entity(None)
                     self.inspector_revert.setEnabled(False)
                     return
                 language = entity.lang or next(
@@ -11081,6 +11525,9 @@ def run_gui(paths):
                     self.show_field_problem(widgets, draft[1] if draft else "")
                     widgets["hint"].setText(view.hint)
                     widgets["hint"].setVisible(bool(view.hint))
+                # Update illustrative preview card (Session 18)
+                if hasattr(self, "illustrative_card"):
+                    self.illustrative_card.update_from_entity(entity)
                 self.inspector_revert.setEnabled(entity.changed())
             finally:
                 self._filling = False

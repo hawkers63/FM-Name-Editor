@@ -6,6 +6,14 @@ Application on disk: 3.3
 
 The program on disk reports `VERSION = "3.3"`. The launcher banner says v3.3.
 
+## Unreleased (Release 3.4)
+
+Session 18 — illustrative previews and name-level backup restore:
+
+- **Illustrative previews in the inspector.** A collapsible "Illustrative" card shows the selected entity's long, short, and code spellings in three formats: a table row (like the grid), a scoreboard (large primary name with short and code below), and a ticker (cycling through the available names). Absent overrides are shown honestly using the existing "No X override" text. The card updates only from selection and edits; no file I/O during paint. It collapses at small window sizes to keep the inspector usable.
+- **Per-name restore in Backups.** The Backups window now shows a Restore checkbox for each differing name in the diff table. Tick the names you want and press **Restore selected names** to restore only those spellings into memory as one undo step. Each restored name is marked as a pending restore until Save or Deploy. Whole-file restore (Restore into open file) is unchanged. The diff is re-checked before applying; a stale diff is refused. The original backup file is never modified. Reuses the existing `compare_with_backup` and `bytes_match` functions.
+- **Verification.** Targeted tests for the inspector preview card and per-name backup restore. All existing window, shortcut, and menu tests pass. Full suite not run (Neal runs it at release).
+
 ## 3.3 (21 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.3 adds shared-word selection from a multi-row right-click, a Batch rename suggestion taken from the selection, and pinned spelling pairs that Harmonise, Select similar and Ctrl+B all pick up. Sessions 16 and 17 close 3.3.

@@ -195,6 +195,16 @@ Game data and backups do not belong in this repository.
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
 
 <details>
+<summary><b>What 3.4 adds</b> &nbsp;·&nbsp; (unreleased)</summary>
+
+3.4 adds an illustrative preview card in the inspector and per-name restore in the Backups window.
+
+- **Illustrative previews in the inspector.** A collapsible "Illustrative" card shows the selected entity's long, short, and code spellings in three formats: a **table row** (like the grid), a **scoreboard** (large primary name with short and code below), and a **ticker** (cycling through the available names). Absent overrides are shown honestly using the existing "No X override" text. The card updates only from selection and edits; no file I/O during paint. It collapses at small window sizes to keep the inspector usable.
+- **Per-name restore in Backups.** The Backups window now shows a **Restore** checkbox for each differing name in the diff table. Tick the names you want and press **Restore selected names** to restore only those spellings into memory as one undo step. Each restored name is marked as a pending restore until Save or Deploy. Whole-file restore (**Restore into open file**) is unchanged. The diff is re-checked before applying; a stale diff is refused. The original backup file is never modified. Reuses the existing `compare_with_backup` and `bytes_match` functions.
+
+</details>
+
+<details>
 <summary><b>What 3.3 adds</b> &nbsp;·&nbsp; 21&nbsp;Nov&nbsp;2026</summary>
 
 3.3 adds shared-word selection, a Batch rename suggestion taken from the rows you have selected, and pinned spelling pairs you can reuse.
