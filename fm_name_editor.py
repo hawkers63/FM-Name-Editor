@@ -5817,6 +5817,8 @@ def run_gui(paths):
             super().__init__(parent)
             self.setObjectName("illustrative_card")
             self._expanded = True
+            self._auto_collapsed = False    # collapsed by lack of room, not by the user
+            self._user_override = False     # the user toggled it while space was short
             self._animation = None
             self._content_height = 0
             self._entity = None
@@ -5988,10 +5990,66 @@ def run_gui(paths):
             self._ticker_index = (self._ticker_index + 1) % len(self._ticker_texts)
             self.ticker_label.setText(self._ticker_texts[self._ticker_index])
 
+        # Below these the card would crowd the inspector's fields, so it folds itself away.
+        MIN_WIDTH = 240
+        MIN_WINDOW_HEIGHT = 560
+
         def _on_toggle(self, checked: bool) -> None:
-            self._expanded = checked
-            self.toggle_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
-            self._animate_content(checked)
+            self._set_expanded(checked)
+            self._auto_collapsed = False
+            self._user_override = self._too_small()
+
+        def _set_expanded(self, expanded: bool) -> None:
+            self._expanded = expanded
+            self.toggle_btn.blockSignals(True)
+            self.toggle_btn.setChecked(expanded)
+            self.toggle_btn.blockSignals(False)
+            self.toggle_btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+            self._animate_content(expanded)
+            self._sync_ticker()
+
+        def _too_small(self) -> bool:
+            return self.width() < self.MIN_WIDTH or self.window().height() < self.MIN_WINDOW_HEIGHT
+
+        def fit_to_space(self) -> None:
+            """Fold away when the inspector or window is small; open again when room returns."""
+            if self._too_small():
+                if self._expanded and not self._user_override:
+                    self._set_expanded(False)
+                    self._auto_collapsed = True
+            else:
+                self._user_override = False
+                if self._auto_collapsed:
+                    self._set_expanded(True)
+                    self._auto_collapsed = False
+
+        def resizeEvent(self, event) -> None:
+            super().resizeEvent(event)
+            self.fit_to_space()
+
+        def _ticker_wanted(self) -> bool:
+            return self._expanded and self._entity is not None and not self.isHidden()
+
+        def stop_ticker(self) -> None:
+            """Stop the ticker for good, as the window closes."""
+            self._entity = None
+            self._ticker_timer.stop()
+
+        def _sync_ticker(self) -> None:
+            """The ticker runs only while it can be seen: expanded, shown, and something selected."""
+            if self._ticker_wanted():
+                if not self._ticker_timer.isActive():
+                    self._ticker_timer.start()
+            else:
+                self._ticker_timer.stop()
+
+        def showEvent(self, event) -> None:
+            super().showEvent(event)
+            self._sync_ticker()
+
+        def hideEvent(self, event) -> None:
+            super().hideEvent(event)
+            self._ticker_timer.stop()
 
         def _animate_content(self, expand: bool) -> None:
             if self._animation and self._animation.state() == QPropertyAnimation.Running:
@@ -6063,7 +6121,7 @@ def run_gui(paths):
                 self._ticker_texts = [f"No overrides for {ENTITY_KINDS.get(family, family).lower()}"]
             self._ticker_index = 0
             self.ticker_label.setText(self._ticker_texts[0])
-            self._ticker_timer.start()
+            self._sync_ticker()
 
         def _clear_all(self) -> None:
             """Clear all previews when no entity is selected."""
@@ -6072,12 +6130,11 @@ def run_gui(paths):
                 lbl.setText("")
             self._ticker_texts = []
             self.ticker_label.setText("")
-            self._ticker_timer.stop()
+            self._sync_ticker()
 
         def set_expanded(self, expanded: bool) -> None:
             """Programmatically set expanded state."""
             if self._expanded != expanded:
-                self.toggle_btn.setChecked(expanded)
                 self._on_toggle(expanded)
 
     def report_write_failure(parent, operation: str, exc: Exception) -> None:
@@ -8326,6 +8383,8 @@ def run_gui(paths):
                 ]
                 for column, value in enumerate(values):
                     self.table.setItem(index, column + 1, QTableWidgetItem(value))
+                # The Type column shows the friendly label; the raw command rides along.
+                self.table.item(index, 1).setData(Qt.UserRole, row["command"])
             self.table.resizeColumnsToContents()
             text = describe_backup_match(len(rows), identical)
             if doc.dirty:
@@ -8386,7 +8445,7 @@ def run_gui(paths):
                 checkbox = self.table.item(row, 0)
                 if checkbox and checkbox.checkState() == Qt.Checked:
                     # Get the diff data for this row
-                    cmd = self.table.item(row, 1).text()
+                    cmd = self.table.item(row, 1).data(Qt.UserRole)
                     id_ = self.table.item(row, 2).text()
                     lang = self.table.item(row, 3).text()
                     working = self.table.item(row, 4).text()
@@ -10001,11 +10060,17 @@ def run_gui(paths):
                 return not any(d.dirty for d in self.docs)
             return r == QMessageBox.Discard
 
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            if hasattr(self, "illustrative_card"):
+                self.illustrative_card.fit_to_space()
+
         def closeEvent(self, event):
             self.jobs.wait(15)              # let a job end before the window goes
             if not self.confirm_discard():
                 event.ignore()
                 return
+            self.illustrative_card.stop_ticker()
             if self.remember_on_close:
                 self.remember_view()
             event.accept()

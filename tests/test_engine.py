@@ -7872,5 +7872,223 @@ class Session17PinsInTheThreePlaces(unittest.TestCase):
                     close_window(win)
 
 
+class Session18Preview(unittest.TestCase):
+    """Release 3.4, session 18: the Illustrative card in the inspector."""
+
+    TEXT = (
+        "# England\n"
+        '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t10\t"Alpha"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t10\t"ALP"\t""\n'
+        '"CLUB_NAME_CHANGE"\t20\t"Beta Town"\t""\n'
+    )
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.resize(1280, 800)
+        win.show()
+        QApplication.processEvents()
+        return win
+
+    def _open(self, win, tmp):
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, self.TEXT)
+        self.assertTrue(win.load([str(path)]))
+
+    def _select(self, win, ident):
+        win.select_entities_matching(lambda entity: entity.id == ident)
+
+    def test_the_three_spellings_render_and_an_absent_override_shows_as_absent(self):
+        win = self._window()
+        card = win.illustrative_card
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self._select(win, "10")
+            self.assertEqual((card.table_long.text(), card.table_short.text(),
+                              card.table_code.text()), ("Alpha United", "Alpha", "ALP"))
+            self.assertEqual(card.scoreboard_name.text(), "Alpha United")
+            self.assertEqual(card.scoreboard_short.text(), "Short: Alpha")
+            self.assertEqual(card.scoreboard_code.text(), "Code: ALP")
+            self.assertEqual(card.ticker_label.text(), "Long: Alpha United")
+            self._select(win, "20")
+            self.assertEqual(card.table_short.text(), editor.no_override_text("club", "short"))
+            self.assertEqual(card.table_code.text(), "No code override")
+            self.assertEqual(card.ticker_label.text(), "Long: Beta Town")
+
+    def test_an_edit_and_an_undo_update_the_card(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self._window()
+        card = win.illustrative_card
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self._select(win, "10")
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "10")
+            column = model.columns().index("long")
+            self.assertTrue(model.setData(model.index(row, column), "Alpha Rovers"))
+            QApplication.processEvents()
+            self.assertEqual(card.table_long.text(), "Alpha Rovers")
+            self.assertEqual(card.scoreboard_name.text(), "Alpha Rovers")
+            win.undo_act.trigger()
+            QApplication.processEvents()
+            self.assertEqual(card.table_long.text(), "Alpha United")
+
+    def test_the_ticker_runs_only_while_it_can_be_seen(self):
+        win = self._window()
+        card = win.illustrative_card
+        timer = card._ticker_timer
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self.assertFalse(timer.isActive())              # nothing selected
+            self._select(win, "10")
+            self.assertTrue(timer.isActive())
+            card.set_expanded(False)
+            self.assertFalse(timer.isActive())              # collapsed
+            card.set_expanded(True)
+            self.assertTrue(timer.isActive())
+            card.hide()
+            self.assertFalse(timer.isActive())              # hidden
+            card.show()
+            self.assertTrue(timer.isActive())
+            win.entity_view.clearSelection()
+            self._select(win, "none")
+            self.assertFalse(timer.isActive())              # selection gone
+            self._select(win, "10")
+            self.assertTrue(timer.isActive())
+            win.close()
+            self.assertFalse(timer.isActive())              # window closed
+
+    def test_it_folds_away_at_a_small_size_and_the_toggle_still_works(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self._window()
+        card = win.illustrative_card
+        with tempfile.TemporaryDirectory() as tmp:
+            self._open(win, tmp)
+            self._select(win, "10")
+            self.assertTrue(card._expanded)
+            win.resize(900, 450)
+            QApplication.processEvents()
+            self.assertFalse(card._expanded)
+            self.assertFalse(card._ticker_timer.isActive())
+            card.set_expanded(True)                         # the toggle wins
+            win.resize(900, 440)
+            QApplication.processEvents()
+            self.assertTrue(card._expanded)
+            win.resize(1280, 800)                           # room again: tidy state resets
+            QApplication.processEvents()
+            win.resize(900, 450)
+            QApplication.processEvents()
+            self.assertFalse(card._expanded)
+            win.resize(1280, 800)
+            QApplication.processEvents()
+            self.assertTrue(card._expanded)                 # reopened by itself
+
+
+class Session18BackupRestore(unittest.TestCase):
+    """Release 3.4, session 18: restore only the ticked names from a backup."""
+
+    TEXT = (
+        "# England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"One"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t2\t"Two"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Three"\t""\n'
+    )
+    OLD = (
+        "# England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Uno"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t2\t"Dos"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Tres"\t""\n'
+    )
+
+    def _run(self, body):
+        """Open a file and a differing backup, show the Backups window, and run ``body``."""
+        from PySide6.QtWidgets import QDialog
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.lnc"
+            write_lnc(path, self.TEXT)
+            copy = Path(tmp) / "backups" / "20261111-120000" / "mine.lnc"
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.OLD)
+            self.enterContext(mock.patch.object(editor, "BACKUP_ROOT", Path(tmp) / "backups"))
+            self.assertTrue(win.load([str(path)]))
+            results = []
+            self.enterContext(mock.patch.object(
+                QDialog, "exec", lambda dialog: results.append(body(win, dialog, path, copy)) or 0))
+            win.open_backups()
+            self.assertEqual(len(results), 1)
+
+    def _tick(self, dialog, ids):
+        from PySide6.QtCore import Qt
+
+        for row in range(dialog.table.rowCount()):
+            if dialog.table.item(row, 2).text() in ids:
+                dialog.table.item(row, 0).setCheckState(Qt.Checked)
+
+    def _yes(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        return mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes)
+
+    def test_ticking_two_of_three_restores_exactly_those_in_one_undo_step(self):
+        from PySide6.QtCore import Qt
+
+        def body(win, dialog, path, copy):
+            digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+            disk = path.read_bytes()
+            # the Type column reads friendly; the raw command rides in UserRole
+            self.assertEqual(dialog.table.item(0, 1).text(), "Club - long name")
+            self.assertEqual(dialog.table.item(0, 1).data(Qt.UserRole), "CLUB_NAME_CHANGE")
+            self._tick(dialog, {"1", "2"})
+            with self._yes():
+                dialog.restore_selected_names()
+            names = {entry.id: entry.name for entry in win.docs[0].editable()}
+            self.assertEqual(names, {"1": "Uno", "2": "Dos", "3": "Three"})
+            self.assertTrue(win.docs[0].restore_pending)
+            self.assertEqual(hashlib.sha256(copy.read_bytes()).hexdigest(), digest)
+            self.assertEqual(path.read_bytes(), disk)       # nothing written before Save
+            win.undo_act.trigger()                           # one step takes back both
+            names = {entry.id: entry.name for entry in win.docs[0].editable()}
+            self.assertEqual(names, {"1": "One", "2": "Two", "3": "Three"})
+            self.assertFalse(win.docs[0].dirty)
+
+        self._run(body)
+
+    def test_a_stale_diff_is_refused(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        def body(win, dialog, path, copy):
+            self._tick(dialog, {"1"})
+            # the open file is edited after the list was shown: the name now matches the backup
+            entry = next(e for e in win.docs[0].editable() if e.id == "1")
+            entry.set_name("Uno", "manual")
+            with mock.patch.object(QMessageBox, "warning") as warned, self._yes():
+                dialog.restore_selected_names()
+            warned.assert_called_once()
+            names = {e.id: e.name for e in win.docs[0].editable()}
+            self.assertEqual(names, {"1": "Uno", "2": "Two", "3": "Three"})
+            self.assertFalse(win.docs[0].restore_pending)
+
+        self._run(body)
+
+    def test_whole_file_restore_still_replaces_everything(self):
+        def body(win, dialog, path, copy):
+            with self._yes():
+                dialog.restore()
+            self.assertTrue(win.jobs.wait(10))
+            names = {e.id: e.name for e in win.docs[0].editable()}
+            self.assertEqual(names, {"1": "Uno", "2": "Dos", "3": "Tres"})
+            self.assertEqual(path.read_bytes().decode("utf-8-sig"), self.TEXT)
+
+        self._run(body)
+
+
 if __name__ == "__main__":
     unittest.main()
