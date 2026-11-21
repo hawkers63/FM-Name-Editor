@@ -8,7 +8,9 @@ backups/
 /notes/
 /memory.md
 /roadmap.md
-/AGENTS.md
+
+# Personal Claude Code overrides (not published).
+CLAUDE.local.md
 
 # Local settings. They stay on this PC.
 /profiles/

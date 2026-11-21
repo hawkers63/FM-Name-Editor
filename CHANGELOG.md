@@ -6,6 +6,12 @@ Application on disk: 3.4
 
 The program on disk reports `VERSION = "3.4"`. The launcher banner says v3.4.
 
+## Unreleased
+
+Documentation:
+
+- Multi-CLI session workflow: public AGENTS.md as the shared instruction file for Claude Code, Grok Build CLI, and Codex CLI; thin CLAUDE.md importing it; docs/SESSION_HANDOFF.md (five live entries, older ones archived); docs/SESSION_PROMPTS.md; and a short public docs/ROADMAP.md. The private roadmap.md, memory.md, and notes/ stay on this PC.
+
 ## 3.4 (21 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.4 adds an illustrative preview card in the inspector and per-name restore in the Backups window. Session 18 closes 3.4.
