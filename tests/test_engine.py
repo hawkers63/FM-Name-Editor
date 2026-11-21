@@ -7887,6 +7887,7 @@ class Session18Preview(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
 
         win = make_window(self)
+        win.remember_on_close = False
         self.addCleanup(close_window, win)
         win.resize(1280, 800)
         win.show()
