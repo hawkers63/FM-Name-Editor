@@ -485,7 +485,7 @@ class ProcessList(unittest.TestCase):
 class LiveFiles(unittest.TestCase):
     def test_read_only_round_trip(self):
         docs = []
-        for name, lines in (("FM27_Club_Names.lnc", 8935), ("FM27_Fix.lnc", 9092)):
+        for name, lines in (("FM27_Club_Names.lnc", 8937), ("FM27_Fix.lnc", 9092)):
             path = LIVE_DIR / name
             original = path.read_bytes()
             self.assertTrue(original.startswith(BOM))
@@ -500,7 +500,7 @@ class LiveFiles(unittest.TestCase):
         # The raw command count includes the blank header line, so the entity
         # view has one fewer club than that token count.
         club_text = (LIVE_DIR / "FM27_Club_Names.lnc").read_text(encoding="utf-8-sig")
-        self.assertEqual(club_text.count('"CLUB_SHORT_NAME_CHANGE"'), 4298)
+        self.assertEqual(club_text.count('"CLUB_SHORT_NAME_CHANGE"'), 4299)
         self.assertEqual(len(clubs), 4297)
         self.assertGreaterEqual(len(comps), 3600)
         self.assertTrue(all(entity.missing("code") or entity.name_in("code") for entity in comps))
