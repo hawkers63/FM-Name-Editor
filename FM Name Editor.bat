@@ -1,7 +1,7 @@
 @echo off
 SETLOCAL EnableExtensions DisableDelayedExpansion
 :: ==============================================================
-::  FM Name Editor.bat  v3.3  -  launcher for fm_name_editor.py
+::  FM Name Editor.bat  v3.4  -  launcher for fm_name_editor.py
 ::
 ::  Copyright (c) 2026 onwards Mark Hawksworth (hawkers63).
 ::  All rights reserved. Proprietary software, not open source.

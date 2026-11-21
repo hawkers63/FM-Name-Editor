@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.3
+FM Name Editor v3.4
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -45,6 +45,9 @@ a command palette (Ctrl+Shift+P).
 Release 3.3 adds shared-word selection from a multi-row right-click,
 a Batch rename suggestion taken from the selection, and pinned spelling
 pairs that Harmonise, Select similar and Ctrl+B all pick up.
+Release 3.4 adds an illustrative preview card in the inspector
+(table row, scoreboard, and ticker) and per-name restore from a
+backup, still only into memory until Save or Deploy.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -90,7 +93,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.3"
+VERSION = "3.4"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

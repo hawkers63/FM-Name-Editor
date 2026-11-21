@@ -1,19 +1,21 @@
 # Changelog
 
-Release: 3.3
+Release: 3.4
 Status: released
-Application on disk: 3.3
+Application on disk: 3.4
 
-The program on disk reports `VERSION = "3.3"`. The launcher banner says v3.3.
+The program on disk reports `VERSION = "3.4"`. The launcher banner says v3.4.
 
-## Unreleased (Release 3.4)
+## 3.4 (21 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.4 adds an illustrative preview card in the inspector and per-name restore in the Backups window. Session 18 closes 3.4.
 
 Session 18 — illustrative previews and name-level backup restore:
 
 - **Illustrative previews in the inspector.** A collapsible "Illustrative" card shows the selected entity's long, short, and code spellings in three formats: a table row (like the grid), a scoreboard (large primary name with short and code below), and a ticker (cycling through the available names). Absent overrides are shown honestly using the existing "No X override" text. The card updates only from selection and edits; no file I/O during paint. It folds itself away when the inspector is narrower than 240 px or the window is shorter than 560 px, and opens again when there is room; the toggle still works. The ticker timer runs only while the card is expanded, shown and has a selection, and stops when the window closes.
 - **Per-name restore in Backups.** The Backups window now shows a Restore checkbox for each differing name in the diff table. Tick the names you want and press **Restore selected names** to restore only those spellings into memory as one undo step. Each restored name is marked as a pending restore until Save or Deploy. Whole-file restore (Restore into open file) is unchanged. The diff is re-checked before applying; a stale diff is refused. The original backup file is never modified. Reuses the existing `compare_with_backup` and `bytes_match` functions.
 - **Fix-up (Session 18b).** The per-name restore compared the friendly Type label with the raw command, so no ticked name matched. The raw command now rides in the Type cell (`Qt.UserRole`) and drives the ticked keys, the stale-diff check and the entry match.
-- **Verification.** New `Session18Preview` (4 tests) and `Session18BackupRestore` (3 tests). Full suite not run (Neal runs it at release).
+- **Verification.** New `Session18Preview` (4 tests) and `Session18BackupRestore` (3 tests). Tests: 304 in the full suite, up from 297, all passing offscreen.
 
 ## 3.3 (21 November 2026)
 

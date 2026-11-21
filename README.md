@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.3](https://img.shields.io/badge/Release-v3.3-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.4](https://img.shields.io/badge/Release-v3.4-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-297%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-304%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.3
+Release: 3.4
 Status: released
-Application on disk: 3.3
+Application on disk: 3.4
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.4:** an **Illustrative** card in the inspector (table row, scoreboard and ticker previews of the long, short and code spellings) and **Restore selected names** in the Backups window, which copies only the ticked spellings into memory as one undo step. Nothing is written until Save or Deploy.
 
 **New in 3.2:** right-click **Select similar names**, **Edit > Selection**, **Batch rename selected** (Ctrl+B), **Tools > Harmonise terminology**, and a **Command palette** (Ctrl+Shift+P). Select the visible rows you want, open Batch rename, choose the fields and transformation, and review the inclusion ticks before Apply. Apply changes memory as one undo step; Save or Deploy still reviews and writes the changes.
 
@@ -179,6 +181,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.4**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.4) | 21&nbsp;Nov&nbsp;2026 | 🖼️ Illustrative previews in the inspector, and per-name restore from a backup |
 | [**3.3**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.3) | 21&nbsp;Nov&nbsp;2026 | 📌 Shared-word selection, a Batch rename suggestion from the selection, and pinned spelling pairs |
 | [**3.2**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.2) | 20&nbsp;Nov&nbsp;2026 | ✏️ Select similar names, Batch rename (Ctrl+B) as one undo step, Harmonise terminology, and a command palette |
 | [**3.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.1) | 18&nbsp;Nov&nbsp;2026 | 🎨 Named colours and type badges, the rest of the saved Bulk-tools rules, a user guide, and the version in the header |
@@ -193,6 +196,16 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.4 adds</b> &nbsp;·&nbsp; 21&nbsp;Nov&nbsp;2026</summary>
+
+3.4 adds an illustrative preview card in the inspector and per-name restore in the Backups window.
+
+- **Illustrative previews in the inspector.** A collapsible **Illustrative** card shows the selected entity's long, short and code spellings as a **table row**, a **scoreboard**, and a **ticker** that cycles every three seconds. Absent overrides are shown honestly. The card updates only from the selection and its edits; it does not read files while painting. It folds itself away when the inspector is narrower than 240 px or the window is shorter than 560 px, and opens again when there is room. The ticker runs only while the card is expanded, shown and has a selection, and stops when the window closes.
+- **Per-name restore in Backups.** The Backups window has a **Restore** tick on each differing name. **Restore selected names** copies only the ticked spellings into memory as one undo step. Each restored name is marked pending until Save or Deploy. Whole-file restore is unchanged. A stale comparison is refused, and the original backup file is never modified.
+
+</details>
 
 <details>
 <summary><b>What 3.3 adds</b> &nbsp;·&nbsp; 21&nbsp;Nov&nbsp;2026</summary>
@@ -359,7 +372,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Planned for 3.4:** an Illustrative card in the inspector (table-row, scoreboard and ticker previews of the long, short and code spellings) and a per-name restore from a backup. Neal writes the final notes at release.
+- **Release 3.5:** a further finding Mark is documenting, when he is ready.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 
