@@ -1,12 +1,16 @@
 # Changelog
 
-Release: 3.5
+Release: 3.6
 Status: released
-Application on disk: 3.5
+Application on disk: 3.6
 
-The program on disk reports `VERSION = "3.5"`. The launcher banner says v3.5.
+The program on disk reports `VERSION = "3.6"`. The launcher banner says v3.6.
 
 ## Unreleased
+
+## 3.6 (22 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.6 adds a search box that names the section it searches, a few common club aliases, name-length counters against typical guides, and faster keyboard moves between rows. Session 20 closes 3.6.
 
 Session 20 — search scope and aliases, name-length guides, and keyboard moves (Release 3.6, note 09 proposals 1, 2 and 6):
 
@@ -18,7 +22,7 @@ Session 20 — search scope and aliases, name-length guides, and keyboard moves 
 - **Keyboard moves in the inspector.** Alt+Down or Shift+Enter keeps the field, moves to the next row shown and puts you back in the same field with its text selected; Alt+Up does the same for the row before. Hidden rows are skipped, the ends do not wrap, refused text stays put, and each changed field is one Undo step (an unchanged one records nothing).
 - **Copy long name to short name.** Edit > Copy long name to short name (Ctrl+Shift+L, also in the command palette) fills the inspector's Short name field for trimming and commits nothing until Enter. Deploy keeps Ctrl+Shift+D.
 - **Tab and Enter in the grid's cell editor.** In a cell opened with F2, Tab keeps it and opens the next name on the row (Shift+Tab the one before), and Enter keeps it and opens the cell below, through the usual cell edit, so each changed cell is one Undo step.
-- **Verification.** New `Session20Engine` (5), `Session20Search` (7), `Session20Speed` (1, on copies of the live files), `Session20Gauges` (4) and `Session20Cadence` (8). The Edit menu test in `Session6Window` lists the two new entries.
+- **Verification.** New `Session20Engine` (5), `Session20Search` (7), `Session20Speed` (1, on copies of the live files), `Session20Gauges` (4) and `Session20Cadence` (8). The Edit menu test in `Session6Window` lists the two new entries. Tests: 356 in the full suite, up from 331, all passing offscreen.
 
 ## 3.5 (22 November 2026)
 

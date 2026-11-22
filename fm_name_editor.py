@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.5
+FM Name Editor v3.6
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -52,6 +52,10 @@ Release 3.5 adds file pickers that start in the last Open folder or
 lnc\all, up to three favourite folders, the ID column on the entity
 grid (on by default), and Edit > Add name for an ID the open files
 do not mention. Export name pack refuses a path in the game's folders.
+Release 3.6 adds a search box that names the section it searches,
+a few common club aliases, name-length counters against typical
+guides, and faster keyboard moves between rows in the inspector
+and along a row in the grid.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -98,7 +102,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.5"
+VERSION = "3.6"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

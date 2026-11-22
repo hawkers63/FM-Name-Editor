@@ -10,6 +10,39 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 22 November 2026 (Europe/London) — Grok Bot (Neal)
+
+- **Tool:** Grok Bot (Neal)
+- **Model:** Grok Bot
+- **Branch / commit:** main, local `docs: finalise Release 3.6 version, headers, changelog and README`, annotated tag `v3.6`, not pushed
+
+### Done this session
+
+- Reviewed Session 20 (`516633f`): the commit changes only `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md` and `docs/SESSION_HANDOFF.md`. No private files, no playthrough details, no tag. Ctrl+Shift+D is still Deploy. The length gauges are warnings only and never block or trim a name. Save, Deploy and the write pipeline were not changed.
+- Ran the full suite once: 356 tests in 58.258s, all passing offscreen.
+- Finalised Release 3.6: `VERSION`, the launcher banner, the README and CHANGELOG headers, a dated CHANGELOG section with an empty Unreleased section above it, the public roadmap, and this handoff. Private `roadmap.md` was updated and not staged. The executable was built and not launched. Release notes were written. Nothing was pushed.
+
+### In progress
+
+- Nothing. Waiting for Mark to confirm the push and the GitHub Release.
+
+### Next steps
+
+- After Mark confirms: push `main` then tag `v3.6`, and create the GitHub Release with the exe.
+- Session 21 (Release 3.7, note 09 proposals 3 to 5).
+
+### Known issues / blockers
+
+- None for the release.
+
+### Files touched
+
+- `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
+  `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`; private `roadmap.md` (not
+  tracked)
+
+---
+
 ## 22 November 2026 (Europe/London) — Claude Code (Session 20)
 
 - **Tool:** claude (Claude Code)

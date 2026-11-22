@@ -12,25 +12,23 @@ changes.
 
 ## Now
 
-- **Release 3.5** is current (22 November 2026): file pickers that start in a
-  useful folder, up to three favourite folders, the ID column on the entity
-  grid, and Edit > Add name for an ID the open files do not mention.
+- **Release 3.6** is current (22 November 2026): a search box that names the
+  section it searches, a few common club aliases, name-length counters, and
+  faster keyboard moves between rows.
 
 ## Next
 
-- **Release 3.6**: a visible search scope with one click to search all
-  sections, a character-length gauge with a truncation preview, and
-  faster keyboard movement between rows.
+- **Release 3.7**: suggested short names and codes, name health checks,
+  and in-memory snapshots to roll back a set of bulk changes.
 
 ## Later
 
-- **Release 3.7**: suggested short names and codes, name health checks,
-  and in-memory snapshots to roll back a set of bulk changes.
 
 ## Done
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.6 — search scope and aliases, name-length counters, and faster keyboard moves
 - 3.5 — start folders and favourites, the ID column, and Add name
 - 3.4 — illustrative previews and per-name backup restore
 - 3.3 — shared-word selection, batch recipe from the selection, pinned spelling pairs
