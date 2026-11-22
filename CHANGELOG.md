@@ -1,12 +1,16 @@
 # Changelog
 
-Release: 3.4
+Release: 3.5
 Status: released
-Application on disk: 3.4
+Application on disk: 3.5
 
-The program on disk reports `VERSION = "3.4"`. The launcher banner says v3.4.
+The program on disk reports `VERSION = "3.5"`. The launcher banner says v3.5.
 
 ## Unreleased
+
+## 3.5 (22 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.5 adds file pickers that start in a useful folder, up to three favourite folders, the ID column on the entity grid, and Edit > Add name for an ID the open files do not mention. Session 19 closes 3.5.
 
 Session 19 — start folders and favourites, the ID column, and Add name (Release 3.5, note 08):
 
@@ -16,7 +20,7 @@ Session 19 — start folders and favourites, the ID column, and Add name (Releas
 - **The ID column on the entity grid.** View > Show ID column is on by default and remembered with the view. This revises decision 26 (Session 7), which hid the column because the inspector shows the ID; the ID is how a row is matched across versions. The inspector and All lines keep it. The column is sized from its text, its heading sorts by number (an empty or non-numeric ID goes last in either direction), and sorting adds no undo step.
 - **The sorted heading is bold.** The sort arrow is small and sits at the far edge of a wide column, so the sorted column's heading is now drawn in bold on the entity grid and All lines. Sorting itself is unchanged.
 - **Edit > Add name….** Adds name lines for an ID the game already uses but the open files do not mention: the family (club by default), a digits-only ID, the long name (required), and optionally the short name, the code, and a language (blank means English). It does not create a club and does not look IDs up. When the family and ID are already in the open files, nothing is added and that row is selected instead. The lines go at the end of the file under `#Imported by FM Name Editor` as one operation, so one Undo takes them all back with the heading; Changes shows them as Added and ticked; nothing is written until Save or Deploy, and every other line is written back byte for byte.
-- **Verification.** New `Session19Engine` (7), `Session19Folders` (9), `Session19IdColumn` (4), and `Session19AddName` (7). The menu tests in `Session6Window`, `Session7Window`, and `Session14Visual` list the new entries, and `Session7Window` expects the ID column shown.
+- **Verification.** New `Session19Engine` (7), `Session19Folders` (9), `Session19IdColumn` (4), and `Session19AddName` (7). The menu tests in `Session6Window`, `Session7Window`, and `Session14Visual` list the new entries, and `Session7Window` expects the ID column shown. Tests: 331 in the full suite, up from 304, all passing offscreen.
 
 Documentation:
 

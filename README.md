@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.4](https://img.shields.io/badge/Release-v3.4-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.5](https://img.shields.io/badge/Release-v3.5-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-304%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-331%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.4
+Release: 3.5
 Status: released
-Application on disk: 3.4
+Application on disk: 3.5
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.5:** file pickers that start in the folder last opened from or in the selected database's `lnc\all`, up to three **favourite folders** in the File menu, **View > Show ID column** (on by default), and **Edit > Add name…** for an ID the open files do not mention. Export name pack will not save inside the game's folders. Nothing is written until Save or Deploy.
 
 **New in 3.4:** an **Illustrative** card in the inspector (table row, scoreboard and ticker previews of the long, short and code spellings) and **Restore selected names** in the Backups window, which copies only the ticked spellings into memory as one undo step. Nothing is written until Save or Deploy.
 
@@ -181,6 +183,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.5**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.5) | 22&nbsp;Nov&nbsp;2026 | 📂 Useful start folders and favourites, the ID column on the entity grid, and Add name |
 | [**3.4**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.4) | 21&nbsp;Nov&nbsp;2026 | 🖼️ Illustrative previews in the inspector, and per-name restore from a backup |
 | [**3.3**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.3) | 21&nbsp;Nov&nbsp;2026 | 📌 Shared-word selection, a Batch rename suggestion from the selection, and pinned spelling pairs |
 | [**3.2**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.2) | 20&nbsp;Nov&nbsp;2026 | ✏️ Select similar names, Batch rename (Ctrl+B) as one undo step, Harmonise terminology, and a command palette |
@@ -196,6 +199,19 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.5 adds</b> &nbsp;·&nbsp; 22&nbsp;Nov&nbsp;2026</summary>
+
+3.5 adds file pickers that start in a useful folder, up to three favourite folders, the ID column on the entity grid, and Edit > Add name for an ID the open files do not mention.
+
+- **File pickers start somewhere useful.** File > Open files opens in the folder you last opened files from, or else in `lnc\all` of the selected database. Import older edits, Import name pack and Export name pack start by the same rule. When that folder is missing, the status bar names it and the picker opens in your user folder.
+- **Three favourite folders.** File > Favourite folders… keeps up to three folders, listed in the File menu under "Name files in the selected database". They are stored in `state\settings.json`; a bad entry is ignored, and a damaged file is left byte for byte.
+- **A name pack is never saved inside the game's folders.** Export name pack refuses a path in the game's database folder or in a Steam library. Only Save and Deploy write there, after a backup.
+- **The ID column, on by default.** View > Show ID column is shown by default and remembered with the view, revising the earlier rule that hid it. The column is sized from its text and sorts by number, with empty IDs last. The sorted heading is now bold on both grids.
+- **Edit > Add name….** Adds name lines for an ID the open files do not mention, at the end of the file under `#Imported by FM Name Editor`, as one undo step. An ID already open selects that row and adds nothing. Nothing is written until Save or Deploy.
+
+</details>
 
 <details>
 <summary><b>What 3.4 adds</b> &nbsp;·&nbsp; 21&nbsp;Nov&nbsp;2026</summary>
@@ -372,7 +388,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Planned for 3.5:** file pickers that start in the folder last opened from or in the selected database's `lnc\all`, up to three favourite folders in the File menu, the ID column on the entity grid (View > Show ID column), and Edit > Add name for an ID the open files do not mention.
+- **Release 3.6:** a visible search scope with one click to search all sections, a character-length gauge with a truncation preview, and faster keyboard movement between rows.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 
