@@ -388,7 +388,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Release 3.6:** a visible search scope with one click to search all sections, a character-length gauge with a truncation preview, and faster keyboard movement between rows.
+- **Planned for 3.6:** a search box that names the section it searches, with Search all sections (Alt+A) and a few common club aliases; name-length counters against typical guides, with a cut preview; and keyboard moves between rows in the inspector (Alt+Down, Alt+Up) and along a row in the grid (Tab, Enter).
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 

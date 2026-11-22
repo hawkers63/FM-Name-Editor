@@ -82,6 +82,7 @@ import contextlib
 import csv
 import fnmatch
 import hashlib
+import html
 import io
 import json
 import os
@@ -198,6 +199,7 @@ THEME = {
     "edited": "#a78bfa",        # "Edited": lighter than the accent, so it reads on slate
     "added": "#10b981",         # "Added", and good news
     "warning": "#f59e0b",       # "Duplicate", competing values, refused text
+    "problem": "#f87171",       # a name past its typical length guide (Session 20)
     "focus": "#06b6d4",         # keyboard focus, collections
     "focus_text": "#67e8f9",
     # The badge before a line's type, one per family; the type's words sit beside it.
@@ -246,6 +248,7 @@ QToolBar QToolButton#review:disabled {
 QLabel#metrics { color: $muted; background: transparent; padding: 2px 6px; }
 QLabel#muted { color: $muted; background: transparent; }
 QLabel#warning { color: $warning; background: transparent; }
+QLabel#problem { color: $problem; background: transparent; }
 QLabel#blocked { color: $warning; background: transparent; font-weight: bold; }
 QLabel#ok { color: $added; background: transparent; }
 QLabel#edited { color: $edited; background: transparent; }
@@ -350,6 +353,36 @@ USER_GUIDE = (
      "its heading sorts by number. The sorted column's heading is bold. All lines lists "
      "every name line and person rule; Changes lists every difference from the files "
      "on disk."),
+    ("Search scope and club aliases",
+     "While a file section or a collection narrows the grid, the search box says so, "
+     "for example In: England (42), and Search all sections (Alt+A, also on the Edit "
+     "menu) shows every section again, keeping the words typed. When the words find "
+     "nothing in the section but do find rows elsewhere, a line under the search box "
+     "says how many; click it to search every section. It only counts: the search is "
+     "never widened on its own. When the words find nothing at all, a few common short "
+     "names for well-known clubs are tried, among the clubs in the open files only: "
+     "Wolves, Spurs, Man Utd, Man City, Barca or Barça, Inter, PSG, BVB, and Juve. The "
+     "line then reads Matched via alias, with the word you typed. Words that could mean "
+     "many clubs, such as City or United, are not aliases. Accents and capital letters "
+     "are ignored, as everywhere in the search."),
+    ("Name length guides",
+     "Under Long name, Short name, and 3-letter code the inspector counts the letters "
+     "against a typical guide: 28 for a long name, 14 for a short name, and 3 for a "
+     "code. The count turns amber within two of the guide and red past it; a code is "
+     "also flagged when it holds a lower-case letter or is not three characters long. "
+     "These are typical guides, not game rules: skins differ, and nothing is blocked, "
+     "trimmed, or changed. A name past its guide is kept whole and saved as typed; only "
+     "the Illustrative card shows it cut with an ellipsis, as a skin might show it."),
+    ("Keyboard moves",
+     "In an inspector field, Alt+Down or Shift+Enter keeps what you typed, moves to the "
+     "next row shown in the grid, and puts you back in the same field with its text "
+     "selected; Alt+Up does the same for the row before. Rows hidden by the search or a "
+     "filter are skipped, and the first and last rows stay where they are. Each field "
+     "you change is its own Undo step; an unchanged field records nothing. Edit > Copy "
+     "long name to short name (Ctrl+Shift+L, also in the command palette) puts the long "
+     "name into the Short name field for trimming; nothing changes until you press "
+     "Enter. In a grid cell opened with F2, Tab keeps it and opens the next name on the "
+     "same row (Shift+Tab the one before), and Enter keeps it and opens the cell below."),
     ("Add a name for an ID",
      "The name files hold spelling overrides, not every club in the game, so a club "
      "that keeps the game's own name has no line to find. Edit > Add name adds lines "
@@ -1822,6 +1855,141 @@ def no_override_text(family: str, slot: str) -> str:
         if key == slot:
             return f"No {label.lower().replace(' ', '-')} override"
     return "No override"
+
+
+# ----- Session 20: search scope, club aliases, length guides -----
+
+def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all",
+                 keys=None, alias: str = "") -> bool:
+    """Whether the entity grid shows an entity: the one test the grid's filter
+    and the "found elsewhere" count share.
+
+    ``words`` are folded search words; every one must appear in the
+    entity's file section, ID, language, or names. With ``alias`` (a club's
+    formal name from CLUB_ALIASES) the words are not used: every word of the
+    alias must appear in the entity's names instead. ``section`` and
+    ``keys`` (a collection's members, or None) are the scope; "" and None
+    mean every section.
+    """
+    if keys is not None and entity_key(entity) not in keys:
+        return False
+    if section and entity.section != section:
+        return False
+    if mode == "edited" and not entity.changed():
+        return False
+    if mode == "missing_short" and not entity.missing("short"):
+        return False
+    if mode == "missing_code" and not entity.missing("code"):
+        return False
+    names = [entity.name_in(slot) for slot, _label, _cmd in FAMILY_FIELDS[entity.family]]
+    if alias:
+        hay = fold(" ".join(names))
+        return all(word in hay for word in fold(alias).split())
+    if words:
+        hay = fold(" ".join([entity.section, entity.id, entity.lang, *names]))
+        return all(word in hay for word in words)
+    return True
+
+
+def count_shown(entities, words, mode: str = "all", alias: str = "") -> int:
+    """How many entities a search finds in every section, whatever the scope."""
+    return sum(1 for entity in entities if entity_shown(entity, words, "", mode, None, alias))
+
+
+# Common short names for well-known clubs, each with the formal name it stands
+# for. Searched only when the words typed find nothing, and only among the
+# clubs in the open files: no network, no game database. Words that could mean
+# many clubs ("City", "United") are left out on purpose.
+CLUB_ALIASES = {
+    "Wolves": "Wolverhampton Wanderers",
+    "Spurs": "Tottenham Hotspur",
+    "Man Utd": "Manchester United",
+    "Man City": "Manchester City",
+    "Barca": "Barcelona",
+    "Barça": "Barcelona",
+    "Inter": "Internazionale",
+    "PSG": "Paris Saint-Germain",
+    "BVB": "Borussia Dortmund",
+    "Juve": "Juventus",
+}
+_FOLDED_ALIASES = {" ".join(fold(alias).split()): name for alias, name in CLUB_ALIASES.items()}
+
+
+def alias_for(text: str) -> str:
+    """The formal club name an alias stands for, or "" (accents and capitals ignored)."""
+    return _FOLDED_ALIASES.get(" ".join(fold(text).split()), "")
+
+
+def scope_label(scope: str, count: int) -> str:
+    """The search box's scope: "In: England (42)"."""
+    return f"In: {scope} ({count:,})"
+
+
+# Typical lengths before a Football Manager skin cuts a name short. They are
+# guides, not game rules: skins differ, and the editor never blocks, trims, or
+# changes a name for them. Kept here so they are changed in one place.
+NAME_LENGTH_GUIDES = {"long": 28, "short": 14, "code": 3}
+GUIDE_NEAR = 2                  # the counter turns amber this close to its guide
+# A guide applies to the fields with these labels; a competition's 6-letter
+# code, and a stadium's or city's single name, have none.
+GUIDED_LABELS = {"Long name": "long", "Short name": "short", "3-letter code": "code"}
+
+
+def length_guide(family: str, slot: str) -> int:
+    """The typical length guide for a field, or 0 when it has none."""
+    for key, label, _cmd in FAMILY_FIELDS.get(family, ()):
+        if key == slot and GUIDED_LABELS.get(label) == slot:
+            return NAME_LENGTH_GUIDES[slot]
+    return 0
+
+
+def length_gauge(family: str, slot: str, text: str) -> tuple[str, str, str] | None:
+    """The counter under an inspector field: (text, level, tooltip), or None.
+
+    The level is "muted" within the guide, "warning" (amber) within
+    GUIDE_NEAR of it, and "problem" past it. A 3-letter code is a problem
+    when it holds a lower-case letter or is not three characters long; an
+    empty field is an absent override, never a problem. A warning only:
+    nothing is blocked, trimmed, or changed.
+    """
+    guide = length_guide(family, slot)
+    if not guide:
+        return None
+    count = len(text.strip())
+    shown = f"{count} / {guide}"
+    if slot == "code":
+        flags = []
+        if text.strip() != text.strip().upper():
+            flags.append("lower case")
+        if count and count != guide:
+            flags.append(f"not {guide} characters")
+        tip = (f"Codes are typically {guide} capital letters. Skins differ: this is a "
+               "guide, not a game rule, and nothing is changed or blocked.")
+        if flags:
+            return f"{shown} · {', '.join(flags)}", "problem", tip
+        return shown, "muted", tip
+    noun = {"long": "long names", "short": "short names"}[slot]
+    where = ("on the match scoreboard and in banners" if slot == "long"
+             else "in tables and small panels")
+    tip = (f"Football Manager skins typically cut {noun} longer than {guide} characters "
+           f"{where}. Skins differ: this is a guide, not a game rule, and nothing is "
+           "changed or blocked.")
+    if count > guide:
+        return f"{shown} · over the guide", "problem", tip
+    if count >= guide - GUIDE_NEAR:
+        return f"{shown} · near the guide", "warning", tip
+    return shown, "muted", tip
+
+
+def cut_to_guide(text: str, guide: int) -> str:
+    """A name as a skin might cut it: within ``guide`` characters, ending in an ellipsis.
+
+    Illustrative only. Text within the guide, or a field with no guide (0),
+    comes back as it is.
+    """
+    if not guide or len(text) <= guide:
+        return text
+    return text[:guide - 1].rstrip() + "…"
 
 
 def describe_lines(entries) -> str:
@@ -5827,7 +5995,7 @@ JOBS_INLINE = False
 
 
 def run_gui(paths):
-    from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEventLoop,
+    from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEvent, QEventLoop,
                                 QItemSelection, QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
                                 QRegularExpression, QSize, QSortFilterProxyModel, Qt, QTimer, Signal,
                                 QPropertyAnimation, QEasingCurve, QParallelAnimationGroup)
@@ -5835,7 +6003,8 @@ def run_gui(paths):
                                QPainter, QPen, QRegularExpressionValidator, QUndoCommand,
                                QUndoStack)
     from PySide6.QtWidgets import (
-        QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
+        QAbstractItemDelegate, QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
+        QComboBox, QDialog,
         QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
         QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
         QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
@@ -6070,6 +6239,15 @@ def run_gui(paths):
             self.content_lay.addWidget(self.table_preview)
             self.content_lay.addWidget(self.scoreboard_preview)
             self.content_lay.addWidget(self.ticker_preview)
+            # Session 20: said only while a name is shown cut at its typical guide.
+            self.cut_note = QLabel(
+                "A name longer than its typical guide is shown cut with an ellipsis, as a skin "
+                "might show it. Skins differ: this is illustrative, not exact. The name itself "
+                "is kept whole.")
+            self.cut_note.setObjectName("muted")
+            self.cut_note.setWordWrap(True)
+            self.content_lay.addWidget(self.cut_note)
+            self.cut_note.hide()
 
             lay.addWidget(self.content)
 
@@ -6307,26 +6485,35 @@ def run_gui(paths):
             if not code_name and "code" in [s for s, _, _ in FAMILY_FIELDS[family]]:
                 code_name = no_override_text(family, "code")
 
-            # Table row preview
-            self.table_long.setText(long_name)
-            self.table_short.setText(short_name)
-            self.table_code.setText(code_name)
+            # Session 20: a name past its typical guide is shown cut, with an ellipsis.
+            def cut(slot, text):
+                if not text or text == no_override_text(family, slot):
+                    return text
+                return cut_to_guide(text, length_guide(family, slot))
+
+            names = {"long": long_name, "short": short_name, "code": code_name}
+            shown = {slot: cut(slot, text) for slot, text in names.items()}
+            for slot, label in (("long", self.table_long), ("short", self.table_short),
+                                ("code", self.table_code)):
+                label.setText(shown[slot])
+                label.setToolTip(names[slot] if shown[slot] != names[slot] else "")
+            self.cut_note.setVisible(shown != names)
 
             # Scoreboard preview - use long name as primary, or first available
-            primary = long_name if long_name != no_override_text(family, "long") else (
-                short_name if short_name != no_override_text(family, "short") else code_name)
-            self.scoreboard_name.setText(primary)
-            self.scoreboard_short.setText(f"Short: {short_name}")
-            self.scoreboard_code.setText(f"Code: {code_name}")
+            primary = "long" if long_name != no_override_text(family, "long") else (
+                "short" if short_name != no_override_text(family, "short") else "code")
+            self.scoreboard_name.setText(shown[primary])
+            self.scoreboard_short.setText(f"Short: {shown['short']}")
+            self.scoreboard_code.setText(f"Code: {shown['code']}")
 
             # Ticker preview - cycle through available names
             self._ticker_texts = []
             if long_name and long_name != no_override_text(family, "long"):
-                self._ticker_texts.append(f"Long: {long_name}")
+                self._ticker_texts.append(f"Long: {shown['long']}")
             if short_name and short_name != no_override_text(family, "short"):
-                self._ticker_texts.append(f"Short: {short_name}")
+                self._ticker_texts.append(f"Short: {shown['short']}")
             if code_name and code_name != no_override_text(family, "code"):
-                self._ticker_texts.append(f"Code: {code_name}")
+                self._ticker_texts.append(f"Code: {shown['code']}")
             if not self._ticker_texts:
                 # All are "No override" - show one message
                 self._ticker_texts = [f"No overrides for {ENTITY_KINDS.get(family, family).lower()}"]
@@ -6339,6 +6526,8 @@ def run_gui(paths):
             for lbl in (self.table_long, self.table_short, self.table_code,
                         self.scoreboard_name, self.scoreboard_short, self.scoreboard_code):
                 lbl.setText("")
+                lbl.setToolTip("")
+            self.cut_note.hide()
             self._ticker_texts = []
             self.ticker_label.setText("")
             self._sync_ticker()
@@ -6913,38 +7102,32 @@ def run_gui(paths):
             self.section = ""
             self.mode = "all"
             self.keys = None                    # a collection's members, or None for all
+            self.alias = ""                     # a club's formal name, when an alias matched
             self.setDynamicSortFilter(False)
 
         def configure(self, text: str, section: str, mode: str, keys=None) -> None:
-            """Set the filter without running it: a model reset that follows runs it once."""
+            """Set the filter without running it: a model reset that follows runs it once.
+
+            It searches the words typed; MainWindow.settle_search tries an alias after.
+            """
             self.words = fold(text).split()
             self.section = section
             self.mode = mode
             self.keys = keys
+            self.alias = ""
 
         def set_filter(self, text: str, section: str, mode: str, keys=None) -> None:
             self.configure(text, section, mode, keys)
             self.invalidate()
 
+        def set_alias(self, alias: str) -> None:
+            """Search a club's formal name instead of the words typed, or go back with ""."""
+            self.alias = alias
+            self.invalidate()
+
         def filterAcceptsRow(self, row, parent):
-            entity = self.sourceModel().rows[row]
-            if self.keys is not None and entity_key(entity) not in self.keys:
-                return False
-            if self.section and entity.section != self.section:
-                return False
-            if self.mode == "edited" and not entity.changed():
-                return False
-            if self.mode == "missing_short" and not entity.missing("short"):
-                return False
-            if self.mode == "missing_code" and not entity.missing("code"):
-                return False
-            if self.words:
-                parts = [entity.section, entity.id, entity.lang]
-                parts.extend(
-                    entity.name_in(slot) for slot, _label, _cmd in FAMILY_FIELDS[entity.family])
-                hay = fold(" ".join(parts))
-                return all(word in hay for word in self.words)
-            return True
+            return entity_shown(self.sourceModel().rows[row], self.words, self.section,
+                                self.mode, self.keys, self.alias)
 
     class BulkDialog(QDialog):
         """Preview a bulk rename, then apply it in memory.
@@ -9522,15 +9705,68 @@ def run_gui(paths):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
+    class CadenceDelegate(QStyledItemDelegate):
+        """The entity grid's cell editor (Session 20): Tab and Enter move on.
+
+        Tab keeps the cell and edits the next name column on the same row
+        (Shift+Tab the one before); Enter keeps it and edits the same column
+        on the next row shown. The cell is kept through the usual path
+        (commitData, then the model's setData), so a changed cell is one Undo
+        step and an unchanged one records nothing. Past the last name column
+        or the last row, the editor just closes. ``where()`` names the cell
+        being edited before it is kept; ``move(where, how)`` opens the next
+        one once the event loop is free, after any reload the edit queued.
+        """
+
+        def __init__(self, view, where, move):
+            super().__init__(view)
+            self.where = where
+            self.move = move
+
+        def eventFilter(self, editor, event):
+            if event.type() == QEvent.KeyPress:
+                key = event.key()
+                modifiers = event.modifiers() & ~Qt.KeypadModifier
+                how = ""
+                if key == Qt.Key_Tab and modifiers == Qt.NoModifier:
+                    how = "next"
+                elif key == Qt.Key_Backtab:
+                    how = "previous"
+                elif key in (Qt.Key_Return, Qt.Key_Enter) and modifiers == Qt.NoModifier:
+                    how = "down"
+                if how:
+                    origin = self.where()
+                    self.commitData.emit(editor)
+                    self.closeEditor.emit(editor, QAbstractItemDelegate.NoHint)
+                    if origin is not None:
+                        QTimer.singleShot(0, lambda: self.move(origin, how))
+                    return True
+            return super().eventFilter(editor, event)
+
     class InspectorEdit(QLineEdit):
-        """A field in the inspector. Esc puts back the name in memory."""
+        """A field in the inspector. Esc puts back the name in memory.
+
+        Session 20: Alt+Down or Shift+Enter asks for the next grid row, and
+        Alt+Up for the one before (``step``); the window keeps the field first.
+        """
 
         escaped = Signal()
+        step = Signal(int)
 
         def keyPressEvent(self, event):
-            if event.key() == Qt.Key_Escape:
+            key = event.key()
+            modifiers = event.modifiers() & ~Qt.KeypadModifier
+            if key == Qt.Key_Escape:
                 self.escaped.emit()
                 event.accept()
+                return
+            if modifiers == Qt.AltModifier and key in (Qt.Key_Down, Qt.Key_Up):
+                event.accept()
+                self.step.emit(1 if key == Qt.Key_Down else -1)
+                return
+            if modifiers == Qt.ShiftModifier and key in (Qt.Key_Return, Qt.Key_Enter):
+                event.accept()
+                self.step.emit(1)
                 return
             super().keyPressEvent(event)
 
@@ -9748,7 +9984,7 @@ def run_gui(paths):
                 self.select_word_act, self.select_pattern_act, self.select_section_act,
                 self.invert_selection_act, self.clear_selection_act, self.palette_act,
                 self.open_db_folder_act, *self.favourite_acts, self.favourites_act,
-                self.add_name_act]
+                self.add_name_act, self.search_all_act, self.copy_long_act]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
             self.busy_widgets.append(self.selection_pill)
             self._enabled_before: dict = {}
@@ -9832,6 +10068,16 @@ def run_gui(paths):
                 "Put the selected lines back to the text on disk")
             self.find_act = a("Find", self.focus_find, QKeySequence.Find,
                               "Go to the search box of the tab shown")
+            # Session 20 (note 09). Alt+A and Ctrl+Shift+L were free: no menu
+            # mnemonic uses A, and Ctrl+Shift+D stays Deploy.
+            self.search_all_act = a(
+                "Search all sections", lambda _checked=False: self.search_all_sections(),
+                ["Alt+A"],
+                "Show every file section again, and no collection, keeping the words typed")
+            self.copy_long_act = a(
+                "Copy long name to short name", self.copy_long_to_short, ["Ctrl+Shift+L"],
+                "Put the inspector's long name into its Short name field, to trim. Nothing "
+                "changes until you press Enter there.")
             self.replace_act = a("Replace...", self.open_replace, QKeySequence.Replace,
                                  "Find and replace with a regular expression")
             self.bulk_act = a(
@@ -9979,8 +10225,8 @@ def run_gui(paths):
             self.fill_favourite_actions()
             self.edit_menu = menu(
                 "&Edit", self.undo_act, self.redo_act, None, self.edit_cell_act,
-                self.add_name_act, self.revert_act, None, self.find_act, self.replace_act,
-                self.bulk_act)
+                self.add_name_act, self.revert_act, self.copy_long_act, None, self.find_act,
+                self.search_all_act, self.replace_act, self.bulk_act)
             self.edit_menu.addAction(self.batch_rename_act)
             self.selection_menu = self.edit_menu.addMenu("&Selection")
             for action in (self.select_word_act, self.select_pattern_act,
@@ -10071,11 +10317,25 @@ def run_gui(paths):
             entity_lay.addLayout(family_row)
 
             status_row = QHBoxLayout()
+            # Session 20: what the search box searches, while a file section or a
+            # collection narrows the grid, and the way out of it (Alt+A).
+            self.scope_label = QLabel("")
+            self.scope_label.setObjectName("muted")
+            self.scope_label.setMaximumWidth(260)
+            self.scope_label.hide()
+            status_row.addWidget(self.scope_label)
             self.entity_search = QLineEdit()
             self.entity_search.setPlaceholderText(
                 "Search names, IDs, and file sections (accents ignored). Ctrl+F")
             self.entity_search.setClearButtonEnabled(True)
             status_row.addWidget(self.entity_search, 1)
+            self.search_all_btn = QPushButton("Search all sections")
+            self.search_all_btn.setObjectName("small")
+            self.search_all_btn.setToolTip(
+                "Show every file section again, keeping the words typed (Alt+A)")
+            self.search_all_btn.clicked.connect(lambda _checked=False: self.search_all_sections())
+            self.search_all_btn.hide()
+            status_row.addWidget(self.search_all_btn)
             self.searches_btn = QPushButton("Saved searches")
             self.searches_btn.setToolTip(
                 "Keep this search (family, words, filter, and file section or collection) "
@@ -10095,6 +10355,14 @@ def run_gui(paths):
                 self.status_buttons.append(button)
                 status_row.addWidget(button)
             entity_lay.addLayout(status_row)
+            # "Matched via alias ...", or "No matches in ... Found N in other sections"
+            # as a link that shows every section. Hidden when there is nothing to say.
+            self.scope_hint = QLabel("")
+            self.scope_hint.setObjectName("muted")
+            self.scope_hint.setTextFormat(Qt.RichText)
+            self.scope_hint.linkActivated.connect(lambda _link: self.search_all_sections())
+            self.scope_hint.hide()
+            entity_lay.addWidget(self.scope_hint)
 
             splitter = QSplitter()
             self.entity_splitter = splitter
@@ -10144,6 +10412,8 @@ def run_gui(paths):
             self.entity_view.verticalHeader().setDefaultSectionSize(24)
             self.entity_view.setEditTriggers(
                 QTableView.DoubleClicked | QTableView.EditKeyPressed)
+            self.entity_view.setItemDelegate(
+                CadenceDelegate(self.entity_view, self.grid_edit_origin, self.move_grid_editor))
             sortable(self.entity_view, self.on_entity_sort)
             splitter.addWidget(self.entity_view)
 
@@ -10502,8 +10772,13 @@ def run_gui(paths):
                 relayout(self.line_model)
             else:
                 self.line_view.viewport().update()
-            if self.entity_proxy.words or self.entity_proxy.mode != "all":
-                self.entity_proxy.invalidate()
+            proxy = self.entity_proxy
+            if proxy.words or proxy.mode != "all":
+                if proxy.alias:     # the words typed may find the row now: they come first
+                    proxy.configure(self.entity_search.text(), self.section_filter,
+                                    self.status_mode, self.collection_keys())
+                proxy.invalidate()
+                self.settle_search()
             else:
                 self.entity_view.viewport().update()
             self.refresh_status()
@@ -10781,7 +11056,99 @@ def run_gui(paths):
         def apply_entity_filter(self):
             self.entity_proxy.set_filter(self.entity_search.text(), self.section_filter,
                                          self.status_mode, self.collection_keys())
+            self.settle_search()
             self.refresh_status()
+
+        def settle_search(self) -> None:
+            """After the grid is filtered: try a club alias, check other sections, and say so.
+
+            The words typed come first. Only when they find nothing in the
+            scope is a club alias tried (CLUB_ALIASES), among the clubs open.
+            When the scope still shows nothing, the other sections are counted,
+            and the hint offers to show them: a check, never a wider search on
+            its own. Each pass is one loop over the family in Python.
+            """
+            proxy = self.entity_proxy
+            text = self.entity_search.text().strip()
+            alias = ""
+            elsewhere = 0
+            if proxy.words and proxy.rowCount() == 0:
+                target = alias_for(text) if self.family == "club" else ""
+                if target:
+                    proxy.set_alias(target)
+                    if proxy.rowCount():
+                        alias = text
+                    else:
+                        proxy.set_alias("")
+                if not alias and (self.section_filter or self.collection_filter):
+                    rows = self.entity_model.rows
+                    elsewhere = count_shown(rows, proxy.words, self.status_mode)
+                    if not elsewhere and target:
+                        elsewhere = count_shown(rows, [], self.status_mode, target)
+            self.show_search_scope(alias, elsewhere)
+
+        def search_scope(self) -> tuple[str, int]:
+            """The scope the search box is limited to, and how many of the family it holds.
+
+            ("", 0) when every section is searched.
+            """
+            if self.collection_filter:
+                collection = self.shown_collection()
+                count = collection.count_in(self.family) if collection is not None else 0
+                return f"★ {self.collection_filter}", count
+            if self.section_filter:
+                return self.section_filter, sum(
+                    1 for entity in self.entity_model.rows
+                    if entity.section == self.section_filter)
+            return "", 0
+
+        def show_search_scope(self, alias: str = "", elsewhere: int = 0) -> None:
+            """Show the scope beside the search box, and the alias or elsewhere hint under it."""
+            scope, count = self.search_scope()
+            if scope:
+                label = scope_label(scope, count)
+                metrics = QFontMetrics(self.scope_label.font())
+                self.scope_label.setText(metrics.elidedText(label, Qt.ElideMiddle, 250))
+                self.scope_label.setToolTip(
+                    f"The search box searches {scope} only. Search all sections (Alt+A) "
+                    "shows every section again.")
+                self.search_all_btn.setText(
+                    f"Search all sections ({len(self.entity_model.rows):,})")
+            self.scope_label.setVisible(bool(scope))
+            self.search_all_btn.setVisible(bool(scope))
+            if alias:
+                self.scope_hint.setText(
+                    html.escape(f"Matched via alias '{alias}'", quote=False))
+                self.scope_hint.setToolTip(
+                    "The words typed found nothing, so a common short name for a club was "
+                    "tried. It lists only clubs in the open files.")
+            elif elsewhere:
+                where = ("outside this collection" if self.collection_filter
+                         else "in other sections")
+                words = f"No matches in {scope}. Found {elsewhere:,} {where}"
+                self.scope_hint.setText(
+                    f'<a href="all" style="color:{THEME["focus_text"]}">'
+                    f"{html.escape(words, quote=False)}</a> (Alt+A)")
+                self.scope_hint.setToolTip(
+                    "Click to search every file section, keeping the words typed")
+            self.scope_hint.setVisible(bool(alias or elsewhere))
+
+        def search_all_sections(self) -> None:
+            """Edit > Search all sections (Alt+A): every section, no collection, same words."""
+            self.tabs.setCurrentIndex(0)
+            if not (self.section_filter or self.collection_filter):
+                self.statusBar().showMessage("Every file section is already searched.", 5000)
+                return
+            self.section_filter = ""
+            self.collection_filter = ""
+            for widget, row in ((self.section_list, 0), (self.collection_list, -1)):
+                widget.blockSignals(True)
+                widget.setCurrentRow(row)
+                widget.blockSignals(False)
+            self.update_collection_actions()
+            self.show_columns()
+            self.entity_timer.stop()
+            self.apply_entity_filter()
 
         def import_old(self):
             if not self.docs:
@@ -11184,6 +11551,7 @@ def run_gui(paths):
                 self._size_entity_columns()
             finally:
                 self._sizing = False
+            self.settle_search()                # the scope, and an alias, after the reset
             self.show_inspector(None)
 
         def _size_entity_columns(self) -> None:
@@ -12073,12 +12441,20 @@ def run_gui(paths):
                     lambda slot=slot, edit=edit: self.commit_inspector(slot, edit))
                 edit.textEdited.connect(lambda _text, slot=slot: self.check_field(slot))
                 edit.escaped.connect(lambda slot=slot: self.put_back_field(slot))
+                edit.step.connect(lambda step, slot=slot: self.step_inspector(slot, step))
                 grid.addWidget(proposed, 2, 0)
                 grid.addWidget(edit, 2, 1)
+                # Session 20: the length against its typical guide; a warning only.
+                gauge = QLabel("")
+                gauge.setObjectName("muted")
+                gauge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                edit.textChanged.connect(lambda _text, slot=slot: self.update_gauge(slot))
+                grid.addWidget(gauge, 3, 1)
+                gauge.setHidden(not length_guide(self.family, slot))
                 where = QLabel("")
                 where.setObjectName("muted")
                 where.setWordWrap(True)
-                grid.addWidget(where, 3, 1)
+                grid.addWidget(where, 4, 1)
                 # Session 14: the line as it stands in memory, command and all.
                 raw = QLabel("")
                 raw.setObjectName("raw")
@@ -12086,23 +12462,23 @@ def run_gui(paths):
                 raw.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 raw.setToolTip("The line as it stands in memory, as Save would write it. "
                                "Tabs between the fields are shown as wide spaces.")
-                grid.addWidget(raw, 4, 1)
+                grid.addWidget(raw, 5, 1)
                 problem = QLabel("")
                 problem.setObjectName("warning")
                 problem.setWordWrap(True)
                 problem.hide()
-                grid.addWidget(problem, 5, 0, 1, 2)
+                grid.addWidget(problem, 6, 0, 1, 2)
                 # Session 13: the review hint. Local list of suspicious baselines
                 # such as "Wolverhamption"; shown, never applied.
                 hint = QLabel("")
                 hint.setObjectName("warning")
                 hint.setWordWrap(True)
                 hint.hide()
-                grid.addWidget(hint, 6, 0, 1, 2)
+                grid.addWidget(hint, 7, 0, 1, 2)
                 self.inspector_lay.addWidget(block)
                 self.inspector_edits[slot] = edit
                 self.inspector_fields[slot] = {"marker": marker, "disk": disk, "edit": edit,
-                                               "where": where, "raw": raw,
+                                               "gauge": gauge, "where": where, "raw": raw,
                                                "problem": problem, "hint": hint}
 
             # Illustrative preview card (Session 18)
@@ -12138,7 +12514,7 @@ def run_gui(paths):
                         "Its fields show here: the text on disk, the proposed text, and "
                         "the file and line.")
                     for widgets in self.inspector_fields.values():
-                        for name in ("marker", "disk", "where", "raw"):
+                        for name in ("marker", "disk", "where", "raw", "gauge"):
                             widgets[name].setText("")
                         edit = widgets["edit"]
                         edit.blockSignals(True)
@@ -12186,6 +12562,7 @@ def run_gui(paths):
                         "Type a name to add one" if view.state == "none" else "")
                     edit.blockSignals(False)
                     edit.setEnabled(True)
+                    self.update_gauge(view.slot)
                     widgets["where"].setText(view.where)
                     widgets["raw"].setText(view.raw.replace("\t", "    "))
                     self.show_field_problem(widgets, draft[1] if draft else "")
@@ -12215,6 +12592,7 @@ def run_gui(paths):
                 edit.setText(text)
                 edit.blockSignals(False)
                 self.show_field_problem(widgets, problem)
+                self.update_gauge(slot)
 
         def show_field_problem(self, widgets: dict, problem: str) -> None:
             """Show, or clear, the message under one inspector field."""
@@ -12243,18 +12621,24 @@ def run_gui(paths):
             edit.setText(self.inspector_entity.name_in(slot))
             edit.blockSignals(False)
             self.show_field_problem(widgets, "")
+            self.update_gauge(slot)
 
-        def commit_inspector(self, slot: str, edit) -> None:
+        def commit_inspector(self, slot: str, edit, reload_now: bool = False) -> bool:
             """Use the text typed in an inspector field, as one step Undo can take back.
 
             Text that cannot be a name stays in the field with a message beside
             it, so it can be put right; nothing changes until it can be used.
+            False when the text was refused, True when it was used or left
+            nothing to change (an unchanged field records nothing). A first
+            line for a field reloads the views once the event loop is free, or
+            at once with ``reload_now`` (a keyboard move does that, so it moves
+            on from the reloaded grid).
             """
             if self._filling:
-                return
+                return True
             entity = self.inspector_entity
             if entity is None:
-                return
+                return True
             widgets = self.inspector_fields[slot]
             text = edit.text().strip()
             problem = name_problem(text)
@@ -12262,19 +12646,163 @@ def run_gui(paths):
                 if text or entity.slots.get(slot):      # an empty field left empty is no change
                     self.show_field_problem(
                         widgets, problem + " Press Esc to put back the name in memory.")
-                else:
-                    self.show_field_problem(widgets, "")
-                return
+                    return False
+                self.show_field_problem(widgets, "")
+                return True
             self.show_field_problem(widgets, "")
             was_empty = not entity.slots.get(slot)
             with self.recording(cell_operation(entity, slot, text)):
                 changed = set_entity_field(entity, slot, text, self.docs)
             if not changed:
-                return
+                return True
             if was_empty:
-                QTimer.singleShot(0, self.reload_views)
-                return
+                if reload_now:
+                    self.reload_views()
+                else:
+                    QTimer.singleShot(0, self.reload_views)
+                return True
             self.after_edit()
+            return True
+
+        def update_gauge(self, slot: str) -> None:
+            """The counter under a field: its length against the typical guide (Session 20).
+
+            A warning only; it never blocks, trims, or changes a name.
+            """
+            widgets = self.inspector_fields.get(slot)
+            if widgets is None:
+                return
+            gauge = length_gauge(self.family, slot, widgets["edit"].text())
+            if gauge is None or self.inspector_entity is None:
+                widgets["gauge"].setText("")
+                return
+            text, level, tip = gauge
+            set_level(widgets["gauge"], text, level)
+            widgets["gauge"].setToolTip(tip)
+
+        def entity_row(self, key: tuple) -> int:
+            """The grid row that shows the entity with this key, or -1 when none does."""
+            proxy = self.entity_proxy
+            current = self.entity_view.currentIndex()
+            if current.isValid():
+                source = proxy.mapToSource(current)
+                if (source.isValid()
+                        and entity_key(self.entity_model.rows[source.row()]) == key):
+                    return current.row()
+            for row, entity in enumerate(self.entity_model.rows):
+                if entity_key(entity) == key:
+                    return proxy.mapFromSource(self.entity_model.index(row, 0)).row()
+            return -1
+
+        def next_row(self, key: tuple, row_before: int, step: int) -> int:
+            """The visible row ``step`` away from an entity's row, or -1 past the ends.
+
+            The rows the proxy hides are skipped. When the edit itself hid the
+            entity (a search it no longer matches), the rows below have moved
+            up one, so the next row is where it was.
+            """
+            row = self.entity_row(key)
+            if row >= 0:
+                target = row + step
+            elif row_before >= 0:
+                target = row_before if step > 0 else row_before - 1
+            else:
+                return -1
+            return target if 0 <= target < self.entity_proxy.rowCount() else -1
+
+        def step_inspector(self, slot: str, step: int) -> None:
+            """Alt+Down or Shift+Enter (step 1), Alt+Up (step -1), in an inspector field.
+
+            The field is committed as an ordinary edit (one Undo step, or none
+            when unchanged), then the next or previous visible grid row is
+            selected and the same field takes the focus with its text selected.
+            Refused text stays where it is, with its message, and nothing moves.
+            The first and last rows do not wrap.
+            """
+            edit = self.inspector_edits.get(slot)
+            entity = self.inspector_entity
+            if edit is None or entity is None:
+                return
+            key = entity_key(entity)
+            row_before = self.entity_row(key)
+            if not self.commit_inspector(slot, edit, reload_now=True):
+                return
+            target = self.next_row(key, row_before, step)
+            if target < 0:
+                self.statusBar().showMessage(
+                    "This is the last row shown." if step > 0 else "This is the first row shown.",
+                    5000)
+            else:
+                column = self.entity_model.columns().index(slot)
+                index = self.entity_proxy.index(target, column)
+                self.entity_view.selectionModel().setCurrentIndex(
+                    index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                self.entity_view.scrollTo(index)
+            edit = self.inspector_edits.get(slot)
+            if edit is not None and edit.isEnabled():
+                edit.setFocus()
+                edit.selectAll()
+
+        def grid_edit_origin(self):
+            """The cell being edited in the entity grid: (entity key, slot, row), or None."""
+            index = self.entity_view.currentIndex()
+            if not index.isValid():
+                return None
+            source = self.entity_proxy.mapToSource(index)
+            if not source.isValid():
+                return None
+            entity = self.entity_model.rows[source.row()]
+            return entity_key(entity), self.entity_model.columns()[index.column()], index.row()
+
+        def move_grid_editor(self, origin, how: str) -> None:
+            """After Tab ("next"), Shift+Tab ("previous") or Enter ("down") in a grid cell
+            editor: edit the next name cell on the row, or the cell below (Session 20)."""
+            key, slot, row_before = origin
+            columns = self.entity_model.columns()
+            if key[0] != self.family or slot not in columns:
+                return
+            if how == "down":
+                row, column = self.next_row(key, row_before, 1), columns.index(slot)
+            else:
+                names = [name for name, _label, _cmd in FAMILY_FIELDS[self.family]]
+                if slot not in names:
+                    return
+                at = names.index(slot) + (1 if how == "next" else -1)
+                if not 0 <= at < len(names):
+                    return                      # past the first or last name column
+                row, column = self.entity_row(key), columns.index(names[at])
+            if row < 0:
+                return
+            index = self.entity_proxy.index(row, column)
+            self.entity_view.selectionModel().setCurrentIndex(
+                index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            self.entity_view.scrollTo(index)
+            self.entity_view.setFocus()
+            self.entity_view.edit(index)
+
+        def copy_long_to_short(self) -> None:
+            """Edit > Copy long name to short name (Ctrl+Shift+L), for trimming.
+
+            Only the inspector's Short name field is filled; nothing changes
+            until Enter there, or a keyboard move, uses it.
+            """
+            long_edit = self.inspector_edits.get("long")
+            short_edit = self.inspector_edits.get("short")
+            if self.inspector_entity is None or long_edit is None or short_edit is None:
+                self.statusBar().showMessage(
+                    "Select a row with a long and a short name in the inspector first.", 6000)
+                return
+            if not self.inspector_act.isChecked():
+                self.statusBar().showMessage("Show the inspector (F4) first.", 6000)
+                return
+            self.tabs.setCurrentIndex(0)
+            short_edit.setText(long_edit.text().strip())
+            self.check_field("short")
+            short_edit.setFocus()
+            short_edit.end(False)
+            self.statusBar().showMessage(
+                "Long name copied into Short name. Trim it, then press Enter to use it; "
+                "Esc puts back the name in memory.", 10000)
 
         # ----- going places -----
         def show_changes_tab(self) -> None:
@@ -12366,9 +12894,15 @@ def run_gui(paths):
                 add_menu(menu, menu.title().replace('&', ''))
             rows.extend([
                 ("Double-click", "Edit a cell; on the Changes tab, go to its line"),
-                ("Enter", "Keep what was typed in a cell or an inspector field"),
+                ("Enter", "Keep what was typed in an inspector field; in a grid cell, keep it "
+                          "and edit the cell below"),
                 ("Esc", "Leave a cell unchanged; in the inspector, put back the name in memory"),
-                ("Tab", "Move to the next field"),
+                ("Tab", "Move to the next field; in a grid cell, keep it and edit the next name "
+                        "on the row (Shift+Tab: the one before)"),
+                ("Alt+Down or Shift+Enter", "In an inspector field: keep it, go to the next row "
+                                            "shown, and stay in the same field"),
+                ("Alt+Up", "In an inspector field: keep it, go to the row before, and stay in "
+                           "the same field"),
             ])
             return rows
 

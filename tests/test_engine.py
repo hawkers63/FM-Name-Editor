@@ -2676,8 +2676,10 @@ class Session6Window(unittest.TestCase):
             self.assertEqual([action.text() for action in win.edit_menu.actions()],
                              ["Undo", "Redo", "", "Edit cell",
                               "Add name...",                               # Session 19
-                              "Revert selected", "",
-                              "Find", "Replace...", "Bulk tools...",       # Session 7
+                              "Revert selected",
+                              "Copy long name to short name", "",         # Session 20
+                              "Find", "Search all sections",              # Session 20
+                              "Replace...", "Bulk tools...",              # Session 7
                               "Batch rename selected...", "&Selection", "",
                               "Command palette..."])                      # Session 15
             self.assertFalse(win.undo_act.isEnabled())
@@ -8704,6 +8706,546 @@ class Session19AddName(_Session19Window, unittest.TestCase):
         with mock.patch.object(QMessageBox, "information") as told:
             win.add_name_act.trigger()                       # no files open
         self.assertIn("Open a name file first", told.call_args.args[2])
+
+
+class Session20Engine(unittest.TestCase):
+    """Release 3.6, session 20 (note 09): the search test, club aliases, length guides."""
+
+    TEXT = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Wolverhampton Wanderers"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Tottenham Hotspur"\t""\n'
+        "#Spain\n"
+        '"CLUB_NAME_CHANGE"\t4\t"Barcelona"\t""\n'
+        '"CLUB_NAME_CHANGE"\t5\t"Real Sociedad"\t""\n'
+    )
+
+    def entities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(path, self.TEXT)
+            return editor.build_entities([editor.LncDoc(path)])
+
+    def test_the_grid_test_and_the_elsewhere_count_agree(self):
+        clubs = self.entities()
+        shown = [entity.id for entity in clubs
+                 if editor.entity_shown(entity, ["real"], "England")]
+        self.assertEqual(shown, [])
+        self.assertEqual(editor.count_shown(clubs, ["real"]), 1)
+        self.assertEqual(editor.count_shown(clubs, ["zzz"]), 0)
+        self.assertEqual(editor.count_shown(clubs, [], alias="Tottenham Hotspur"), 1)
+        # An alias reads the names only, not the section or the ID.
+        self.assertEqual(editor.count_shown(clubs, [], alias="England"), 0)
+
+    def test_aliases_ignore_accents_capitals_and_spacing_and_leave_out_vague_words(self):
+        self.assertEqual(editor.alias_for("Spurs"), "Tottenham Hotspur")
+        self.assertEqual(editor.alias_for("BARÇA"), "Barcelona")
+        self.assertEqual(editor.alias_for("barca"), "Barcelona")
+        self.assertEqual(editor.alias_for("  man   UTD "), "Manchester United")
+        for vague in ("City", "United", "Wolverhampton", ""):
+            self.assertEqual(editor.alias_for(vague), "", vague)
+        self.assertEqual(editor.scope_label("#England", 1234), "In: #England (1,234)")
+
+    def test_the_length_guides_live_in_one_place(self):
+        self.assertEqual(editor.NAME_LENGTH_GUIDES, {"long": 28, "short": 14, "code": 3})
+        self.assertEqual(editor.length_guide("club", "long"), 28)
+        self.assertEqual(editor.length_guide("nation", "code"), 3)
+        self.assertEqual(editor.length_guide("award", "short"), 14)
+        for family, slot in (("comp", "code"), ("stadium", "long"), ("city", "long"),
+                             ("award", "name")):
+            self.assertEqual(editor.length_guide(family, slot), 0, (family, slot))
+            self.assertIsNone(editor.length_gauge(family, slot, "Anything"))
+
+    def test_the_gauge_text_and_level_under_near_and_over_each_guide(self):
+        gauge = editor.length_gauge
+        for slot, guide in (("long", 28), ("short", 14)):
+            with self.subTest(slot=slot):
+                self.assertEqual(gauge("club", slot, "A" * (guide - 3))[:2],
+                                 (f"{guide - 3} / {guide}", "muted"))
+                self.assertEqual(gauge("club", slot, "A" * (guide - 2))[:2],
+                                 (f"{guide - 2} / {guide} · near the guide", "warning"))
+                self.assertEqual(gauge("club", slot, "A" * guide)[1], "warning")
+                self.assertEqual(gauge("club", slot, "A" * (guide + 1))[:2],
+                                 (f"{guide + 1} / {guide} · over the guide", "problem"))
+                tip = gauge("club", slot, "A")[2]
+                self.assertIn("typically", tip)
+                self.assertIn("Skins differ", tip)
+        self.assertEqual(gauge("club", "code", "WOL")[:2], ("3 / 3", "muted"))
+        self.assertEqual(gauge("club", "code", "")[:2], ("0 / 3", "muted"))   # absent, not wrong
+        self.assertEqual(gauge("club", "code", "Wol")[:2], ("3 / 3 · lower case", "problem"))
+        self.assertEqual(gauge("club", "code", "WO")[:2], ("2 / 3 · not 3 characters", "problem"))
+        self.assertEqual(gauge("club", "code", "wolv")[:2],
+                         ("4 / 3 · lower case, not 3 characters", "problem"))
+        self.assertIn("typically", gauge("club", "code", "WOL")[2])
+
+    def test_a_name_is_cut_with_an_ellipsis_only_past_its_guide(self):
+        self.assertEqual(editor.cut_to_guide("A" * 28, 28), "A" * 28)
+        cut = editor.cut_to_guide("Wolverhampton Wanderers Football", 28)
+        self.assertEqual(len(cut), 28)
+        self.assertTrue(cut.endswith("…"))
+        self.assertEqual(editor.cut_to_guide("Anything at all", 0), "Anything at all")
+        self.assertEqual(editor.cut_to_guide("WOLV", 3), "WO…")
+
+
+class _Session20Window:
+    """A window on a small club file of the test's own, shown and active for real keys."""
+
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Wolverhampton Wanderers"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t1\t"Wolverhampton"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t1\t"WOL"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Tottenham Hotspur"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t2\t"Tottenham"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Alpha Rovers"\t""\n'
+        "#Spain\n"
+        '"CLUB_NAME_CHANGE"\t4\t"Barcelona"\t""\n'
+        '"CLUB_NAME_CHANGE"\t5\t"Real Sociedad"\t""\n'
+        "#Wales\n"
+        '"CLUB_NAME_CHANGE"\t6\t"Mike Rovers"\t""\n'
+    )
+
+    def window(self, extra: str = ""):
+        from PySide6.QtWidgets import QApplication
+
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.CLUBS + extra)
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.resize(1280, 800)
+        win.show()
+        win.activateWindow()
+        QApplication.processEvents()
+        self.assertTrue(win.load([str(path)]))
+        return win
+
+    @staticmethod
+    def search(win, text: str) -> None:
+        win.entity_search.setText(text)
+        win.entity_timer.stop()
+        win.apply_entity_filter()
+
+    @staticmethod
+    def choose_section(win, section: str) -> None:
+        from PySide6.QtCore import Qt
+
+        for row in range(win.section_list.count()):
+            if win.section_list.item(row).data(Qt.UserRole) == section:
+                win.section_list.setCurrentRow(row)
+                return
+        raise AssertionError(f"no file section {section!r}")
+
+    @staticmethod
+    def shown(win) -> list[str]:
+        proxy = win.entity_proxy
+        return [win.entity_model.rows[proxy.mapToSource(proxy.index(row, 0)).row()].id
+                for row in range(proxy.rowCount())]
+
+    @staticmethod
+    def select(win, ident: str) -> None:
+        win.select_entities_matching(lambda entity: entity.id == ident)
+
+
+class Session20Search(_Session20Window, unittest.TestCase):
+    """Proposal 1: the search box says what it searches, and finds clubs by common aliases."""
+
+    def test_the_scope_label_names_the_section_and_its_count(self):
+        win = self.window()
+        self.assertFalse(win.scope_label.isVisibleTo(win))
+        self.assertFalse(win.search_all_btn.isVisibleTo(win))
+        self.choose_section(win, "England")
+        self.assertTrue(win.scope_label.isVisibleTo(win))
+        self.assertEqual(win.scope_label.text(), "In: England (3)")
+        self.assertEqual(win.search_all_btn.text(), "Search all sections (6)")
+        self.assertIn("Alt+A", win.search_all_btn.toolTip())
+        self.assertEqual(win.search_all_act.shortcut().toString(), "Alt+A")
+
+    def test_search_all_clears_the_filter_and_keeps_the_words(self):
+        win = self.window()
+        self.choose_section(win, "England")
+        self.search(win, "real")
+        self.assertEqual(self.shown(win), [])
+        win.search_all_act.trigger()                    # Alt+A
+        self.assertEqual(win.section_filter, "")
+        self.assertEqual(win.entity_search.text(), "real")
+        self.assertEqual(self.shown(win), ["5"])
+        self.assertFalse(win.scope_label.isVisibleTo(win))
+        self.assertFalse(win.scope_hint.isVisibleTo(win))
+        self.choose_section(win, "Spain")
+        win.search_all_btn.click()                      # the button does the same
+        self.assertEqual((win.section_filter, win.entity_search.text()), ("", "real"))
+
+    def test_the_elsewhere_hint_only_when_the_scope_is_empty_and_other_sections_match(self):
+        win = self.window()
+        self.choose_section(win, "England")
+        self.search(win, "alpha")                       # found in the scope: no hint
+        self.assertEqual(self.shown(win), ["3"])
+        self.assertFalse(win.scope_hint.isVisibleTo(win))
+        self.search(win, "zzz")                         # found nowhere: no hint
+        self.assertFalse(win.scope_hint.isVisibleTo(win))
+        self.search(win, "real")
+        self.assertTrue(win.scope_hint.isVisibleTo(win))
+        self.assertIn("No matches in England. Found 1 in other sections", win.scope_hint.text())
+        self.assertEqual(self.shown(win), [])           # a check, not a wider search
+        win.scope_hint.linkActivated.emit("all")        # the link clears the filter
+        self.assertEqual((win.section_filter, win.entity_search.text()), ("", "real"))
+        self.assertEqual(self.shown(win), ["5"])
+        self.search(win, "")
+        self.choose_section(win, "England")
+        self.assertFalse(win.scope_hint.isVisibleTo(win))
+
+    def test_an_alias_finds_an_open_club_and_says_so(self):
+        win = self.window()
+        self.search(win, "Spurs")
+        self.assertEqual(self.shown(win), ["2"])
+        self.assertTrue(win.scope_hint.isVisibleTo(win))
+        self.assertIn("Matched via alias 'Spurs'", win.scope_hint.text())
+        self.search(win, "BARÇA")                       # accents and capitals ignored
+        self.assertEqual(self.shown(win), ["4"])
+        self.choose_section(win, "Spain")
+        self.search(win, "wolves")                      # the club is in another section
+        self.assertEqual(self.shown(win), [])
+        self.assertIn("No matches in Spain. Found 1 in other sections", win.scope_hint.text())
+        win.search_all_act.trigger()
+        self.assertEqual(self.shown(win), ["1"])
+        self.assertIn("Matched via alias 'wolves'", win.scope_hint.text())
+
+    def test_after_an_edit_the_words_typed_come_before_the_alias(self):
+        win = self.window()
+        self.search(win, "spurs")
+        self.select(win, "2")
+        self.assertIn("Matched via alias", win.scope_hint.text())
+        edit = win.inspector_fields["short"]["edit"]
+        edit.setText("Spurs")
+        win.commit_inspector("short", edit)
+        self.assertEqual(self.shown(win), ["2"])          # found by the words now
+        self.assertEqual(win.entity_proxy.alias, "")
+        self.assertFalse(win.scope_hint.isVisibleTo(win))
+
+    def test_an_alias_for_a_club_that_is_not_open_finds_nothing(self):
+        win = self.window()
+        for alias in ("Juve", "PSG", "City"):
+            with self.subTest(alias=alias):
+                self.search(win, alias)
+                self.assertEqual(self.shown(win), [])
+                self.assertFalse(win.scope_hint.isVisibleTo(win))
+
+    def test_a_literal_match_beats_an_alias(self):
+        win = self.window('"CLUB_NAME_CHANGE"\t7\t"Wolves Academy"\t""\n')
+        self.search(win, "wolves")
+        self.assertEqual(self.shown(win), ["7"])
+        self.assertFalse(win.scope_hint.isVisibleTo(win))
+        self.search(win, "")
+        self.assertEqual(len(self.shown(win)), 7)
+
+
+@unittest.skipUnless(LIVE_DIR.is_dir(), "the FM27 name files are not on this PC")
+class Session20Speed(unittest.TestCase):
+    """Proposal 1 keeps the one-second rule: a keystroke at 4,297 clubs, on copies of the live files."""
+
+    def test_a_search_keystroke_with_scope_alias_and_elsewhere_checks(self):
+        import time
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name in editor.NAME_FILES:
+                copy = Path(tmp) / name
+                copy.write_bytes((LIVE_DIR / name).read_bytes())
+                paths.append(str(copy))
+            win.show()
+            self.assertTrue(win.load(paths))
+            self.assertEqual(win.entity_model.rowCount(), 4297)
+            section = next(entity.section for entity in win.entity_model.rows
+                           if entity.section)
+            _Session20Window.choose_section(win, section)
+            timings = {}
+            for text in ("w", "wo", "spurs", "zzzz", "real", ""):
+                start = time.perf_counter()
+                _Session20Window.search(win, text)
+                QApplication.processEvents()
+                timings[text] = round(time.perf_counter() - start, 3)
+            self.assertLess(max(timings.values()), 1.0, timings)
+
+
+class Session20Gauges(_Session20Window, unittest.TestCase):
+    """Proposal 2: counters under the inspector fields, and the cut preview."""
+
+    def test_the_counters_show_text_and_colour_under_near_and_over(self):
+        win = self.window()
+        self.select(win, "1")
+        fields = win.inspector_fields
+        long, short, code = fields["long"], fields["short"], fields["code"]
+        self.assertEqual(long["gauge"].text(), "23 / 28")
+        self.assertEqual(long["gauge"].objectName(), "muted")
+        self.assertIn("typically", long["gauge"].toolTip())
+        self.assertIn("Skins differ", long["gauge"].toolTip())
+        long["edit"].setText("A" * 27)                   # typing updates the counter
+        self.assertEqual((long["gauge"].text(), long["gauge"].objectName()),
+                         ("27 / 28 · near the guide", "warning"))
+        long["edit"].setText("A" * 30)
+        self.assertEqual((long["gauge"].text(), long["gauge"].objectName()),
+                         ("30 / 28 · over the guide", "problem"))
+        self.assertEqual((short["gauge"].text(), short["gauge"].objectName()),
+                         ("13 / 14 · near the guide", "warning"))
+        short["edit"].setText("Wolverhampton W")
+        self.assertEqual(short["gauge"].objectName(), "problem")
+        short["edit"].setText("Wolves")
+        self.assertEqual((short["gauge"].text(), short["gauge"].objectName()),
+                         ("6 / 14", "muted"))
+        self.assertEqual((code["gauge"].text(), code["gauge"].objectName()), ("3 / 3", "muted"))
+        code["edit"].setText("wol")
+        self.assertEqual((code["gauge"].text(), code["gauge"].objectName()),
+                         ("3 / 3 · lower case", "problem"))
+        code["edit"].setText("WO")
+        self.assertIn("not 3 characters", code["gauge"].text())
+        self.assertIn("problem", editor.THEME)
+        self.assertIn("QLabel#problem { color: $problem;", editor.THEME_QSS)
+
+    def test_typing_past_the_guide_is_allowed_and_recorded_unchanged(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        win = self.window()
+        self.select(win, "1")
+        edit = win.inspector_fields["long"]["edit"]
+        long_name = "Wolverhampton Wanderers Football Club"      # 37 characters
+        steps = win.undo_stack.count()
+        edit.setFocus()
+        edit.selectAll()
+        QTest.keyClicks(edit, long_name)
+        QTest.keyClick(edit, Qt.Key_Return)
+        self.assertEqual(win.inspector_entity.name_in("long"), long_name)
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        self.assertEqual(edit.text(), long_name)
+        self.assertEqual(win.inspector_fields["long"]["gauge"].objectName(), "problem")
+
+    def test_the_preview_cuts_a_name_only_past_its_guide(self):
+        win = self.window()
+        card = win.illustrative_card
+        self.select(win, "1")
+        self.assertEqual(card.table_long.text(), "Wolverhampton Wanderers")
+        self.assertTrue(card.cut_note.isHidden())
+        win.inspector_fields["long"]["edit"].setText("A" * 28)
+        win.commit_inspector("long", win.inspector_fields["long"]["edit"])
+        self.assertEqual(card.table_long.text(), "A" * 28)          # at the guide: whole
+        self.assertTrue(card.cut_note.isHidden())
+        win.inspector_fields["long"]["edit"].setText("B" * 30)
+        win.commit_inspector("long", win.inspector_fields["long"]["edit"])
+        self.assertEqual(win.inspector_entity.name_in("long"), "B" * 30)   # stored whole
+        self.assertEqual(card.table_long.text(), "B" * 27 + "…")
+        self.assertEqual(card.scoreboard_name.text(), "B" * 27 + "…")
+        self.assertEqual(card.table_long.toolTip(), "B" * 30)
+        self.assertFalse(card.cut_note.isHidden())
+        self.assertIn("Illustrative", card.title_label.text())
+        self.assertIn("typical", card.cut_note.text())
+        self.select(win, "2")
+        self.assertEqual(card.table_long.text(), "Tottenham Hotspur")
+        self.assertTrue(card.cut_note.isHidden())
+
+    def test_a_field_without_a_guide_has_no_counter(self):
+        win = self.window()
+        win.family = "stadium"
+        win.apply_family()
+        for widgets in win.inspector_fields.values():
+            self.assertTrue(widgets["gauge"].isHidden())
+
+
+class Session20Cadence(_Session20Window, unittest.TestCase):
+    """Proposal 6: keyboard moves in the inspector and in the grid's cell editor."""
+
+    def field(self, win, slot: str):
+        from PySide6.QtWidgets import QApplication
+
+        edit = win.inspector_fields[slot]["edit"]
+        edit.setFocus()
+        QApplication.processEvents()
+        return edit
+
+    def press(self, widget, key, modifiers=None):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        QTest.keyClick(widget, key, modifiers if modifiers is not None else Qt.NoModifier)
+        QApplication.processEvents()
+
+    def test_alt_down_and_shift_enter_commit_move_down_and_keep_the_field(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.choose_section(win, "England")             # sorted by long name: 3, 2, 1
+        self.assertEqual(self.shown(win), ["3", "2", "1"])
+        self.select(win, "3")
+        edit = self.field(win, "short")
+        edit.setText("Alpha")                            # a field with no line: adds one
+        self.press(edit, Qt.Key_Down, Qt.AltModifier)
+        names = {entity.id: entity for entity in win.all_entities}
+        self.assertEqual(names["3"].name_in("short"), "Alpha")
+        self.assertEqual(win.inspector_entity.id, "2")
+        edit = win.inspector_fields["short"]["edit"]
+        self.assertIs(QApplication.focusWidget(), edit)
+        self.assertEqual(edit.selectedText(), "Tottenham")
+        edit.setText("Spurs")
+        self.press(edit, Qt.Key_Return, Qt.ShiftModifier)
+        self.assertEqual(win.inspector_entity.id, "1")
+        self.assertEqual({e.id: e for e in win.all_entities}["2"].name_in("short"), "Spurs")
+        self.assertIs(QApplication.focusWidget(), win.inspector_fields["short"]["edit"])
+        self.assertEqual(win.inspector_fields["short"]["edit"].selectedText(), "Wolverhampton")
+
+    def test_alt_up_moves_up_and_the_ends_do_not_wrap(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.choose_section(win, "England")
+        self.select(win, "1")                            # the last row shown
+        edit = self.field(win, "long")
+        self.press(edit, Qt.Key_Down, Qt.AltModifier)
+        self.assertEqual(win.inspector_entity.id, "1")
+        self.assertIn("last row", win.statusBar().currentMessage())
+        self.assertIs(QApplication.focusWidget(), edit)
+        self.press(edit, Qt.Key_Up, Qt.AltModifier)
+        self.assertEqual(win.inspector_entity.id, "2")
+        self.press(win.inspector_fields["long"]["edit"], Qt.Key_Up, Qt.AltModifier)
+        self.assertEqual(win.inspector_entity.id, "3")
+        self.press(win.inspector_fields["long"]["edit"], Qt.Key_Up, Qt.AltModifier)
+        self.assertEqual(win.inspector_entity.id, "3")   # the first row: stays
+        self.assertIn("first row", win.statusBar().currentMessage())
+
+    def test_hidden_rows_are_skipped(self):
+        from PySide6.QtCore import Qt
+
+        win = self.window()
+        self.assertEqual(self.shown(win), ["3", "4", "6", "5", "2", "1"])
+        self.search(win, "rovers")                       # Alpha Rovers and Mike Rovers only
+        self.select(win, "3")
+        self.press(self.field(win, "long"), Qt.Key_Down, Qt.AltModifier)
+        self.assertEqual(win.inspector_entity.id, "6")
+
+    def test_one_undo_step_per_changed_commit_and_none_for_an_unchanged_one(self):
+        from PySide6.QtCore import Qt
+
+        win = self.window()
+        self.choose_section(win, "England")
+        self.select(win, "3")
+        steps = win.undo_stack.count()
+        self.press(self.field(win, "long"), Qt.Key_Down, Qt.AltModifier)    # unchanged
+        self.assertEqual(win.undo_stack.count(), steps)
+        self.assertEqual(win.inspector_entity.id, "2")
+        edit = win.inspector_fields["long"]["edit"]
+        edit.setText("Tottenham Hotspur FC")
+        self.press(edit, Qt.Key_Down, Qt.AltModifier)
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        edit = win.inspector_fields["long"]["edit"]
+        edit.setText("Wolves FC")
+        self.press(edit, Qt.Key_Up, Qt.AltModifier)
+        self.assertEqual(win.undo_stack.count(), steps + 2)
+        win.undo_act.trigger()
+        names = {entity.id: entity for entity in win.all_entities}
+        self.assertEqual(names["1"].name_in("long"), "Wolverhampton Wanderers")
+        self.assertEqual(names["2"].name_in("long"), "Tottenham Hotspur FC")
+
+    def test_refused_text_stays_and_does_not_move(self):
+        from PySide6.QtCore import Qt
+
+        win = self.window()
+        self.select(win, "2")
+        edit = self.field(win, "long")
+        edit.setText('Bad "quote')
+        self.press(edit, Qt.Key_Down, Qt.AltModifier)
+        self.assertEqual(win.inspector_entity.id, "2")
+        self.assertEqual(edit.text(), 'Bad "quote')
+        self.assertTrue(win.inspector_fields["long"]["problem"].isVisibleTo(win))
+
+    def test_copy_long_to_short_fills_the_field_without_committing(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.select(win, "2")
+        steps = win.undo_stack.count()
+        self.assertEqual(win.copy_long_act.shortcut().toString(), "Ctrl+Shift+L")
+        win.copy_long_act.trigger()
+        short = win.inspector_fields["short"]["edit"]
+        self.assertEqual(short.text(), "Tottenham Hotspur")
+        self.assertIs(QApplication.focusWidget(), short)
+        self.assertEqual(win.inspector_entity.name_in("short"), "Tottenham")   # not committed
+        self.assertEqual(win.undo_stack.count(), steps)
+        self.assertEqual(win.inspector_fields["short"]["gauge"].objectName(), "problem")
+        short.setText("Spurs")
+        self.press(short, Qt.Key_Return)                 # the user commits
+        self.assertEqual(win.inspector_entity.name_in("short"), "Spurs")
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        commands = win.palette_commands()
+        self.assertTrue(any(row[0] == "Edit > Copy long name to short name"
+                            and row[1] == "Ctrl+Shift+L" for row in commands))
+        self.assertEqual(win.deploy_act.shortcut().toString(), "Ctrl+Shift+D")
+        taken = [key.toString() for action in win.findChildren(QAction)
+                 for key in action.shortcuts()]
+        self.assertEqual(len(taken), len(set(taken)), taken)
+        rows = win.shortcut_rows()
+        for row in (("Ctrl+Shift+L", "Edit > Copy long name to short name"),
+                    ("Alt+A", "Edit > Search all sections"),
+                    ("Ctrl+Shift+D", "File > Deploy to FM27...")):
+            self.assertIn(row, rows)
+        self.assertTrue(any(keys.startswith("Alt+Down") for keys, _what in rows))
+
+    def test_tab_moves_along_the_row_in_the_grid_editor(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QAbstractItemView, QApplication
+
+        win = self.window()
+        view, columns = win.entity_view, win.entity_model.columns()
+        self.select(win, "1")
+        win.edit_cell_act.trigger()                      # F2: the long name
+        self.assertEqual(view.state(), QAbstractItemView.EditingState)
+        editor_box = QApplication.focusWidget()
+        editor_box.selectAll()
+        QTest.keyClicks(editor_box, "Wolves FC")
+        self.press(editor_box, Qt.Key_Tab)
+        names = {entity.id: entity for entity in win.entity_model.rows}
+        self.assertEqual(names["1"].name_in("long"), "Wolves FC")
+        self.assertEqual(view.currentIndex().column(), columns.index("short"))
+        self.assertEqual(view.state(), QAbstractItemView.EditingState)
+        self.press(QApplication.focusWidget(), Qt.Key_Tab)
+        self.assertEqual(view.currentIndex().column(), columns.index("code"))
+        self.assertEqual(view.state(), QAbstractItemView.EditingState)
+        self.press(QApplication.focusWidget(), Qt.Key_Tab)  # the last name column: stops
+        self.assertEqual(view.currentIndex().column(), columns.index("code"))
+        self.assertNotEqual(view.state(), QAbstractItemView.EditingState)
+        self.assertEqual(win.undo_stack.count(), 1)      # the unchanged cells recorded nothing
+
+    def test_enter_moves_down_the_column_in_the_grid_editor(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QAbstractItemView, QApplication
+
+        win = self.window()
+        view, columns = win.entity_view, win.entity_model.columns()
+        self.choose_section(win, "England")
+        self.select(win, "2")
+        win.edit_cell_act.trigger()
+        editor_box = QApplication.focusWidget()
+        editor_box.selectAll()
+        QTest.keyClicks(editor_box, "Spurs FC")
+        self.press(editor_box, Qt.Key_Return)
+        self.assertEqual({e.id: e for e in win.entity_model.rows}["2"].name_in("long"),
+                         "Spurs FC")
+        self.assertEqual(view.state(), QAbstractItemView.EditingState)
+        self.assertEqual(view.currentIndex().column(), columns.index("long"))
+        self.assertEqual(win.inspector_entity.id, "1")
+        self.press(QApplication.focusWidget(), Qt.Key_Return)  # the last row: stops
+        self.assertNotEqual(view.state(), QAbstractItemView.EditingState)
+        self.assertEqual(win.inspector_entity.id, "1")
+        self.assertEqual(win.undo_stack.count(), 1)
 
 
 if __name__ == "__main__":

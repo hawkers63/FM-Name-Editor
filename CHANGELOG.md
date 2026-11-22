@@ -8,6 +8,18 @@ The program on disk reports `VERSION = "3.5"`. The launcher banner says v3.5.
 
 ## Unreleased
 
+Session 20 — search scope and aliases, name-length guides, and keyboard moves (Release 3.6, note 09 proposals 1, 2 and 6):
+
+- **The search box says what it searches.** While a file section or a collection narrows the entity grid, a label beside the search box names it with its count, for example "In: England (42)", and a "Search all sections (N)" button shows every section again, keeping the words typed. Edit > Search all sections does the same, on Alt+A.
+- **"Found elsewhere" is a check, not a wider search.** When the words find nothing in the section but do find rows in other sections, a line under the search box reads "No matches in England. Found N in other sections" (or "outside this collection"); clicking it, or Alt+A, clears the section and keeps the words.
+- **A few club aliases.** When the words typed find nothing, a small built-in table is tried: Wolves, Spurs, Man Utd, Man City, Barca or Barça, Inter, PSG, BVB and Juve. It lists only clubs in the open files, says "Matched via alias '…'", and ignores accents and capitals. A literal match always wins; vague words such as City and United are not aliases. No network, no game database.
+- **Name-length counters in the inspector.** Under Long name, Short name and 3-letter code, a counter such as "24 / 28" measures the text against typical guides kept in one place (`NAME_LENGTH_GUIDES`: long 28, short 14, code 3). It is grey within the guide, amber within two of it and red past it, each with words beside the colour; a code is also flagged for lower case or a length other than 3. The tooltip says skins differ. Warnings only: nothing is blocked, trimmed or changed.
+- **The Illustrative card shows a cut name.** A name past its guide is shown in the card cut with an ellipsis, with a note that skins differ and the name is kept whole. It stays labelled Illustrative and claims nothing exact.
+- **Keyboard moves in the inspector.** Alt+Down or Shift+Enter keeps the field, moves to the next row shown and puts you back in the same field with its text selected; Alt+Up does the same for the row before. Hidden rows are skipped, the ends do not wrap, refused text stays put, and each changed field is one Undo step (an unchanged one records nothing).
+- **Copy long name to short name.** Edit > Copy long name to short name (Ctrl+Shift+L, also in the command palette) fills the inspector's Short name field for trimming and commits nothing until Enter. Deploy keeps Ctrl+Shift+D.
+- **Tab and Enter in the grid's cell editor.** In a cell opened with F2, Tab keeps it and opens the next name on the row (Shift+Tab the one before), and Enter keeps it and opens the cell below, through the usual cell edit, so each changed cell is one Undo step.
+- **Verification.** New `Session20Engine` (5), `Session20Search` (7), `Session20Speed` (1, on copies of the live files), `Session20Gauges` (4) and `Session20Cadence` (8). The Edit menu test in `Session6Window` lists the two new entries.
+
 ## 3.5 (22 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.5 adds file pickers that start in a useful folder, up to three favourite folders, the ID column on the entity grid, and Edit > Add name for an ID the open files do not mention. Session 19 closes 3.5.
