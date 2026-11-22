@@ -327,7 +327,12 @@ USER_GUIDE = (
     ("Open the name files",
      "Quick load opens the two FM27 name files (FM27_Club_Names.lnc and FM27_Fix.lnc) "
      "from the database folder chosen at the top. File > Open files opens any .lnc "
-     "files. Opening runs in the background; the window stays usable."),
+     "files. Its file picker starts in the folder you last opened from, or else in "
+     "lnc\\all of the selected database. File > Name files in the selected database "
+     "opens the picker in that lnc\\all, and File > Favourite folders keeps up to three "
+     "more folders, such as a Steam library on another drive, which the File menu then "
+     "lists. Import older edits and the name packs start in the same folder. Opening "
+     "runs in the background; the window stays usable."),
     ("Find and edit names",
      "The Entities tab shows one row per club, competition, stadium, city, nation, or "
      "award, with its long name, short name, and code side by side. Choose a family with "
@@ -336,8 +341,21 @@ USER_GUIDE = (
      "inspector on the right (F4 shows or hides it) shows the text on disk above the "
      "proposed text for the selected row, the line as it stands in the file, and an "
      "Illustrative card with table-row, scoreboard and ticker previews of the long, "
-     "short and code spellings. All lines lists every name line and person rule; "
-     "Changes lists every difference from the files on disk."),
+     "short and code spellings. The grid shows each row's ID, by which a row is "
+     "matched across versions; View > Show ID column hides or shows it, and a click on "
+     "its heading sorts by number. The sorted column's heading is bold. All lines lists "
+     "every name line and person rule; Changes lists every difference from the files "
+     "on disk."),
+    ("Add a name for an ID",
+     "The name files hold spelling overrides, not every club in the game, so a club "
+     "that keeps the game's own name has no line to find. Edit > Add name adds lines "
+     "for an ID the game already uses: choose the family, type the ID and the long name, "
+     "and optionally the short name, the code, and a language (blank means English). "
+     "It does not create a club, and the editor does not look IDs up, so check the ID "
+     "against this version of the game. When the open files already have that ID, "
+     "nothing is added and its row is selected instead. The lines go at the end of the "
+     "file under #Imported by FM Name Editor, one Undo takes them all back, and nothing "
+     "is written until Save or Deploy."),
     ("Tools change memory only",
      "Bulk tools, Replace, Import older edits, name packs, profile Apply and Migrate, "
      "and restoring a backup change the open files in memory and mark them unsaved. "
@@ -1931,15 +1949,19 @@ def _sorted_by_text(rows, text_of, key: str, descending: bool) -> list:
     """Sort rows by one column. IDs go by number; text ignores accents and capitals.
 
     Rows with nothing in a text column go last in either direction, so a
-    sort by short name does not open on a page of empty cells. Ties keep
-    the order the rows came in. An empty ``key`` keeps that order too.
+    sort by short name does not open on a page of empty cells. So do rows
+    whose ID is empty or not a number when the IDs are sorted (Session
+    19). Ties keep the order the rows came in. An empty ``key`` keeps that
+    order too.
     """
     rows = list(rows)
     if not key:
         return rows
     if key == "id":
-        rows.sort(key=lambda row: _id_number(text_of(row, "id")), reverse=descending)
-        return rows
+        numbered = [(_id_number(text_of(row, "id")), row) for row in rows]
+        known = [pair for pair in numbered if pair[0] >= 0]
+        known.sort(key=lambda pair: pair[0], reverse=descending)
+        return [row for _number, row in known] + [row for number, row in numbered if number < 0]
     keyed = [(fold(text_of(row, key)), row) for row in rows]
     filled = [pair for pair in keyed if pair[0]]
     filled.sort(key=lambda pair: pair[0], reverse=descending)
@@ -2031,6 +2053,76 @@ def set_entity_field(entity: NameEntity, slot: str, new: str, docs,
         return False
     entity.slots.setdefault(slot, []).append(created)
     return True
+
+
+# ---- Edit > Add name: lines for an ID the open files do not mention (Session 19) ----
+
+def find_entity(entities, family: str, id_: str):
+    """The first entity of ``family`` with this database ID, in any language, or None.
+
+    IDs compare by number, so 0740 finds 740: the game reads both as one
+    record. An ID that is not digits finds nothing.
+    """
+    number = _id_number(id_)
+    if number < 0:
+        return None
+    return next((entity for entity in entities
+                 if entity.family == family and _id_number(entity.id) == number), None)
+
+
+def add_name_problem(family: str, id_: str, names: dict, lang: str) -> str:
+    """Why Edit > Add name cannot add these lines, in one sentence; "" when it can.
+
+    ``names`` maps the family's field keys (see FAMILY_FIELDS) to the text
+    typed. The ID is digits only. The family's first field (a club's long
+    name) must be filled; the others are optional. Every name, and the
+    language, must fit one quoted field. A blank language is English.
+    """
+    if family not in FAMILY_FIELDS:
+        return "Choose what the name is for: a club, a competition, and so on."
+    id_ = id_.strip()
+    if not id_:
+        return "Type the ID the game already uses for it. The editor does not look IDs up."
+    if not id_is_legal(id_):
+        return "An ID is digits only, such as 740."
+    fields = FAMILY_FIELDS[family]
+    first_slot, first_label, _cmd = fields[0]
+    if not names.get(first_slot, "").strip():
+        kind = ENTITY_KINDS[family].lower()
+        article = "An" if kind[:1] in "aeiou" else "A"
+        return f"{article} {kind} needs a {first_label.lower()}."
+    for slot, label, _cmd in fields:
+        text = names.get(slot, "").strip()
+        problem = name_problem(text) if text else ""
+        if problem:
+            return f"{label}: {problem}"
+    if not field_is_legal(lang.strip()):
+        return 'A language cannot contain a double quote (") or a line break.'
+    return ""
+
+
+def add_entity_lines(docs, family: str, id_: str, names: dict, lang: str,
+                     reason: str = "manual") -> list:
+    """Add the name lines of an ID the open files do not mention yet, in memory.
+
+    Every line goes at the end of one file, the one pick_doc_for chooses
+    for the family's first command, under "#Imported by FM Name Editor"
+    (LncDoc.append_entry), in the family's field order. An empty field
+    adds no line. The ID is written without leading zeros. Check
+    add_name_problem and find_entity first. Nothing is written to disk.
+
+    Raises:
+        ValueError: a field is not legal. Nothing is added then.
+    """
+    fields = FAMILY_FIELDS[family]
+    number = str(int(id_.strip()))
+    lang = lang.strip()
+    lines = [(cmd, names.get(slot, "").strip()) for slot, _label, cmd in fields]
+    lines = [(cmd, text) for cmd, text in lines if text]
+    for cmd, text in lines:
+        build_name_line(cmd, number, text, lang)    # every line is checked before one is added
+    doc = pick_doc_for(fields[0][2], docs)
+    return [doc.append_entry(cmd, number, text, lang, reason) for cmd, text in lines]
 
 
 def strip_affix(name: str, affixes=AFFIXES) -> str:
@@ -5427,7 +5519,8 @@ def clean_view(raw) -> dict:
 
     Keys: "tab", "family", "status", "entity_sort" and "line_sort" (key and
     descending), "entity_widths" (per family, per column key), "line_widths",
-    "inspector" (shown or hidden), and "geometry", "window_state", and "splitter" (base64 text from Qt). A
+    "inspector" and "id_column" (shown or hidden; the entity grid's ID column
+    since Session 19), and "geometry", "window_state", and "splitter" (base64 text from Qt). A
     value of the wrong type or out of range is dropped, so an older or
     hand-edited settings file cannot stop the window opening. Each type is
     checked before the value is looked up: a list or an object cannot be.
@@ -5457,14 +5550,124 @@ def clean_view(raw) -> dict:
     line_widths = _clean_widths(raw.get("line_widths"), LINE_COLUMNS)
     if line_widths:
         view["line_widths"] = line_widths
-    inspector = raw.get("inspector")
-    if isinstance(inspector, bool):
-        view["inspector"] = inspector
+    for name in ("inspector", "id_column"):
+        shown = raw.get(name)
+        if isinstance(shown, bool):
+            view[name] = shown
     for name in ("geometry", "window_state", "splitter"):
         text = raw.get(name)
         if isinstance(text, str) and text.isascii() and 0 < len(text) < 20000:
             view[name] = text
     return view
+
+
+# ---- where the file pickers open, and three favourite folders (Session 19) ----
+
+MAX_FAVOURITES = 3
+
+
+def _folder_key(folder: str) -> str:
+    return os.path.normcase(os.path.normpath(folder))
+
+
+def _usable_folder(text) -> str:
+    """``text`` as a folder path in Windows form, or "" when it is not an existing folder.
+
+    Only text that names a whole path (a drive or share, then folders) and
+    is a folder now counts; anything else from a hand-edited settings file
+    is ignored rather than guessed at.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    folder = os.path.normpath(text.strip())
+    try:
+        return folder if Path(folder).is_absolute() and Path(folder).is_dir() else ""
+    except (OSError, ValueError):
+        return ""
+
+
+def clean_folders(raw, limit: int = MAX_FAVOURITES) -> list[str]:
+    """The favourite folders from the settings file that can be used, in their order.
+
+    An entry that is not text, is empty, is not a folder, or repeats one
+    already kept is dropped; at most ``limit`` are kept. A bad entry never
+    stops the window opening, and the file is only rewritten when the
+    favourites are changed in File > Favourite folders.
+    """
+    found: list[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        folder = _usable_folder(item)
+        if folder and _folder_key(folder) not in {_folder_key(kept) for kept in found}:
+            found.append(folder)
+            if len(found) >= limit:
+                break
+    return found
+
+
+def add_favourite(favourites: list[str], folder: str) -> tuple[list[str], str]:
+    """The favourites with ``folder`` added at the end, and "" when it was added.
+
+    Otherwise the list comes back as it was, with why not: there are
+    already three (a fourth is refused), the folder is not there, or it is
+    a favourite already.
+    """
+    favourites = list(favourites)
+    if len(favourites) >= MAX_FAVOURITES:
+        return favourites, ("You can keep up to three favourite folders. "
+                            "Remove one first.")
+    usable = _usable_folder(folder)
+    if not usable:
+        return favourites, f"{folder or 'That'} is not a folder that can be opened."
+    if _folder_key(usable) in {_folder_key(kept) for kept in favourites}:
+        return favourites, f"{usable} is already a favourite."
+    return [*favourites, usable], ""
+
+
+def names_folder(version) -> Path | None:
+    """lnc\\all of a database folder: where Quick load reads the name files. None without one."""
+    return Path(version) / "lnc" / "all" if version else None
+
+
+def picker_folder(remembered, version) -> tuple[str, str]:
+    """Where a file picker opens, and what to say when the database's folder is missing.
+
+    The last folder File > Open used comes first, then lnc\\all of the
+    selected database (``version``, the folder Quick load uses). With
+    neither, the picker opens in the user's own folder and the sentence
+    names the folder that was looked for: no other drive is guessed.
+    """
+    folder = _usable_folder(remembered)
+    if folder:
+        return folder, ""
+    names = names_folder(version)
+    if names is not None and names.is_dir():
+        return str(names), ""
+    looked = names if names is not None else GAME_DB_ROOT
+    home = str(Path.home())
+    return home, (f"No name files folder was found for the selected database (looked for "
+                  f"{looked}), so the file picker opens in {home}. A Steam library on "
+                  "another drive can be added under File > Favourite folders.")
+
+
+def inside_folder(path, folder) -> bool:
+    """True when ``path`` is ``folder`` or lies anywhere under it (letter case ignored)."""
+    try:
+        target = os.path.normcase(os.path.abspath(path))
+        root = os.path.normcase(os.path.abspath(folder))
+        return os.path.commonpath([target, root]) == root
+    except ValueError:                  # another drive
+        return False
+
+
+def in_game_tree(path) -> bool:
+    """True for a path in the game's database folder or anywhere in a Steam library.
+
+    The file pickers may open in lnc\\all (Session 19), but a name pack is
+    never saved there: only Save and Deploy write into the game's folders,
+    after a backup.
+    """
+    parts = {part.casefold() for part in Path(os.path.abspath(path)).parts}
+    return inside_folder(path, GAME_DB_ROOT) or "steamapps" in parts
 
 
 def list_archives(archive_root: Path) -> list[Path]:
@@ -5622,10 +5825,11 @@ JOBS_INLINE = False
 def run_gui(paths):
     from PySide6.QtCore import (QAbstractTableModel, QByteArray, QEventLoop,
                                 QItemSelection, QItemSelectionModel, QModelIndex, QObject, QPointF, QRectF,
-                                QSize, QSortFilterProxyModel, Qt, QTimer, Signal, QPropertyAnimation,
-                                QEasingCurve, QParallelAnimationGroup)
+                                QRegularExpression, QSize, QSortFilterProxyModel, Qt, QTimer, Signal,
+                                QPropertyAnimation, QEasingCurve, QParallelAnimationGroup)
     from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence,
-                               QPainter, QPen, QUndoCommand, QUndoStack)
+                               QPainter, QPen, QRegularExpressionValidator, QUndoCommand,
+                               QUndoStack)
     from PySide6.QtWidgets import (
         QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
         QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
@@ -6205,6 +6409,8 @@ def run_gui(paths):
                 return FILE_SECTION_HINT
             if role == Qt.InitialSortOrderRole:
                 return Qt.AscendingOrder        # the first click on a header sorts A to Z
+            if role == FONT and section == self.sort_column():
+                return self.bold                # the sorted heading, beside its small arrow
             return None
 
         def flags(self, index):
@@ -6381,6 +6587,8 @@ def run_gui(paths):
             self.old_paths, self.base_paths = [], []
             self.result_counts = None
             self.jobs = getattr(parent, "jobs", None)
+            # Where the pickers open: File > Open's folder rule (Session 19), never "".
+            self.start_folder = getattr(parent, "start_folder", lambda: str(Path.home()))
             lay = QVBoxLayout(self)
 
             self.old_label = QLabel("No files chosen")
@@ -6454,14 +6662,16 @@ def run_gui(paths):
             return self.tabs.currentWidget().model()
 
         def pick_old(self):
-            paths, _ = QFileDialog.getOpenFileNames(self, "Your edited older files", "", FILTER)
+            paths, _ = QFileDialog.getOpenFileNames(
+                self, "Your edited older files", self.start_folder(), FILTER)
             if paths:
                 self.old_paths = paths
                 self.old_label.setText(", ".join(Path(p).name for p in paths))
                 self.compare_btn.setEnabled(True)
 
         def pick_base(self):
-            paths, _ = QFileDialog.getOpenFileNames(self, "Unedited originals", "", FILTER)
+            paths, _ = QFileDialog.getOpenFileNames(
+                self, "Unedited originals", self.start_folder(), FILTER)
             self.base_paths = paths
             self.base_label.setText(", ".join(Path(p).name for p in paths) or "None (optional)")
 
@@ -6562,7 +6772,10 @@ def run_gui(paths):
         The column list is worked out once per family, not on every call, and
         the rows are sorted here, in Python (sort_by), by the long name until
         another column header is clicked. The ID and File section columns
-        stay in the model; the window hides them (see MainWindow.show_columns).
+        stay in the model; the window hides File section while one section
+        is chosen, and ID when View > Show ID column is off (see
+        MainWindow.show_columns). The sorted column's heading is bold, since
+        the arrow beside it is small and far from the words (Session 19).
         """
 
         operation_done = Signal(object)     # an edit made here, for the undo stack
@@ -6631,6 +6844,8 @@ def run_gui(paths):
                 return FILE_SECTION_HINT
             if role == Qt.InitialSortOrderRole:
                 return Qt.AscendingOrder        # the first click on a header sorts A to Z
+            if role == FONT and key == self.sort_key:
+                return self.bold                # the sorted heading, beside its small arrow
             return None
 
         def flags(self, index):
@@ -8191,6 +8406,166 @@ def run_gui(paths):
         def values(self) -> tuple[str, str]:
             return self.name_edit.text().strip(), self.note_edit.text().strip()
 
+    class FavouritesDialog(QDialog):
+        """File > Favourite folders: up to three folders the File menu lists (Session 19).
+
+        Picking one in the menu opens the normal Windows file picker there;
+        the folders are only ever read from. ``start`` gives the folder the
+        Add folder picker opens in. A fourth folder is refused with the
+        reason under the list, and the folders already chosen stay.
+        """
+
+        def __init__(self, parent, folders: list[str], start):
+            super().__init__(parent)
+            self.setWindowTitle("Favourite folders")
+            self.start = start
+            lay = QVBoxLayout(self)
+            note = QLabel(
+                "Keep up to three folders here. The File menu lists them, with the name files "
+                "folder of the selected database, which does not count towards the three. "
+                "Picking one opens the Windows file picker in that folder. Opening files never "
+                "writes to them.")
+            note.setWordWrap(True)
+            lay.addWidget(note)
+            self.folder_list = QListWidget()
+            lay.addWidget(self.folder_list, 1)
+            row = QHBoxLayout()
+            self.add_btn = QPushButton("Add folder...")
+            self.add_btn.clicked.connect(lambda _checked=False: self.add_folder())
+            self.remove_btn = QPushButton("Remove")
+            self.remove_btn.clicked.connect(lambda _checked=False: self.remove_selected())
+            row.addWidget(self.add_btn)
+            row.addWidget(self.remove_btn)
+            row.addStretch(1)
+            lay.addLayout(row)
+            self.problem = QLabel("")
+            self.problem.setObjectName("warning")
+            self.problem.setWordWrap(True)
+            lay.addWidget(self.problem)
+            box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            box.accepted.connect(self.accept)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.fill(folders)
+            self.resize(560, 300)
+
+        def fill(self, folders: list[str]) -> None:
+            self.folder_list.clear()
+            self.folder_list.addItems(folders)
+            self.remove_btn.setEnabled(bool(folders))
+
+        def folders(self) -> list[str]:
+            return [self.folder_list.item(row).text() for row in range(self.folder_list.count())]
+
+        def add_folder(self) -> None:
+            """Choose a folder in the Windows folder picker and add it, unless three are kept."""
+            folders = self.folders()
+            chosen = ""                         # with three kept, add_favourite refuses
+            if len(folders) < MAX_FAVOURITES:
+                chosen = QFileDialog.getExistingDirectory(
+                    self, "Add a favourite folder", self.start())
+                if not chosen:
+                    return
+            folders, problem = add_favourite(folders, chosen)
+            self.problem.setText(problem)
+            if not problem:
+                self.fill(folders)
+
+        def remove_selected(self) -> None:
+            row = self.folder_list.currentRow()
+            if row >= 0:
+                folders = self.folders()
+                del folders[row]
+                self.fill(folders)
+                self.problem.setText("")
+
+    class AddNameDialog(QDialog):
+        """Edit > Add name: name lines for an ID the game already uses (Session 19, note 08).
+
+        It does not create a club and does not look IDs up; the ID is typed
+        by the person. The name fields follow the family chosen (a club has
+        a long name, a short name, and a 3-letter code). ``check`` returns
+        why the fields cannot be used, or ""; the problem is shown under the
+        fields and the dialog stays open, so nothing typed is lost.
+        """
+
+        def __init__(self, parent, check, family: str = "club"):
+            super().__init__(parent)
+            self.setWindowTitle("Add name")
+            self.check = check
+            lay = QVBoxLayout(self)
+            note = QLabel(
+                "This adds a name line for an ID the game already uses. It does not create a "
+                "club, and the editor does not look IDs up: a wrong ID renames another record, "
+                "or nothing at all. Use it only when the open files have no line for the ID. "
+                "The lines go at the end of the file, under #Imported by FM Name Editor, and "
+                "nothing is written until you Save or Deploy.")
+            note.setWordWrap(True)
+            lay.addWidget(note)
+            self.form = QFormLayout()
+            self.family_box = QComboBox()
+            for key, kind in ENTITY_KINDS.items():
+                self.family_box.addItem(kind, key)
+            self.id_edit = QLineEdit()
+            self.id_edit.setMaxLength(12)
+            self.id_edit.setValidator(
+                QRegularExpressionValidator(QRegularExpression("[0-9]*"), self.id_edit))
+            self.id_edit.setPlaceholderText("Digits only, such as 740")
+            self.form.addRow("Family", self.family_box)
+            self.form.addRow("ID", self.id_edit)
+            self.name_edits: list[QLineEdit] = []
+            for _row in range(max(len(fields) for fields in FAMILY_FIELDS.values())):
+                edit = QLineEdit()
+                edit.setMaxLength(200)
+                self.name_edits.append(edit)
+                self.form.addRow("Name", edit)
+            self.lang_edit = QLineEdit()
+            self.lang_edit.setMaxLength(40)
+            self.lang_edit.setPlaceholderText("Blank means English")
+            self.form.addRow("Language", self.lang_edit)
+            lay.addLayout(self.form)
+            self.problem = QLabel("")
+            self.problem.setObjectName("warning")
+            self.problem.setWordWrap(True)
+            lay.addWidget(self.problem)
+            box = QDialogButtonBox(QDialogButtonBox.Cancel)
+            self.add_btn = box.addButton("Add", QDialogButtonBox.AcceptRole)
+            box.accepted.connect(self.try_accept)
+            box.rejected.connect(self.reject)
+            lay.addWidget(box)
+            self.family_box.currentIndexChanged.connect(lambda _index: self.show_fields())
+            self.family_box.setCurrentIndex(max(0, self.family_box.findData(family)))
+            self.show_fields()
+            self.resize(520, self.sizeHint().height())
+
+        def family(self) -> str:
+            return self.family_box.currentData() or "club"
+
+        def show_fields(self) -> None:
+            """Label the name fields for the family chosen; hide the ones it does not have."""
+            fields = FAMILY_FIELDS[self.family()]
+            for number, edit in enumerate(self.name_edits):
+                shown = number < len(fields)
+                self.form.setRowVisible(edit, shown)
+                if shown:
+                    self.form.labelForField(edit).setText(fields[number][1])
+                    edit.setPlaceholderText("Required" if number == 0 else "Optional")
+
+        def values(self) -> tuple[str, str, dict, str]:
+            """(family, ID, {field key: text}, language), as add_name_problem takes them."""
+            fields = FAMILY_FIELDS[self.family()]
+            names = {slot: edit.text().strip()
+                     for (slot, _label, _cmd), edit in zip(fields, self.name_edits)}
+            return (self.family(), self.id_edit.text().strip(), names,
+                    self.lang_edit.text().strip())
+
+        def try_accept(self) -> None:
+            problem = self.check(*self.values())
+            if problem:
+                self.problem.setText(problem)
+                return
+            self.accept()
+
     class BackupDialog(QDialog):
         """List backup folders, diff a name file, and restore it into memory."""
 
@@ -9258,6 +9633,9 @@ def run_gui(paths):
             self.rules, self.rules_problem = read_rules(STATE_ROOT)
             self.saved_view = clean_view(self.state.get("view"))
             self.saved_searches = clean_saved_searches(self.state.get("saved_searches"))
+            # Session 19: up to three folders for File > Open. A bad entry is left out here
+            # and stays in the file until the favourites are changed.
+            self.favourites = clean_folders(self.state.get("favourite_folders"))
             self.entity_widths = {family: dict(widths) for family, widths
                                   in self.saved_view.get("entity_widths", {}).items()}
             self.line_widths = dict(self.saved_view.get("line_widths", {}))
@@ -9364,7 +9742,9 @@ def run_gui(paths):
                 self.delete_collection_act, self.remove_from_collection_act,
                 self.overrides_act, self.batch_rename_act, self.harmonise_act,
                 self.select_word_act, self.select_pattern_act, self.select_section_act,
-                self.invert_selection_act, self.clear_selection_act, self.palette_act]
+                self.invert_selection_act, self.clear_selection_act, self.palette_act,
+                self.open_db_folder_act, *self.favourite_acts, self.favourites_act,
+                self.add_name_act]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
             self.busy_widgets.append(self.selection_pill)
             self._enabled_before: dict = {}
@@ -9401,6 +9781,23 @@ def run_gui(paths):
             self.quick_load_act = a(
                 "Quick load", self.quick_load, (),
                 "Open the two FM27 name files in the selected database folder")
+            # Session 19: where to open files from. Each opens the Windows file picker there.
+            self.open_db_folder_act = a(
+                "Name files in the selected database", self.open_database_folder, (),
+                "Choose files in lnc\\all of the database selected at the top, the folder "
+                "Quick load reads")
+            self.favourite_acts = []
+            for number in range(MAX_FAVOURITES):     # filled by fill_favourite_actions
+                self.favourite_acts.append(
+                    a("", lambda _checked=False, n=number: self.open_favourite(n)))
+            self.favourites_act = a(
+                "Favourite folders...", self.edit_favourites, (),
+                "Keep up to three folders for the File menu; picking one opens the file "
+                "picker there")
+            self.add_name_act = a(
+                "Add name...", self.add_name, (),
+                "Add a name line for an ID the game already uses but the open files do not "
+                "mention. It does not create a club or look IDs up.")
             self.save_act = a(
                 "Save...", self.save, QKeySequence.Save,
                 "Review the changes, then write the ticked ones to the files they came from")
@@ -9470,6 +9867,14 @@ def run_gui(paths):
                 "Show or hide the inspector beside the entity grid")
             self.inspector_act.setCheckable(True)
             self.inspector_act.setChecked(True)
+            # Session 19 revises decision 26: the ID is how a row is matched across
+            # versions, so the grid shows it by default; the inspector shows it as well.
+            self.id_column_act = a(
+                "Show ID column", self.set_id_column_shown, (),
+                "Show or hide the ID column of the entity grid. The inspector and All lines "
+                "always show the ID.")
+            self.id_column_act.setCheckable(True)
+            self.id_column_act.setChecked(True)
             self.reset_widths_act = a(
                 "Reset column widths", self.reset_column_widths, (),
                 "Size every grid column to its text again, forgetting the widths you set")
@@ -9563,12 +9968,15 @@ def run_gui(paths):
                 return made
 
             self.file_menu = menu(
-                "&File", self.open_act, self.quick_load_act, None, self.save_act,
+                "&File", self.open_act, self.quick_load_act, None, self.open_db_folder_act,
+                *self.favourite_acts, self.favourites_act, None, self.save_act,
                 self.deploy_act, None, self.import_act, None, self.problem_act,
                 self.licensing_act, None, self.exit_act)
+            self.fill_favourite_actions()
             self.edit_menu = menu(
                 "&Edit", self.undo_act, self.redo_act, None, self.edit_cell_act,
-                self.revert_act, None, self.find_act, self.replace_act, self.bulk_act)
+                self.add_name_act, self.revert_act, None, self.find_act, self.replace_act,
+                self.bulk_act)
             self.edit_menu.addAction(self.batch_rename_act)
             self.selection_menu = self.edit_menu.addMenu("&Selection")
             for action in (self.select_word_act, self.select_pattern_act,
@@ -9579,7 +9987,8 @@ def run_gui(paths):
             self.edit_menu.addAction(self.palette_act)
             self.tools_menu = menu("&Tools", self.harmonise_act)
             self.view_menu = menu("&View", self.entities_act, self.lines_act, self.changes_act,
-                                  None, self.inspector_act, self.reset_widths_act)
+                                  None, self.inspector_act, self.id_column_act,
+                                  self.reset_widths_act)
             self.packs_menu = menu("&Packs", self.export_act, self.import_pack_act)
             self.backups_menu = menu("&Backups", self.backups_act)
             self.profiles_menu = menu(
@@ -9818,9 +10227,92 @@ def run_gui(paths):
         def open_dialog(self):
             if not self.confirm_discard():
                 return
-            paths, _ = QFileDialog.getOpenFileNames(self, "Open .lnc files", "", FILTER)
+            self.pick_and_open(self.start_folder())
+
+        # ----- where the file pickers open, and the favourite folders (Session 19) -----
+        def start_folder(self) -> str:
+            """Where a file picker opens, never "": the last folder File > Open used, else
+            lnc\\all of the selected database (see picker_folder). The status bar says so
+            when that folder is missing."""
+            folder, problem = picker_folder(self.state.get("open_folder"),
+                                            self.selected_version())
+            if problem:
+                self.statusBar().showMessage(problem, 15000)
+            return folder
+
+        def remember_open_folder(self, paths) -> None:
+            """Keep the folder files were opened from, for the next File > Open.
+
+            It is kept in the settings file through keep_settings, so a damaged
+            file is left as it is; this run still opens there next time.
+            """
+            folder = os.path.normpath(os.path.dirname(paths[0]))
+            if self.state.get("open_folder") != folder:
+                self.state = {**self.state, "open_folder": folder}
+                self.keep_settings(self.state)
+
+        def pick_and_open(self, folder: str) -> None:
+            """Open the .lnc files chosen in the Windows file picker, which opens in ``folder``."""
+            paths, _ = QFileDialog.getOpenFileNames(self, "Open .lnc files", folder, FILTER)
             if paths:
+                self.remember_open_folder(paths)
                 self.load_in_background(paths)
+
+        def open_database_folder(self) -> None:
+            """File > Name files in the selected database: the file picker, in its lnc\\all."""
+            folder = names_folder(self.selected_version())
+            if folder is None or not folder.is_dir():
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    "The name files folder of the selected database was not found.\n"
+                    f"Looked for {folder if folder is not None else GAME_DB_ROOT}")
+                return
+            if self.confirm_discard():
+                self.pick_and_open(str(folder))
+
+        def open_favourite(self, number: int) -> None:
+            """File > one of the favourite folders: the file picker, in that folder."""
+            if not 0 <= number < len(self.favourites):
+                return
+            folder = self.favourites[number]
+            if not _usable_folder(folder):
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    f"The favourite folder {folder} is not there now; a drive may be missing. "
+                    "File > Favourite folders can change it.")
+                return
+            if self.confirm_discard():
+                self.pick_and_open(folder)
+
+        def fill_favourite_actions(self) -> None:
+            """List the favourite folders in the File menu; a place without one is hidden."""
+            for number, action in enumerate(self.favourite_acts):
+                folder = self.favourites[number] if number < len(self.favourites) else ""
+                shown = folder if len(folder) <= 72 else f"{folder[:34]}…{folder[-36:]}"
+                action.setText(f"&{number + 1}  {shown.replace('&', '&&')}" if folder else "")
+                action.setToolTip(f"Choose files in {folder}" if folder else "")
+                action.setVisible(bool(folder))
+
+        def edit_favourites(self) -> None:
+            """File > Favourite folders: up to three, kept in the settings file."""
+            dialog = FavouritesDialog(self, self.favourites, self.start_folder)
+            if not dialog.exec():
+                return
+            folders = dialog.folders()
+            if folders == self.favourites:
+                return
+            state = {**self.state, "favourite_folders": folders}
+            problem = self.keep_settings(state)
+            if problem:
+                QMessageBox.warning(self, APP_NAME,
+                                    f"The favourite folders were not changed.\n\n{problem}")
+                return
+            self.state = state
+            self.favourites = folders
+            self.fill_favourite_actions()
+            self.statusBar().showMessage(
+                f"Favourite folders kept: {len(folders)} of {MAX_FAVOURITES}. The File menu "
+                "lists them.", 8000)
 
         def load(self, paths) -> bool:
             """Open the files as the new workspace, here and now (files dropped on the
@@ -10141,6 +10633,7 @@ def run_gui(paths):
             shown = view.get("inspector", True)
             self.inspector_act.setChecked(shown)
             self.set_inspector_shown(shown)
+            self.id_column_act.setChecked(view.get("id_column", True))  # apply_family shows it
 
         def remember_view(self) -> None:
             """Keep the view in the settings file for next time. The window calls it on close."""
@@ -10161,6 +10654,7 @@ def run_gui(paths):
                 "window_state": text(self.saveState()),
                 "splitter": text(self.entity_splitter.saveState()),
                 "inspector": self.inspector_act.isChecked(),
+                "id_column": self.id_column_act.isChecked(),
             })
             # The window is closing: when the file cannot be written, the next run
             # starts with the view before, and a damaged file stays as it is.
@@ -10302,6 +10796,86 @@ def run_gui(paths):
                 self.statusBar().showMessage(
                     f"Imported: {changed} names changed, {added} entries added. "
                     "Nothing is written until you press Save.", 10000)
+
+        def add_name(self) -> None:
+            """Edit > Add name: name lines for an ID the open files do not mention (Session 19).
+
+            When the family and ID are already in the open files nothing is
+            added: the window says so and selects that row instead. The new
+            lines go in as one operation, so one Undo takes them all back,
+            with the heading. Nothing is written until Save or Deploy.
+            """
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open a name file first.")
+                return
+            dialog = AddNameDialog(self, add_name_problem)
+            if not dialog.exec():
+                return
+            family, id_, names, lang = dialog.values()
+            kind = ENTITY_KINDS[family]
+            existing = find_entity(self.all_entities, family, id_)
+            if existing is not None:
+                self.show_entity(entity_key(existing))
+                QMessageBox.information(
+                    self, APP_NAME,
+                    f"{kind} {existing.id} is already in the open files, so nothing was added. "
+                    "Its row is selected: type a missing name in its cell or in the inspector.")
+                return
+            with self.recording(f"add name: {kind.lower()} {int(id_)}"):
+                added = add_entity_lines(self.docs, family, id_, names, lang)
+            self.reload_views()
+            self.show_entity((family, added[0].id, added[0].lang if family == "award" else ""))
+            self.statusBar().showMessage(
+                f"Added {count_of(len(added), 'name line', 'name lines')} for {kind.lower()} "
+                f"{added[0].id} to {added[0].doc.path.name}. Nothing is written until you press "
+                "Save or Deploy.", 10000)
+
+        def show_entity(self, key: tuple) -> bool:
+            """Select one entity on the Entities tab and show it in the inspector.
+
+            ``key`` is (family, ID, language), as entity_key gives it. The
+            family is switched to, and filters that hide the row are cleared,
+            as the Changes tab does for All lines. False when no row has it.
+            """
+            self.tabs.setCurrentIndex(0)
+            if key[0] != self.family:
+                self.family = key[0]
+                self.section_filter = ""
+                for button in self.family_buttons:
+                    button.setChecked(button.property("family") == self.family)
+                self.apply_family()
+                self.refresh_status()
+            row = next((number for number, entity in enumerate(self.entity_model.rows)
+                        if entity_key(entity) == key), None)
+            if row is None:
+                return False
+            source = self.entity_model.index(row, 0)
+            if not self.entity_proxy.mapFromSource(source).isValid():
+                self.clear_entity_filters()     # hidden by the words, a filter, or a section
+            target = self.entity_proxy.mapFromSource(source)
+            self.entity_view.selectRow(target.row())
+            self.entity_view.scrollTo(target, QAbstractItemView.PositionAtCenter)
+            self.show_inspector(self.entity_model.rows[row])
+            return True
+
+        def clear_entity_filters(self) -> None:
+            """Show every row of the family: no words, All, every file section, no collection."""
+            self.entity_timer.stop()
+            self.entity_search.blockSignals(True)
+            self.entity_search.clear()
+            self.entity_search.blockSignals(False)
+            self.status_mode = "all"
+            for button in self.status_buttons:
+                button.setChecked(button.property("mode") == "all")
+            self.section_filter = ""
+            self.collection_filter = ""
+            for widget, row in ((self.section_list, 0), (self.collection_list, -1)):
+                widget.blockSignals(True)
+                widget.setCurrentRow(row)
+                widget.blockSignals(False)
+            self.update_collection_actions()
+            self.show_columns()
+            self.apply_entity_filter()
 
         def revert_selected(self):
             """Restore orig_name on selected edits, as one step Undo can take back.
@@ -10546,11 +11120,30 @@ def run_gui(paths):
             self.line_model.sort_by(column, order == Qt.DescendingOrder)
 
         def show_columns(self) -> None:
-            """Hide the ID column, which the inspector shows, and File section while one
-            section is chosen, so the names get the width."""
+            """Hide File section while one section is chosen, so the names get the width,
+            and the ID column when View > Show ID column is off.
+
+            Decision 26 (Session 7) hid the ID always, since the inspector shows
+            it. Session 19 revises it: the ID is how a row is matched across
+            versions, so it is shown by default and the choice is remembered.
+            """
             for column, key in enumerate(self.entity_model.columns()):
-                hidden = key == "id" or (key == "section" and bool(self.section_filter))
+                hidden = ((key == "id" and not self.id_column_act.isChecked())
+                          or (key == "section" and bool(self.section_filter)))
                 self.entity_view.setColumnHidden(column, hidden)
+
+        def set_id_column_shown(self, shown: bool) -> None:
+            """View > Show ID column: show or hide the entity grid's ID column (Session 19)."""
+            shown = bool(shown)
+            if self.id_column_act.isChecked() != shown:
+                self.id_column_act.setChecked(shown)
+            self.show_columns()
+            if shown:                           # its width, from its text, like the others
+                self._sizing = True
+                try:
+                    self._size_entity_columns()
+                finally:
+                    self._sizing = False
 
         def _size_line_columns(self) -> None:
             rows = self.line_model.base_rows
@@ -10599,17 +11192,18 @@ def run_gui(paths):
             for column, key in enumerate(columns):
                 header.setSectionResizeMode(
                     column, QHeaderView.Stretch if key == stretch else QHeaderView.Interactive)
-                if key in (stretch, "id"):
+                if key == stretch:
                     continue
                 if key == "status":
                     texts[column] = {entity_status(entity) for entity in rows} | {"Added, Edited"}
                 else:
                     texts[column] = {entity_text(entity, key) for entity in rows}
-                caps[column] = 200 if key in ("section", "lang") else 280
+                caps[column] = (200 if key in ("section", "lang")
+                                else 140 if key == "id" else 280)
             fit_columns(self.entity_view, texts, caps)
             for column, key in enumerate(columns):      # widths the user set win
                 width = self.entity_widths.get(self.family, {}).get(key)
-                if width and key not in (stretch, "id"):
+                if width and key != stretch:
                     self.entity_view.setColumnWidth(column, width)
 
         def refill_sections(self) -> None:
@@ -11979,7 +12573,7 @@ def run_gui(paths):
                 QMessageBox.information(self, APP_NAME, message)
                 return
             path, selected = QFileDialog.getSaveFileName(
-                self, "Export name pack", "fm-name-pack.json",
+                self, "Export name pack", str(Path(self.start_folder()) / "fm-name-pack.json"),
                 "JSON name pack (*.json);;CSV name pack (*.csv)")
             if not path:
                 return
@@ -11989,6 +12583,14 @@ def run_gui(paths):
                 path += ".csv"
             elif not as_csv and not path.casefold().endswith(".json"):
                 path += ".json"
+            if in_game_tree(path):
+                # The picker can now open in lnc\all (Session 19); only Save and Deploy
+                # write into the game's folders, after a backup.
+                QMessageBox.warning(
+                    self, APP_NAME,
+                    "A name pack is not saved inside the game's folders: only Save and Deploy "
+                    "write there, after a backup. Choose another folder, such as Documents.")
+                return
             text = pack_to_csv(pack) if as_csv else pack_to_json(pack)
             data = text.encode("utf-8-sig" if as_csv else "utf-8")
             try:
@@ -12004,7 +12606,7 @@ def run_gui(paths):
                 QMessageBox.information(self, APP_NAME, "Open a name file first.")
                 return
             path, _selected = QFileDialog.getOpenFileName(
-                self, "Import name pack", "",
+                self, "Import name pack", self.start_folder(),
                 "Name packs (*.json *.csv);;JSON (*.json);;CSV (*.csv);;All files (*)")
             if not path:
                 return

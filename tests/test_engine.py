@@ -2674,7 +2674,9 @@ class Session6Window(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._open(win, tmp)
             self.assertEqual([action.text() for action in win.edit_menu.actions()],
-                             ["Undo", "Redo", "", "Edit cell", "Revert selected", "",
+                             ["Undo", "Redo", "", "Edit cell",
+                              "Add name...",                               # Session 19
+                              "Revert selected", "",
                               "Find", "Replace...", "Bulk tools...",       # Session 7
                               "Batch rename selected...", "&Selection", "",
                               "Command palette..."])                      # Session 15
@@ -3201,7 +3203,9 @@ class Session7Window(unittest.TestCase):
                          ["File", "Edit", "Tools", "View", "Packs", "Backups", "Profiles",
                           "Collections", "Help"])             # Collections since Session 8
         self.assertEqual([action.text() for action in win.file_menu.actions() if action.text()],
-                         ["Open files...", "Quick load", "Save...", "Deploy to FM27...",
+                         ["Open files...", "Quick load",
+                          "Name files in the selected database", "Favourite folders...",  # S19
+                          "Save...", "Deploy to FM27...",
                           "Import older edits...", "Problem lines...", "Licensing files...",
                           "Exit"])
         self.assertEqual([action.text() for action in win.profiles_menu.actions()
@@ -3286,7 +3290,8 @@ class Session7Window(unittest.TestCase):
             columns = model.columns()
             self.assertEqual(self._shown(win), ["10", "20", "30"])     # long name, A to Z
             self.assertEqual(header.sortIndicatorSection(), columns.index("long"))
-            self.assertTrue(view.isColumnHidden(columns.index("id")))
+            # Shown since Session 19 (decision 26 revised); the inspector has it as well.
+            self.assertFalse(view.isColumnHidden(columns.index("id")))
             self.assertFalse(view.isColumnHidden(columns.index("section")))
             self.assertEqual(header.sectionResizeMode(columns.index("long")), QHeaderView.Stretch)
             self._select(win, "10")
@@ -6110,7 +6115,8 @@ class Session14Visual(unittest.TestCase):
                 self.assertEqual(win.inspector_act.shortcut().toString(), "F4")
                 self.assertEqual(
                     [action.text() for action in win.view_menu.actions() if action.text()],
-                    ["Entities", "All lines", "Changes", "Inspector", "Reset column widths"])
+                    ["Entities", "All lines", "Changes", "Inspector", "Show ID column",
+                     "Reset column widths"])
                 self.assertEqual(
                     [action.text() for action in win.help_menu.actions() if action.text()],
                     ["User guide", "Keyboard shortcuts", f"About {editor.APP_NAME}"])
@@ -8089,6 +8095,615 @@ class Session18BackupRestore(unittest.TestCase):
             self.assertEqual(path.read_bytes().decode("utf-8-sig"), self.TEXT)
 
         self._run(body)
+
+
+class Session19Engine(unittest.TestCase):
+    """Release 3.5, session 19 (note 08): start folders, favourites, the ID sort, Add name."""
+
+    def test_the_start_folder_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            version = root / "db" / "2700"
+            names = version / "lnc" / "all"
+            names.mkdir(parents=True)
+            last = root / "last"
+            last.mkdir()
+            for remembered in ("", None, 7, str(root / "gone"), "relative\\folder"):
+                with self.subTest(remembered=remembered):     # nothing usable remembered
+                    self.assertEqual(editor.picker_folder(remembered, version), (str(names), ""))
+            self.assertEqual(editor.picker_folder(str(last), version), (str(last), ""))
+            folder, problem = editor.picker_folder("", root / "db" / "2600")   # no lnc\all
+            self.assertEqual(folder, str(Path.home()))
+            self.assertIn(str(root / "db" / "2600" / "lnc" / "all"), problem)
+            with mock.patch.object(editor, "GAME_DB_ROOT", root / "nowhere"):
+                folder, problem = editor.picker_folder("", None)        # no database at all
+            self.assertEqual(folder, str(Path.home()))
+            self.assertIn(str(root / "nowhere"), problem)
+
+    def test_favourites_keep_up_to_three_real_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a, b, c, d = (root / name for name in "abcd")
+            for folder in (a, b, c, d):
+                folder.mkdir()
+            (root / "file.txt").write_text("x", encoding="utf-8")
+            raw = ["", "   ", 7, None, ["x"], "relative\\folder", str(root / "missing"),
+                   str(root / "file.txt"), str(a), str(a).upper(), str(b) + "\\", str(c), str(d)]
+            self.assertEqual(editor.clean_folders(raw), [str(a), str(b), str(c)])
+            for value in ("not a list", {"a": 1}, None, 5):
+                self.assertEqual(editor.clean_folders(value), [])
+            self.assertEqual(editor.MAX_FAVOURITES, 3)
+
+    def test_a_fourth_favourite_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a, b, c, d = (root / name for name in "abcd")
+            for folder in (a, b, c, d):
+                folder.mkdir()
+            three = [str(a), str(b), str(c)]
+            self.assertEqual(editor.add_favourite(three, str(d)),
+                             (three, "You can keep up to three favourite folders. "
+                                     "Remove one first."))
+            # Qt's folder picker gives forward slashes; the list keeps the Windows form.
+            self.assertEqual(editor.add_favourite([str(a)], str(b).replace("\\", "/")),
+                             ([str(a), str(b)], ""))
+            self.assertIn("already a favourite", editor.add_favourite([str(a)], str(a).lower())[1])
+            self.assertIn("not a folder", editor.add_favourite([], str(root / "missing"))[1])
+            self.assertIn("not a folder", editor.add_favourite([], "")[1])
+
+    def test_ids_sort_by_number_with_empty_cells_last(self):
+        rows = [editor.NameEntity("club", id_, "") for id_ in ("100", "", "3", "x7", "20")]
+
+        def order(descending=False):
+            return [entity.id for entity in editor.sort_entities(rows, "id", descending)]
+
+        self.assertEqual(order(), ["3", "20", "100", "", "x7"])
+        self.assertEqual(order(True), ["100", "20", "3", "", "x7"])     # still last
+
+    def test_add_name_checks_its_fields(self):
+        problem = editor.add_name_problem
+        self.assertEqual(problem("club", "740", {"long": "Example Athletic"}, ""), "")
+        self.assertEqual(problem("club", " 740 ", {"long": "Example Athletic", "short": "",
+                                                   "code": "EXA"}, "Greek"), "")
+        self.assertIn("Type the ID", problem("club", "", {"long": "Example"}, ""))
+        for bad in ("74a", "-5", "7 4", "\uff17\uff14\uff10"):      # full-width digits too
+            with self.subTest(bad=bad):
+                self.assertIn("digits only", problem("club", bad, {"long": "Example"}, ""))
+        self.assertEqual(problem("club", "740", {"short": "Example"}, ""),
+                         "A club needs a long name.")
+        self.assertEqual(problem("stadium", "9", {}, ""), "A stadium needs a name.")
+        self.assertEqual(problem("award", "9", {}, ""), "An award needs a name.")
+        self.assertIn("Short name: A name cannot contain a double quote",
+                      problem("club", "740", {"long": "Example", "short": 'Say "hi"'}, ""))
+        self.assertIn("language", problem("club", "740", {"long": "Example"}, 'en"'))
+        self.assertIn("Choose what the name is for",
+                      problem("player", "740", {"long": "Example"}, ""))
+
+    def test_add_entity_lines_appends_under_one_heading_and_ids_match_by_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            club, fix = Path(tmp) / "FM27_Club_Names.lnc", Path(tmp) / "FM27_Fix.lnc"
+            write_lnc(club, '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+                            '"CLUB_NAME_CHANGE"\t2\t"Beta"\t""\n')
+            write_lnc(fix, '"COMP_LONG_NAME_CHANGE"\t5\t"Cup"\t""\n')
+            originals = {club: club.read_bytes(), fix: fix.read_bytes()}
+            docs = [editor.LncDoc(fix), editor.LncDoc(club)]
+            added = editor.add_entity_lines(
+                docs, "club", "0740", {"long": "Example Athletic", "short": "", "code": "EXA"}, "")
+            self.assertEqual([entry.raw for entry in added],
+                             ['"CLUB_NAME_CHANGE"\t740\t"Example Athletic"\t""',
+                              '"CLUB_3LETTER_NAME_CHANGE"\t740\t"EXA"\t""'])
+            self.assertTrue(all(entry.doc is docs[1] for entry in added))   # the clubs' file
+            self.assertEqual(docs[1].entries[-3].raw, "#Imported by FM Name Editor")
+            self.assertFalse(docs[0].dirty)
+            entities = editor.build_entities(docs)
+            self.assertIs(editor.find_entity(entities, "club", "740").slots["long"][0], added[0])
+            self.assertIsNotNone(editor.find_entity(entities, "club", "00740"))
+            self.assertIsNone(editor.find_entity(entities, "comp", "740"))
+            self.assertIsNone(editor.find_entity(entities, "club", "abc"))
+            editor.add_entity_lines(docs, "club", "741", {"long": "Second"}, "")
+            self.assertEqual(sum(entry.raw == "#Imported by FM Name Editor"
+                                 for entry in docs[1].entries), 1)
+            count = len(docs[1].entries)
+            with self.assertRaises(ValueError):          # one bad field: no line at all
+                editor.add_entity_lines(docs, "club", "742",
+                                        {"long": "Good", "short": 'Bad "quote"'}, "")
+            self.assertEqual(len(docs[1].entries), count)
+            for path, data in originals.items():
+                self.assertEqual(path.read_bytes(), data)    # memory only
+
+    def test_the_view_keeps_the_id_column_and_packs_stay_out_of_the_game(self):
+        self.assertEqual(editor.clean_view({"id_column": False}), {"id_column": False})
+        self.assertEqual(editor.clean_view({"id_column": True}), {"id_column": True})
+        self.assertEqual(editor.clean_view({"id_column": "no"}), {})
+        with mock.patch.object(editor, "GAME_DB_ROOT", Path(r"D:\Games\db")):
+            self.assertTrue(editor.in_game_tree(r"D:\Games\db\2700\lnc\all\fm-name-pack.json"))
+            self.assertTrue(editor.in_game_tree(r"d:\games\DB\pack.json"))
+            self.assertTrue(editor.in_game_tree(r"E:\SteamLibrary\steamapps\common\x\pack.json"))
+            self.assertFalse(editor.in_game_tree(r"D:\Games\dbx\pack.json"))
+            self.assertFalse(editor.in_game_tree(r"C:\Users\someone\Documents\pack.json"))
+
+
+class _Session19Window:
+    """Set-up shared by the Session 19 window tests: a settings folder and a database
+    folder of the test's own, so no test reads the Steam tree or another test's settings."""
+
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t100\t"Zulu Town"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t100\t"Zulu"\t""\n'
+        '"CLUB_NAME_CHANGE"\t20\t"Alpha United"\t""\n'
+        "#Wales\n"
+        '"CLUB_NAME_CHANGE"\t3\t"Mike Rovers"\t""\n'
+    )
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.state = self.root / "state"
+        self.db = self.root / "db"
+        self.names = self.db / "2700" / "lnc" / "all"
+        self.names.mkdir(parents=True)
+        for name in editor.NAME_FILES:
+            write_lnc(self.names / name, '"CLUB_NAME_CHANGE"\t1\t"Alpha"\t""\n')
+        self.club = self.root / "work" / "FM27_Club_Names.lnc"
+        self.club.parent.mkdir()
+        write_lnc(self.club, self.CLUBS)
+        for name, value in (("STATE_ROOT", self.state), ("GAME_DB_ROOT", self.db)):
+            patcher = mock.patch.object(editor, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def window(self, open_file: bool = True):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.show()
+        win.activateWindow()
+        QApplication.processEvents()
+        if open_file:
+            self.assertTrue(win.load([str(self.club)]))
+        return win
+
+    @staticmethod
+    def picker(seen: list, result=()):
+        """A stand-in for a QFileDialog call: note the folder it opens in, return ``result``."""
+        def pick(_parent, _caption, folder, *_rest):
+            seen.append(folder)
+            return result
+        return pick
+
+    def settings(self) -> dict:
+        return json.loads((self.state / "settings.json").read_text(encoding="utf-8"))
+
+
+class Session19Folders(_Session19Window, unittest.TestCase):
+    """Session 19, stage 1: no picker opens in the program's folder, and three favourites."""
+
+    def test_open_starts_in_lnc_all_with_nothing_remembered(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        win = self.window(open_file=False)
+        seen = []
+        with mock.patch.object(QFileDialog, "getOpenFileNames", self.picker(seen, ([], ""))):
+            win.open_act.trigger()
+        self.assertEqual(seen, [str(self.names)])
+        self.assertFalse((self.state / "settings.json").exists())   # nothing chosen, nothing kept
+
+    def test_open_starts_where_the_last_open_was(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        win = self.window(open_file=False)
+        seen = []
+        with mock.patch.object(QFileDialog, "getOpenFileNames",
+                               self.picker(seen, ([str(self.club)], ""))):
+            win.open_act.trigger()
+            self.assertEqual([doc.path for doc in win.docs], [self.club])
+            self.assertEqual(self.settings()["open_folder"], str(self.club.parent))
+            win.open_act.trigger()
+        self.assertEqual(seen, [str(self.names), str(self.club.parent)])
+        again = self.window(open_file=False)                # and in the next run
+        self.assertEqual(again.start_folder(), str(self.club.parent))
+
+    def test_import_and_pack_dialogs_follow_the_same_rule(self):
+        from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QRadioButton
+
+        win = self.window()
+        dialogs = []
+        with mock.patch.object(QDialog, "exec", lambda dialog: dialogs.append(dialog) or 0):
+            win.import_act.trigger()
+        seen = []
+        with mock.patch.object(QFileDialog, "getOpenFileNames", self.picker(seen, ([], ""))):
+            dialogs[0].pick_old()
+            dialogs[0].pick_base()
+        with mock.patch.object(QFileDialog, "getOpenFileName", self.picker(seen, ("", ""))):
+            win.import_pack_act.trigger()
+
+        def every_line(dialog):
+            for button in dialog.findChildren(QRadioButton):
+                button.setChecked(button.text() == "Every name line")
+            return 1
+
+        packs = self.root / "packs"
+        packs.mkdir()
+        for answer in ("", str(packs / "mine.json")):
+            with mock.patch.object(QDialog, "exec", every_line), \
+                    mock.patch.object(QFileDialog, "getSaveFileName",
+                                      self.picker(seen, (answer, "JSON name pack (*.json)"))):
+                win.export_act.trigger()
+        self.assertEqual(seen, [str(self.names)] * 3 + [str(self.names / "fm-name-pack.json")] * 2)
+        self.assertTrue((packs / "mine.json").is_file())
+        # The picker may open in lnc\all, but a pack is never saved inside the game's folders.
+        with mock.patch.object(QDialog, "exec", every_line), \
+                mock.patch.object(QFileDialog, "getSaveFileName",
+                                  self.picker(seen, (str(self.names / "fm-name-pack.json"),
+                                                     "JSON name pack (*.json)"))), \
+                mock.patch.object(QMessageBox, "warning") as warned:
+            win.export_act.trigger()
+        self.assertIn("not saved inside the game's folders", warned.call_args.args[2])
+        self.assertFalse((self.names / "fm-name-pack.json").exists())
+        # After an Open somewhere else, every one of them starts there.
+        with mock.patch.object(QFileDialog, "getOpenFileNames",
+                               self.picker(seen, ([str(self.club)], ""))):
+            win.open_act.trigger()
+        seen.clear()
+        with mock.patch.object(QFileDialog, "getOpenFileNames", self.picker(seen, ([], ""))):
+            dialogs[0].pick_old()
+        with mock.patch.object(QFileDialog, "getOpenFileName", self.picker(seen, ("", ""))):
+            win.import_pack_act.trigger()
+        self.assertEqual(seen, [str(self.club.parent)] * 2)
+
+    def test_favourites_are_listed_in_the_file_menu_and_open_the_picker_there(self):
+        from PySide6.QtWidgets import QDialog, QFileDialog
+
+        win = self.window()
+        first, second = self.root / "Steam two", self.root / "Work & copies"
+        for folder in (first, second):
+            folder.mkdir()
+
+        def keep(dialog):
+            dialog.fill([str(first), str(second)])
+            return 1
+
+        with mock.patch.object(QDialog, "exec", keep):
+            win.favourites_act.trigger()
+        self.assertEqual(win.favourites, [str(first), str(second)])
+        self.assertEqual(self.settings()["favourite_folders"], [str(first), str(second)])
+        shown = [action for action in win.favourite_acts if action.isVisible()]
+        self.assertEqual([action.toolTip() for action in shown],
+                         [f"Choose files in {first}", f"Choose files in {second}"])
+        self.assertTrue(shown[0].text().startswith("&1  ") and "Steam two" in shown[0].text())
+        self.assertIn("Work && copies", shown[1].text())      # an & is not a menu key
+        seen = []
+        with mock.patch.object(QFileDialog, "getOpenFileNames", self.picker(seen, ([], ""))):
+            shown[1].trigger()
+            win.open_db_folder_act.trigger()
+        self.assertEqual(seen, [str(second), str(self.names)])
+
+    def test_the_file_menu_lists_the_folders(self):
+        win = self.window(open_file=False)
+        self.assertEqual([action.text() for action in win.file_menu.actions() if action.text()],
+                         ["Open files...", "Quick load", "Name files in the selected database",
+                          "Favourite folders...", "Save...", "Deploy to FM27...",
+                          "Import older edits...", "Problem lines...", "Licensing files...",
+                          "Exit"])
+        self.assertFalse(any(action.isVisible() for action in win.favourite_acts))
+        for action in (win.open_db_folder_act, *win.favourite_acts, win.favourites_act):
+            self.assertIn(action, win.busy_actions)
+
+    def test_a_fourth_favourite_is_refused_in_the_dialog(self):
+        from PySide6.QtWidgets import QDialog, QFileDialog
+
+        folders = [self.root / name for name in ("one", "two", "three")]
+        for folder in folders:
+            folder.mkdir()
+        win = self.window(open_file=False)
+        dialogs = []
+        with mock.patch.object(QDialog, "exec", lambda dialog: dialogs.append(dialog) or 0):
+            win.favourites_act.trigger()
+        dialog = dialogs[0]
+        dialog.fill([str(folder) for folder in folders])
+        with mock.patch.object(QFileDialog, "getExistingDirectory",
+                               side_effect=AssertionError("no picker for a fourth")):
+            dialog.add_folder()
+        self.assertIn("up to three", dialog.problem.text())
+        self.assertEqual(dialog.folders(), [str(folder) for folder in folders])
+        dialog.folder_list.setCurrentRow(0)
+        dialog.remove_selected()
+        seen = []
+        with mock.patch.object(QFileDialog, "getExistingDirectory",
+                               self.picker(seen, str(folders[0]).replace("\\", "/"))):
+            dialog.add_folder()
+        self.assertEqual(dialog.problem.text(), "")
+        self.assertEqual(dialog.folders(), [str(folders[1]), str(folders[2]), str(folders[0])])
+        self.assertEqual(seen, [str(self.names)])              # its picker never opens in ""
+
+    def test_a_bad_entry_is_dropped(self):
+        good, other = self.root / "good", self.root / "other"
+        for folder in (good, other):
+            folder.mkdir()
+        self.state.mkdir()
+        text = json.dumps({"favourite_folders": [
+            "", 7, None, "relative\\folder", str(self.root / "missing"), str(good),
+            str(good).upper(), str(other)], "open_folder": str(self.root / "gone")})
+        (self.state / "settings.json").write_text(text, encoding="utf-8")
+        win = self.window(open_file=False)
+        self.assertEqual(win.state_problem, "")
+        self.assertEqual(win.favourites, [str(good), str(other)])
+        self.assertEqual(sum(action.isVisible() for action in win.favourite_acts), 2)
+        self.assertEqual(win.start_folder(), str(self.names))  # the gone folder is not used
+        self.assertEqual((self.state / "settings.json").read_text(encoding="utf-8"), text)
+
+    def test_a_damaged_settings_file_is_left_byte_for_byte(self):
+        from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
+
+        self.state.mkdir()
+        damaged = b'{"favourite_folders": ["C:\\\\one", '
+        (self.state / "settings.json").write_bytes(damaged)
+        win = self.window(open_file=False)
+        self.assertIn("is not readable JSON", win.state_problem)
+        with mock.patch.object(QFileDialog, "getOpenFileNames",
+                               self.picker([], ([str(self.club)], ""))):
+            win.open_act.trigger()
+        self.assertEqual(win.start_folder(), str(self.club.parent))   # this run remembers it
+        spare = self.root / "spare"
+        spare.mkdir()
+
+        def keep(dialog):
+            dialog.fill([str(spare)])
+            return 1
+
+        with mock.patch.object(QDialog, "exec", keep), \
+                mock.patch.object(QMessageBox, "warning") as warned:
+            win.favourites_act.trigger()
+        self.assertIn("The favourite folders were not changed", warned.call_args.args[2])
+        self.assertEqual(win.favourites, [])
+        self.assertEqual((self.state / "settings.json").read_bytes(), damaged)
+
+    def test_a_missing_database_folder_is_named_not_guessed(self):
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        empty = self.root / "no database here"
+        with mock.patch.object(editor, "GAME_DB_ROOT", empty):
+            win = self.window(open_file=False)
+            seen = []
+            with mock.patch.object(QFileDialog, "getOpenFileNames", self.picker(seen, ([], ""))):
+                win.open_act.trigger()
+            self.assertEqual(seen, [str(Path.home())])
+            message = win.statusBar().currentMessage()
+            self.assertIn("No name files folder was found", message)
+            self.assertIn(str(empty), message)
+            with mock.patch.object(QMessageBox, "warning") as warned:
+                win.open_db_folder_act.trigger()
+            self.assertIn("was not found", warned.call_args.args[2])
+
+
+class Session19IdColumn(_Session19Window, unittest.TestCase):
+    """Session 19, stage 2: the ID column on the entity grid (decision 26 revised)."""
+
+    def test_the_id_column_is_shown_by_default_and_fits_its_text(self):
+        win = self.window()
+        column = win.entity_model.columns().index("id")
+        self.assertTrue(win.id_column_act.isCheckable())
+        self.assertTrue(win.id_column_act.isChecked())
+        self.assertFalse(win.entity_view.isColumnHidden(column))
+        self.assertGreaterEqual(win.entity_view.columnWidth(column),
+                                win.entity_view.horizontalHeader().sectionSizeHint(column))
+        self.assertLessEqual(win.entity_view.columnWidth(column), 140)
+
+    def test_the_toggle_hides_and_shows_it_and_survives_a_reopen(self):
+        from PySide6.QtWidgets import QTableView
+
+        win = self.window()
+        column = win.entity_model.columns().index("id")
+        with mock.patch.object(QTableView, "resizeColumnToContents",
+                               side_effect=AssertionError("fit_columns sizes the grid")):
+            win.id_column_act.trigger()
+            self.assertTrue(win.entity_view.isColumnHidden(column))
+            win.id_column_act.trigger()
+            self.assertFalse(win.entity_view.isColumnHidden(column))
+            self.assertGreater(win.entity_view.columnWidth(column), 0)
+            win.id_column_act.trigger()
+        self.assertFalse(win.id_column_act.isChecked())
+        win.remember_view()
+        self.assertIs(self.settings()["view"]["id_column"], False)
+        again = self.window()
+        self.assertFalse(again.id_column_act.isChecked())
+        self.assertTrue(again.entity_view.isColumnHidden(column))
+        self.assertTrue(again.show_entity(("club", "100", "")))
+        self.assertIn("ID 100", again.inspector_meta.text())   # the inspector still has it
+
+    def test_the_heading_sorts_by_number_bold_and_adds_no_undo_step(self):
+        from PySide6.QtCore import Qt
+
+        win = self.window()
+        model, view = win.entity_model, win.entity_view
+        columns = model.columns()
+        id_column, long_column = columns.index("id"), columns.index("long")
+        row = next(n for n, entity in enumerate(model.rows) if entity.id == "3")
+        self.assertTrue(model.setData(model.index(row, long_column), "Mike Town"))
+        self.assertEqual(win.undo_stack.count(), 1)
+        self.assertTrue(model.headerData(long_column, Qt.Horizontal, Qt.FontRole).bold())
+        Session7Window._click_heading(view, id_column)                 # a first click: up
+        self.assertEqual(Session7Window._shown(win), ["3", "20", "100"])   # not 100, 20, 3
+        self.assertTrue(model.headerData(id_column, Qt.Horizontal, Qt.FontRole).bold())
+        self.assertIsNone(model.headerData(long_column, Qt.Horizontal, Qt.FontRole))
+        Session7Window._click_heading(view, id_column)                 # a second: down
+        self.assertEqual(Session7Window._shown(win), ["100", "20", "3"])
+        self.assertEqual(win.undo_stack.count(), 1)                    # sorting is not an edit
+        self.assertEqual(win.undo_act.text(), "Undo edit long name: Mike Town")
+
+    def test_the_view_menu_lists_show_id_column(self):
+        win = self.window(open_file=False)
+        self.assertEqual([action.text() for action in win.view_menu.actions() if action.text()],
+                         ["Entities", "All lines", "Changes", "Inspector", "Show ID column",
+                          "Reset column widths"])
+
+
+class Session19AddName(_Session19Window, unittest.TestCase):
+    """Session 19, stage 3: Edit > Add name, for an ID the open files do not mention."""
+
+    def fill(self, family="club", id_="", names=(), lang=""):
+        """A stand-in for exec: fill in the Add name dialog, then press Add."""
+        self.dialogs = []
+
+        def run(dialog):
+            self.dialogs.append(dialog)
+            dialog.family_box.setCurrentIndex(dialog.family_box.findData(family))
+            dialog.id_edit.setText(id_)             # setText skips the validator on purpose
+            for edit, text in zip(dialog.name_edits, names):
+                edit.setText(text)
+            dialog.lang_edit.setText(lang)
+            dialog.try_accept()
+            return dialog.result()
+        return run
+
+    def test_a_valid_add_appends_ticked_lines_in_memory_only(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        doc = win.docs[0]
+        before = [entry.raw for entry in doc.entries]
+        on_disk = self.club.read_bytes()
+        with mock.patch.object(QDialog, "exec",
+                               self.fill(id_="0740", names=("Example Athletic", "Example", "EXA"))):
+            win.add_name_act.trigger()
+        self.assertEqual([entry.raw for entry in doc.entries],
+                         before + ["#Imported by FM Name Editor",
+                                   '"CLUB_NAME_CHANGE"\t740\t"Example Athletic"\t""',
+                                   '"CLUB_SHORT_NAME_CHANGE"\t740\t"Example"\t""',
+                                   '"CLUB_3LETTER_NAME_CHANGE"\t740\t"EXA"\t""'])
+        self.assertEqual(self.club.read_bytes(), on_disk)           # nothing on disk
+        self.assertTrue(doc.dirty)
+        self.assertEqual(win.inspector_entity.id, "740")             # the new row is selected
+        self.assertEqual(win.inspector_entity.section, "Imported by FM Name Editor")
+        self.assertEqual(win.undo_stack.count(), 1)
+        self.assertEqual(win.undo_act.text(), "Undo add name: club 740")
+        added = [row for row in editor.collect_changes(win.docs) if row.state == "added"]
+        self.assertEqual([(row.entry.name, row.included) for row in added],
+                         [("Example Athletic", True), ("Example", True), ("EXA", True)])
+        win.changes_act.trigger()
+        self.assertEqual(sum(row.state == "added" for row in win.change_model.rows), 3)
+
+    def test_a_bad_or_empty_id_and_a_missing_long_name_are_refused(self):
+        from PySide6.QtGui import QValidator
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        doc = win.docs[0]
+        count = len(doc.entries)
+        for id_, names, words in (("12a", ("Example Athletic",), "digits only"),
+                                  ("", ("Example Athletic",), "Type the ID"),
+                                  ("741", ("", "Example"), "A club needs a long name")):
+            with self.subTest(id_=id_):
+                with mock.patch.object(QDialog, "exec", self.fill(id_=id_, names=names)):
+                    win.add_name_act.trigger()
+                dialog = self.dialogs[0]
+                self.assertIn(words, dialog.problem.text())
+                self.assertEqual(dialog.result(), 0)             # the dialog stays open
+                self.assertEqual(len(doc.entries), count)
+                self.assertFalse(doc.dirty)
+        self.assertEqual(win.undo_stack.count(), 0)
+        validator = self.dialogs[0].id_edit.validator()
+        self.assertEqual(validator.validate("12a", 0)[0], QValidator.Invalid)
+        self.assertEqual(validator.validate("740", 0)[0], QValidator.Acceptable)
+
+    def test_an_id_already_open_selects_that_row_and_adds_nothing(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        win = self.window()
+        doc = win.docs[0]
+        count = len(doc.entries)
+        win.entity_search.setText("Zulu")                    # the club with ID 20 is hidden
+        win.apply_entity_filter()
+        with mock.patch.object(QDialog, "exec", self.fill(id_="020", names=("Another Name",))), \
+                mock.patch.object(QMessageBox, "information") as told:
+            win.add_name_act.trigger()
+        self.assertIn("already in the open files", told.call_args.args[2])
+        self.assertEqual(len(doc.entries), count)
+        self.assertFalse(doc.dirty)
+        self.assertEqual(win.undo_stack.count(), 0)
+        self.assertEqual(win.inspector_entity.id, "20")
+        selected = [win.entity_model.rows[win.entity_proxy.mapToSource(index).row()].id
+                    for index in win.entity_view.selectionModel().selectedRows()]
+        self.assertEqual(selected, ["20"])
+        self.assertEqual(win.entity_search.text(), "")       # the words that hid it are cleared
+
+    def test_one_undo_takes_back_every_added_line_and_the_heading(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        doc = win.docs[0]
+        before = [(entry.raw, entry.eol) for entry in doc.entries]
+        with mock.patch.object(QDialog, "exec",
+                               self.fill(id_="740", names=("Example Athletic", "Example", "EXA"))):
+            win.add_name_act.trigger()
+        self.assertEqual(len(doc.entries), len(before) + 4)
+        win.undo_act.trigger()
+        self.assertEqual([(entry.raw, entry.eol) for entry in doc.entries], before)
+        self.assertFalse(doc.dirty)
+        self.assertIsNone(editor.find_entity(win.all_entities, "club", "740"))
+        win.redo_act.trigger()
+        self.assertEqual(len(doc.entries), len(before) + 4)
+        self.assertIsNotNone(editor.find_entity(win.all_entities, "club", "740"))
+
+    def test_lines_not_added_are_written_back_byte_for_byte(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        original = self.club.read_bytes()
+        with mock.patch.object(QDialog, "exec",
+                               self.fill(id_="740", names=("Example Athletic", "", "EXA"))):
+            win.add_name_act.trigger()
+        seen = []
+        with mock.patch.object(QDialog, "exec", press_write(seen)):
+            win.save_act.trigger()
+        self.assertEqual(len(seen), 1)
+        written = self.club.read_bytes()
+        self.assertEqual(written[:len(original)], original)
+        self.assertEqual(written[len(original):],
+                         b'#Imported by FM Name Editor\n'
+                         b'"CLUB_NAME_CHANGE"\t740\t"Example Athletic"\t""\n'
+                         b'"CLUB_3LETTER_NAME_CHANGE"\t740\t"EXA"\t""\n')
+        self.assertFalse(win.docs[0].dirty)
+
+    def test_the_fields_follow_the_family_and_the_grid_follows_the_add(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        dialogs = []
+        with mock.patch.object(QDialog, "exec", lambda dialog: dialogs.append(dialog) or 0):
+            win.add_name_act.trigger()
+        dialog = dialogs[0]
+
+        def labels():
+            return [dialog.form.labelForField(edit).text() for edit in dialog.name_edits
+                    if dialog.form.isRowVisible(edit)]
+
+        self.assertEqual(dialog.family(), "club")                       # the default
+        self.assertEqual(labels(), ["Long name", "Short name", "3-letter code"])
+        dialog.family_box.setCurrentIndex(dialog.family_box.findData("comp"))
+        self.assertEqual(labels(), ["Long name", "Short name", "6-letter code"])
+        dialog.family_box.setCurrentIndex(dialog.family_box.findData("stadium"))
+        self.assertEqual(labels(), ["Name"])
+        with mock.patch.object(QDialog, "exec",
+                               self.fill(family="stadium", id_="55", names=("Example Park",))):
+            win.add_name_act.trigger()
+        self.assertEqual(win.family, "stadium")
+        self.assertEqual((win.inspector_entity.family, win.inspector_entity.id), ("stadium", "55"))
+        self.assertEqual(win.docs[0].entries[-1].raw, '"STADIUM_NAME_CHANGE"\t55\t"Example Park"\t""')
+
+    def test_the_edit_menu_lists_add_name(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self.window(open_file=False)
+        self.assertEqual([action.text() for action in win.edit_menu.actions()][:6],
+                         ["Undo", "Redo", "", "Edit cell", "Add name...", "Revert selected"])
+        self.assertIn(win.add_name_act, win.busy_actions)
+        with mock.patch.object(QMessageBox, "information") as told:
+            win.add_name_act.trigger()                       # no files open
+        self.assertIn("Open a name file first", told.call_args.args[2])
 
 
 if __name__ == "__main__":

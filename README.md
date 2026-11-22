@@ -372,7 +372,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Release 3.5:** a further finding Mark is documenting, when he is ready.
+- **Planned for 3.5:** file pickers that start in the folder last opened from or in the selected database's `lnc\all`, up to three favourite folders in the File menu, the ID column on the entity grid (View > Show ID column), and Edit > Add name for an ID the open files do not mention.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 
