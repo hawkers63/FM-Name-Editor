@@ -17,11 +17,17 @@ changes.
 
 ## Next
 
-- **Release 3.5** is pending Mark's next brief.
+- **Release 3.5**: File > Open and the import and export dialogs start in a
+  useful folder, with up to three favourite folders; an ID column on the
+  entity grid; and Edit > Add name… for an ID the open files do not list.
 
 ## Later
 
-- Further work will be listed here when it is agreed for the public plan.
+- **Release 3.6**: a visible search scope with one click to search all
+  sections, a character-length gauge with a truncation preview, and
+  faster keyboard movement between rows.
+- **Release 3.7**: suggested short names and codes, name health checks,
+  and in-memory snapshots to roll back a set of bulk changes.
 
 ## Done
 
