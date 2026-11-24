@@ -10,6 +10,38 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 24 November 2026 (Europe/London) — Claude Code (Session 23)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** Neal's Session 23 brief, pasted by Mark (three stages, targeted tests only, one local commit). Old proposal prompts in `notes/` ignored as instructed.
+- **Branch / commit:** main, local `feat: background pack import and backups, byte-difference explanation, faster save`, not pushed, not tagged
+
+### Done this session
+
+- Stage 1, Save timing: each part of a Save was timed on copies of the live files over six runs. Write, review, payload and status took under 0.2 s together; the reload after the write took most of the rest, and about half of that was `FamilyTokenIndex.rebuild` splitting every name into words again (twice per name), although a Save changes no name. That was the clear single cause. Fix: `_name_tokens` is an `lru_cache` (65,536 names) behind `extract_name_tokens`, which still returns a fresh list. Save went from 0.78 to 0.94 s down to 0.61 to 0.67 s (unprofiled runs). The 1 s limit and `Session7Speed` are unchanged.
+- Stage 2, responsiveness: `read_pack_file` (engine) reads, decodes and parses a pack; `import_pack` runs it and `proposals_from_pack` on `MainWindow.jobs`, then `show_pack` opens the pack dialog. `BackupDialog` lists the folders (`read_archives`) and compares a copy (`compare_backup_in_full`) on the jobs worker through `BackupDialog.run`, which drops an answer once the dialog is closed (`done` sets `closed`) or another copy was chosen (`request`). A whole-file restore goes through `run` too, so closing during its read restores nothing; the lists and buttons wait meanwhile (`restoring`). The restore of ticked names still re-compares on the GUI thread (unchanged).
+- Stage 3, why the bytes differ: `explain_byte_differences` / `describe_byte_differences` (engine, read only) report the encoding or BOM, line endings, comments, blank lines, unsupported lines and name lines written differently, with counts, the first 20 lines (`BYTE_EXPLAIN_SHOWN`) and a whole-file cap of 200,000 lines (`BYTE_EXPLAIN_MAX_LINES`); moved lines are reported as a different order. The Backups window shows it in a read-only panel only when the names match and the bytes do not. Help text updated.
+- Tests: new `Session23Engine` (4) and `Session23Window` (4); `Session8Workers` waits for the listing before restoring.
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Neal: set everything to 3.9, run the full suite once, tag, build and prepare publication; Mark confirms before any push.
+
+### Known issues / blockers
+
+- None found. Note from the brief: Forge launched the 3.8 exe for a smoke test, against the never-launch rule; the release itself is reported fine. This session launched nothing.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+
+---
+
 ## 24 November 2026 (Europe/London) — Session 22 and local v3.8 finalisation
 
 ### Neal — local release preparation
@@ -157,36 +189,3 @@ and Codex CLI. Update it at the end of every session.
 - `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
   `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`; private `roadmap.md` (not
   tracked)
----
-
-## 22 November 2026 (Europe/London) — Claude Code (Session 20)
-
-- **Tool:** claude (Claude Code)
-- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
-- **Branch / commit:** main, local `feat: search scope and aliases, name-length gauges and keyboard cadence`, not pushed
-
-### Done this session
-
-- Stage 0: checked keys before changing anything. Alt+A, Alt+Down, Alt+Up and Ctrl+Shift+L were free; Shift+Enter already acted as Enter in a line edit; Tab and Enter in the grid editor had Qt's default handling. Baseline search keystroke at 4,297 clubs: 51–74 ms across all sections, 33–43 ms in one section (after the 200 ms typing pause).
-- Stage 1 (note 09 proposal 1): a scope label and Search all sections (N) beside the entity search box, Edit > Search all sections (Alt+A), a "No matches in … Found N in other sections" link that clears the filter, and a built-in club alias table used only when the words find nothing. The grid filter and the elsewhere count share one engine test, `entity_shown`.
-- Stage 2 (proposal 2): length counters under Long name, Short name and 3-letter code against `NAME_LENGTH_GUIDES` (28 / 14 / 3), grey, amber or red with words; the code is flagged for lower case or a length other than 3. The Illustrative card shows a name past its guide cut with an ellipsis, with a note. Warnings only.
-- Stage 3 (proposal 6): Alt+Down / Shift+Enter / Alt+Up in an inspector field; Edit > Copy long name to short name (Ctrl+Shift+L, in the palette); Tab / Shift+Tab / Enter in the grid's cell editor through a `CadenceDelegate`.
-- User guide (three new sections), CHANGELOG Unreleased, README "Planned for 3.6" line.
-
-### In progress
-
-- Nothing.
-
-### Next steps
-
-- Session 21 (Release 3.7): note 09 proposals 3 to 5, as the private roadmap plans.
-
-### Known issues / blockers
-
-- None. After the change a search keystroke takes 60–95 ms across all sections and 44–100 ms in one section; the slowest case is a search that finds nothing in a section and tries the alias and the other sections.
-- THEME gained a `problem` colour (coral, the same value as the nation badge) because the brief's "problem" key did not exist; amber is the existing `warning` key, not `edited`, which is violet and means Edited.
-
-### Files touched
-
-- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`,
-  `docs/SESSION_HANDOFF.md`; private `roadmap.md` (not tracked)

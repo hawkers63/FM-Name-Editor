@@ -4030,6 +4030,7 @@ class Session8Workers(unittest.TestCase):
                 return real(doc, archive)
 
             def restore(dialog):
+                self.assertTrue(win.jobs.wait(10))      # the listing and comparison (Session 23)
                 with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
                     dialog.restore()
                 self.assertFalse(dialog.close_btn.isEnabled())     # waiting for the worker
@@ -9937,6 +9938,281 @@ class Session21Speed(unittest.TestCase):
                 timed("roll back", lambda: win.roll_back_snapshot(snapshot))
             self.assertFalse(any(doc.dirty for doc in win.docs))
             self.assertLess(max(timings.values()), 1.0, timings)
+
+
+class Session23Engine(unittest.TestCase):
+    """Session 23: remembered name words, the pack reader, and why the bytes differ."""
+
+    LINES = ['"CLUB_NAME_CHANGE"\t1\t"Club 1"\t""', '"CLUB_NAME_CHANGE"\t2\t"Club 2"\t""']
+
+    def _doc(self, tmp, name: str, data: bytes):
+        path = Path(tmp) / name
+        path.write_bytes(data)
+        return editor.LncDoc(path)
+
+    def test_remembered_words_are_a_fresh_list_each_time(self):
+        first = editor.extract_name_tokens("Northbridge Rovers FC")
+        first.append("Changed")
+        self.assertEqual(editor.extract_name_tokens("Northbridge Rovers FC"),
+                         ["Northbridge", "Rovers", "FC"])
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = self._doc(tmp, "a.lnc", ("\n".join(self.LINES) + "\n").encode())
+            entities = editor.build_entities([doc])
+            one, two = editor.FamilyTokenIndex(), editor.FamilyTokenIndex()
+            one.rebuild(entities)
+            two.rebuild(entities)
+            self.assertEqual((one.by_family, one.entity_tokens, one.display),
+                             (two.by_family, two.entity_tokens, two.display))
+            self.assertEqual(one.count("club", "club"), 2)
+
+    def test_read_pack_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = {"format": editor.PACK_FORMAT, "version": editor.PACK_VERSION, "names": [
+                {"command": "CLUB_NAME_CHANGE", "id": "1", "language": "", "name": "One"}]}
+            path = Path(tmp) / "p.json"
+            path.write_bytes(editor.UTF8_BOM + json.dumps(pack).encode("utf-8"))
+            rows, skipped, error = editor.read_pack_file(path)
+            self.assertEqual((len(rows), skipped, error), (1, 0, ""))
+            csv_path = Path(tmp) / "p.CSV"
+            csv_path.write_text(editor.pack_to_csv(pack), encoding="utf-8")
+            self.assertEqual(editor.read_pack_file(csv_path)[0], rows)
+            bad = Path(tmp) / "bad.json"
+            bad.write_bytes(b"\xff\xfe\x00")
+            self.assertEqual(editor.read_pack_file(bad), ([], 0, "Name packs must be UTF-8 text."))
+            with self.assertRaises(OSError):
+                editor.read_pack_file(Path(tmp) / "missing.json")
+
+    def test_each_kind_of_byte_difference_is_named(self):
+        lines = self.LINES
+        with tempfile.TemporaryDirectory() as tmp:
+            base = ("\n".join(lines) + "\n").encode()
+            working = self._doc(tmp, "open.lnc", base)
+            cases = {
+                "storage": editor.UTF8_BOM + base,
+                "eol": (lines[0] + "\r\n" + lines[1] + "\n").encode(),
+                "comment": ("# A comment\n" + "\n".join(lines) + "\n").encode(),
+                "blank": (lines[0] + "\n\n" + lines[1] + "\n").encode(),
+                "other": ("\n".join(lines) + '\n"SOMETHING_ELSE"\t9\n').encode(),
+                "name": (lines[0].replace("\t1\t", "\t1 \t") + "\n" + lines[1] + "\n").encode(),
+            }
+            for key, data in cases.items():
+                with self.subTest(key):
+                    archived = self._doc(tmp, f"{key}.lnc", data)
+                    rows, identical, explanation = editor.compare_backup_in_full(
+                        working, archived.path)
+                    self.assertEqual((rows, identical), ([], False))
+                    text = editor.describe_byte_differences(explanation)
+                    if key == "storage":
+                        self.assertIn("UTF-8, no BOM", explanation["storage"])
+                        self.assertIn("UTF-8, with BOM", text)
+                        self.assertEqual(explanation["counts"], {})
+                        continue
+                    self.assertEqual(explanation["storage"], "")
+                    # A name line written differently is shown as both files have it.
+                    self.assertEqual(explanation["counts"], {key: 2 if key == "name" else 1},
+                                     explanation)
+                    self.assertIn(editor.BYTE_CATEGORIES[key], text)
+            eol = editor.explain_byte_differences(working, self._doc(tmp, "e.lnc", cases["eol"]))
+            self.assertEqual(eol["lines"][0]["where"], "open file")
+            self.assertIn("LF here, CRLF in the backup", eol["lines"][0]["text"])
+            other = editor.explain_byte_differences(
+                working, self._doc(tmp, "o.lnc", cases["other"]))
+            self.assertEqual((other["lines"][0]["where"], other["lines"][0]["line"]), ("backup", 3))
+            same_names = self._doc(tmp, "same.lnc", base)
+            rows, identical, explanation = editor.compare_backup_in_full(working, same_names.path)
+            self.assertEqual((rows, identical, explanation), ([], True, None))
+            editor.try_set_name(working.names()[0], "Club One")
+            rows, identical, explanation = editor.compare_backup_in_full(working, same_names.path)
+            self.assertEqual((len(rows), explanation), (1, None))   # names differ: no explanation
+
+    def test_the_list_stops_at_twenty_and_large_files_are_capped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = "\n".join(self.LINES) + "\n"
+            working = self._doc(tmp, "open.lnc", body.encode())
+            comments = "".join(f"# note {n}\n" for n in range(30))
+            archived = self._doc(tmp, "many.lnc", (comments + body).encode())
+            found = editor.explain_byte_differences(working, archived)
+            self.assertEqual(found["counts"], {"comment": 30})
+            self.assertEqual(len(found["lines"]), editor.BYTE_EXPLAIN_SHOWN)
+            self.assertEqual(found["more"], 10)
+            text = editor.describe_byte_differences(found)
+            self.assertIn("Comment: 30.", text)
+            self.assertIn("...and 10 more line(s) not shown.", text)
+            capped = editor.explain_byte_differences(working, archived, max_lines=5)
+            self.assertTrue(capped["too_large"])
+            self.assertEqual((capped["counts"], capped["lines"]), ({}, []))
+            self.assertIn("too long to compare line by line",
+                          editor.describe_byte_differences(capped))
+            swapped = self._doc(tmp, "swapped.lnc",
+                                (self.LINES[1] + "\n" + self.LINES[0] + "\n").encode())
+            moved = editor.explain_byte_differences(working, swapped)
+            self.assertTrue(moved["reordered"])
+            self.assertIn("different order", editor.describe_byte_differences(moved))
+
+
+class Session23Window(unittest.TestCase):
+    """Session 23: the pack and the Backups window read on the worker; closing the Backups
+    window part-way drops the answer; the byte explanation shows only when names match."""
+
+    TEXT = '"CLUB_NAME_CHANGE"\t1\t"Club 1"\t""\n"CLUB_NAME_CHANGE"\t2\t"Club 2"\t""\n'
+
+    def _window(self, tmp, inline: bool = False):
+        from PySide6.QtWidgets import QApplication
+
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", inline))
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.show()
+        QApplication.processEvents()
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, self.TEXT)
+        backups = Path(tmp) / "backups"
+        self.enterContext(mock.patch.object(editor, "BACKUP_ROOT", backups))
+        self.assertTrue(win.load([str(path)]))
+        self.assertTrue(win.jobs.wait(10))
+        return win, path, backups / "20261111-120000" / "mine.lnc"
+
+    @staticmethod
+    def _until(event, seconds: float = 10.0) -> bool:
+        import time
+        from PySide6.QtWidgets import QApplication
+
+        deadline = time.monotonic() + seconds
+        while not event.is_set() and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.005)
+        return event.is_set()
+
+    def test_a_pack_is_read_on_a_worker(self):
+        import threading
+        from PySide6.QtWidgets import QDialog, QFileDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path, _copy = self._window(tmp)
+            pack = Path(tmp) / "p.json"
+            pack.write_text(editor.pack_to_json({
+                "format": editor.PACK_FORMAT, "version": editor.PACK_VERSION, "names": [
+                    {"command": "CLUB_NAME_CHANGE", "id": "1", "language": "",
+                     "name": "Club One"}]}), encoding="utf-8")
+            threads, dialogs = [], []
+            real = editor.read_pack_file
+
+            def recorded(path):
+                threads.append(threading.current_thread())
+                return real(path)
+
+            def seen(dialog):
+                dialogs.append(dialog)
+                return 0
+
+            with mock.patch.object(editor, "read_pack_file", recorded), \
+                    mock.patch.object(QFileDialog, "getOpenFileName",
+                                      return_value=(str(pack), "")), \
+                    mock.patch.object(QDialog, "exec", seen):
+                win.import_pack()
+                self.assertTrue(win.jobs.wait(10))
+            self.assertIsNot(threads[0], threading.main_thread())
+            self.assertEqual(len(dialogs), 1)
+            self.assertEqual(dialogs[0].windowTitle(), "Import name pack")
+            self.assertFalse(win.docs[0].dirty)         # cancelled: nothing changed
+
+    def test_closing_the_backups_window_part_way_drops_the_comparison(self):
+        import threading
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.TEXT.replace("Club 2", "Club Two"))
+            started, gate = threading.Event(), threading.Event()
+            self.addCleanup(gate.set)
+            real = editor.compare_backup_in_full
+
+            def slow(doc, archive):
+                started.set()
+                gate.wait(10)
+                return real(doc, archive)
+
+            def close_part_way(dialog):
+                self.assertTrue(self._until(started))
+                dialog.reject()
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+                self.assertEqual(dialog.table.rowCount(), 0)      # the answer was dropped
+                self.assertEqual(dialog.summary.text(), "Comparing mine.lnc...")
+                return 0
+
+            with mock.patch.object(editor, "compare_backup_in_full", slow), \
+                    mock.patch.object(QDialog, "exec", close_part_way):
+                win.open_backups()
+            self.assertFalse(win.docs[0].dirty)
+            self.assertTrue(win.open_act.isEnabled())             # the window is not left busy
+
+    def test_closing_during_a_restore_changes_nothing(self):
+        import threading
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+            copy.parent.mkdir(parents=True)
+            write_lnc(copy, self.TEXT.replace("Club 2", "Club Two"))
+            started, gate = threading.Event(), threading.Event()
+            self.addCleanup(gate.set)
+            real = editor.prepare_restore
+
+            def slow(doc, archive):
+                started.set()
+                gate.wait(10)
+                return real(doc, archive)
+
+            def close_part_way(dialog):
+                self.assertTrue(win.jobs.wait(10))
+                self.assertEqual(dialog.table.rowCount(), 1)
+                with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                    dialog.restore()
+                self.assertFalse(dialog.file_list.isEnabled())
+                self.assertTrue(self._until(started))
+                dialog.reject()
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+                return 0
+
+            with mock.patch.object(editor, "prepare_restore", slow), \
+                    mock.patch.object(QDialog, "exec", close_part_way):
+                win.open_backups()
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertFalse(win.docs[0].dirty)
+            self.assertFalse(win.undo_stack.canUndo())
+            self.assertEqual(path.read_bytes().decode("utf-8-sig"), self.TEXT)
+
+    def test_why_the_bytes_differ_shows_only_when_the_names_match(self):
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path, copy = self._window(tmp, inline=True)
+            copy.parent.mkdir(parents=True)
+            copy.write_bytes(editor.UTF8_BOM + self.TEXT.replace("\n", "\r\n").encode())
+            shown = {}
+
+            def look(dialog):
+                shown["visible"] = dialog.why.isVisibleTo(dialog)
+                shown["text"] = dialog.why.toPlainText()
+                shown["read_only"] = dialog.why.isReadOnly()
+                shown["summary"] = dialog.summary.text()
+                write_lnc(copy, self.TEXT.replace("Club 2", "Club Two"))
+                dialog.show_diff()              # names differ now: the panel goes
+                shown["after"] = dialog.why.isVisibleTo(dialog)
+                return 0
+
+            with mock.patch.object(QDialog, "exec", look):
+                win.open_backups()
+            self.assertTrue(shown["visible"])
+            self.assertTrue(shown["read_only"])
+            self.assertIn("Supported names match, but the files are not byte-identical",
+                          shown["summary"])
+            self.assertIn("Line ending: 2.", shown["text"])
+            self.assertIn("LF here, CRLF in the backup", shown["text"])
+            self.assertFalse(shown["after"])
 
 
 if __name__ == "__main__":

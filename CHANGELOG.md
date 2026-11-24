@@ -8,6 +8,14 @@ The source on disk reports `VERSION = "3.8"`. The launcher banner says v3.8.
 
 ## Unreleased
 
+Session 23 — Save timing, a responsive pack import and Backups window, and why the bytes differ:
+
+- **Save timing.** Each part of a Save was timed on copies of a large data set across several runs. One part was clearly the cause: the reload after the write split every name in both files into words again for the right-click token index, although a Save changes no name. The words are now remembered per name, so Save measured 0.61 to 0.67 s, down from 0.78 to 0.94 s. The one-second limit is unchanged.
+- **Pack import in the background.** Import pack reads, checks and matches the pack on the worker, with the window's actions off until it is done, then shows the pack dialog as before.
+- **Backups window in the background.** The backups folder is listed, and a copy is read and compared, on the worker. Closing the window part-way, or choosing another copy, drops the answer still on its way: nothing is shown or restored, and no error appears. While a copy is read for a restore, the lists and buttons wait.
+- **Why the bytes differ.** When every supported name matches a backup but the files are not byte-identical, the Backups window lists why, read only: the encoding or BOM, line endings, comments, blank lines, unsupported lines, and name lines written differently, with counts and the first 20 lines. Files longer than 200,000 lines are not compared line by line.
+- **Verification.** New `Session23Engine` (4) and `Session23Window` (4); `Session8Workers` waits for the Backups window's listing before it restores.
+
 ## 3.8 (24 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.8 makes a roll back to a snapshot ask first and brings the agent guides up to date. Session 22 closes 3.8.

@@ -90,6 +90,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import fnmatch
+import functools
 import hashlib
 import html
 import io
@@ -483,7 +484,10 @@ USER_GUIDE = (
      "Backups > Browse and restore compares a backup with the open files and restores "
      "it into memory. The diff table has a Restore checkbox for each name; tick the "
      "names you want and press Restore selected names to restore only those spellings "
-     "as one undo step. Whole-file restore is still available. Right-click a row and "
+     "as one undo step. Whole-file restore is still available. When every name matches "
+     "but the files are not byte-identical, Why the bytes differ lists the reasons: the "
+     "encoding or BOM, line endings, comments, blank lines, unsupported lines, and name "
+     "lines written differently, with the first 20 lines. It only reads. Right-click a row and "
      "choose Show overrides across files to see every line in the database folder that "
      "names the same entity. The editor does not know the game's load order and does "
      "not claim to."),
@@ -3055,6 +3059,17 @@ def extract_name_tokens(name: str) -> list[str]:
     CF, FK, SK, FC); other two-letter words drop. Marks go after the richer
     tokens so a menu leads with distinctive words.
     """
+    return list(_name_tokens(name))
+
+
+@functools.lru_cache(maxsize=65536)
+def _name_tokens(name: str) -> tuple[str, ...]:
+    """``extract_name_tokens`` as a tuple, remembered per name (Session 23).
+
+    The token index is rebuilt on every reload, including the one after a
+    Save, when no name has changed; remembering the words per name keeps
+    that rebuild from splitting every name in both files again.
+    """
     text = re.sub(r"\([^)]*\)|\[[^]]*\]|\{[^}]*\}", " ",
                   unicodedata.normalize("NFC", name))
     tokens, descriptors, seen = [], [], set()
@@ -3066,7 +3081,7 @@ def extract_name_tokens(name: str) -> list[str]:
             continue
         seen.add(key)
         (descriptors if key in SHORT_FOOTBALL_MARKS else tokens).append(token)
-    return tokens + descriptors
+    return tuple(tokens + descriptors)
 
 
 def _name_search_map(text: str, case_sensitive: bool, match_accents: bool):
@@ -3145,7 +3160,7 @@ def entity_token_set(entity: NameEntity) -> frozenset:
     folds = set()
     for slot in TEXT_SLOTS:
         for entry in entity.slots.get(slot) or []:
-            for token in extract_name_tokens(entry.name):
+            for token in _name_tokens(entry.name):
                 folds.add(token.casefold())
     return frozenset(folds)
 
@@ -3225,7 +3240,7 @@ class FamilyTokenIndex:
             return
         for slot in TEXT_SLOTS:
             for entry in entity.slots.get(slot) or []:
-                for token in extract_name_tokens(entry.name):
+                for token in _name_tokens(entry.name):
                     fold = token.casefold()
                     if fold in folds and fold not in self.display:
                         self.display[fold] = token
@@ -5253,6 +5268,27 @@ def _pack_row(raw: dict) -> dict | None:
     return {"command": cmd, "id": id_, "language": lang, "name": name}
 
 
+def read_pack_file(path) -> tuple[list[dict], int, str]:
+    """Read and parse a name pack file: the slow half of an import (Session 23).
+
+    A worker thread may run it. Returns ``parse_pack``'s ``(rows, skipped,
+    error)``; text that is not UTF-8 is an ``error``. A leading UTF-8 BOM
+    is dropped. The kind follows the extension: ``.csv`` or JSON.
+
+    Raises:
+        OSError: the file could not be read.
+    """
+    raw = Path(path).read_bytes()
+    if raw.startswith(UTF8_BOM):
+        raw = raw[len(UTF8_BOM):]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return [], 0, "Name packs must be UTF-8 text."
+    kind = "csv" if str(path).casefold().endswith(".csv") else "json"
+    return parse_pack(text, kind)
+
+
 def parse_pack(text: str, kind: str) -> tuple[list[dict], int, str]:
     """Read a JSON or CSV name pack.
 
@@ -6491,6 +6527,172 @@ def describe_backup_match(differences: int, identical: bool | None) -> str:
         return "Supported names match, and the files are byte-identical."
     return ("Supported names match, but the files are not byte-identical: comments, blank "
             "lines, other commands, line endings, or the encoding differ.")
+
+
+def compare_backup_in_full(doc: LncDoc, archive_file: Path):
+    """``compare_with_backup`` plus, when only the bytes differ, why (Session 23).
+
+    Returns ``(rows, identical, explanation)``; ``explanation`` is
+    ``explain_byte_differences`` when every supported name matches but the
+    files are not byte-identical, otherwise None. Reads only: a worker
+    thread may run it while the window is busy.
+
+    Raises:
+        OSError, UnicodeError: the backup could not be read.
+    """
+    archived = LncDoc(archive_file)
+    rows = diff_documents(doc, archived)
+    identical = bytes_match(doc, archived.baseline_bytes)
+    explanation = (explain_byte_differences(doc, archived)
+                   if not rows and identical is False else None)
+    return rows, identical, explanation
+
+
+# Session 23: "Why the bytes differ" lists at most this many example lines, and
+# does not go line by line through files longer than this.
+BYTE_EXPLAIN_SHOWN = 20
+BYTE_EXPLAIN_MAX_LINES = 200_000
+
+BYTE_CATEGORIES = {
+    "comment": "Comment",
+    "blank": "Blank line",
+    "other": "Unsupported line",
+    "name": "Name line written differently",
+    "eol": "Line ending",
+}
+
+_EOL_NAMES = {"\r\n": "CRLF", "\n": "LF", "\r": "CR", "": "none (end of file)"}
+
+
+def _storage_label(doc: LncDoc) -> str:
+    name = {"utf-8": "UTF-8", "utf-16-le": "UTF-16 LE",
+            "utf-16-be": "UTF-16 BE"}.get(doc.encoding, doc.encoding)
+    return f"{name}, {'with' if doc.has_bom else 'no'} BOM"
+
+
+def _line_category(entry: Entry) -> str:
+    if entry.kind in ("comment", "blank"):
+        return entry.kind
+    if entry.kind in ("name", "person"):
+        return "name"
+    return "other"                          # other and problem: lines the editor does not edit
+
+
+def explain_byte_differences(working: LncDoc, archived: LncDoc,
+                             shown: int = BYTE_EXPLAIN_SHOWN,
+                             max_lines: int = BYTE_EXPLAIN_MAX_LINES) -> dict:
+    """Say why two files whose supported names match are not byte-identical.
+
+    Read only. Compares the open document's working lines with a backup's:
+    the encoding and BOM, then the lines. Lines the two share at the start
+    and end are skipped; in between, a line found in only one file is a
+    comment, a blank line, an unsupported line, or a name line written
+    differently (spacing, say), and a line found in both with another
+    ending is a line-ending change. Moved lines are not reported one by
+    one: when nothing else differs, ``reordered`` is True.
+
+    Returns a dict: ``storage`` (a sentence, or "" when encoding and BOM
+    agree), ``counts`` (category key of BYTE_CATEGORIES to number),
+    ``lines`` (the first ``shown`` examples, in file order, each with
+    ``category``, ``where`` ("open file" or "backup"), ``line`` (1-based),
+    and ``text``), ``more`` (examples not shown), ``reordered``, and
+    ``too_large`` (True when either file has more than ``max_lines`` lines,
+    so only the encoding was compared).
+    """
+    result = {"storage": "", "counts": {}, "lines": [], "more": 0,
+              "reordered": False, "too_large": False}
+    if (working.encoding, working.has_bom) != (archived.encoding, archived.has_bom):
+        result["storage"] = (f"Encoding or BOM: the open file is {_storage_label(working)}; "
+                             f"the backup is {_storage_label(archived)}.")
+    now, then = working.entries, archived.entries
+    if len(now) > max_lines or len(then) > max_lines:
+        result["too_large"] = True
+        return result
+    start = 0
+    limit = min(len(now), len(then))
+    while start < limit and (now[start].raw, now[start].eol) == (then[start].raw, then[start].eol):
+        start += 1
+    end = 0
+    while (end < limit - start
+           and (now[-1 - end].raw, now[-1 - end].eol) == (then[-1 - end].raw, then[-1 - end].eol)):
+        end += 1
+    middle_now = list(enumerate(now[start:len(now) - end], start))
+    middle_then = list(enumerate(then[start:len(then) - end], start))
+    # Pair the same text with the same ending first, then the same text with
+    # another ending; whatever is left is in one file only.
+    def pool(items):
+        found: dict = {}
+        for position, entry in items:
+            found.setdefault((entry.raw, entry.eol), []).append(position)
+        return found
+
+    exact_now, exact_then = pool(middle_now), pool(middle_then)
+    left_now, left_then = [], []
+    for key, positions in exact_now.items():
+        others = exact_then.get(key, [])
+        paired = min(len(positions), len(others))
+        left_now.extend(positions[paired:])
+        exact_then[key] = others[paired:]
+    for positions in exact_then.values():
+        left_then.extend(positions)
+    by_text: dict = {}
+    for position in left_then:
+        by_text.setdefault(then[position].raw, []).append(position)
+    findings = []                       # (sort position, category, where, line, text)
+    single_now = []
+    for position in sorted(left_now):
+        waiting = by_text.get(now[position].raw)
+        if waiting:
+            other = waiting.pop(0)
+            findings.append((position, "eol", "open file", position + 1,
+                             f"{_EOL_NAMES.get(now[position].eol, repr(now[position].eol))} here, "
+                             f"{_EOL_NAMES.get(then[other].eol, repr(then[other].eol))} "
+                             f"in the backup: {now[position].raw}"))
+        else:
+            single_now.append(position)
+    for position in single_now:
+        findings.append((position, _line_category(now[position]), "open file", position + 1,
+                         now[position].raw))
+    for positions in by_text.values():
+        for position in positions:
+            findings.append((position, _line_category(then[position]), "backup", position + 1,
+                             then[position].raw))
+    findings.sort(key=lambda item: (item[0], item[2]))
+    counts: dict = {}
+    for _position, category, *_rest in findings:
+        counts[category] = counts.get(category, 0) + 1
+    result["counts"] = counts
+    result["lines"] = [
+        {"category": category, "where": where, "line": line,
+         "text": text if len(text) <= 160 else text[:157] + "..."}
+        for _position, category, where, line, text in findings[:shown]]
+    result["more"] = max(0, len(findings) - shown)
+    result["reordered"] = not findings and bool(middle_now or middle_then)
+    return result
+
+
+def describe_byte_differences(explanation: dict) -> str:
+    """The explanation as plain text for the Backups window, one fact per line."""
+    out = []
+    if explanation.get("storage"):
+        out.append(explanation["storage"])
+    if explanation.get("too_large"):
+        out.append("The files are too long to compare line by line here.")
+        return "\n".join(out)
+    counts = explanation.get("counts", {})
+    if counts:
+        out.append("; ".join(f"{BYTE_CATEGORIES[key]}: {counts[key]:,}"
+                             for key in BYTE_CATEGORIES if counts.get(key)) + ".")
+    for row in explanation.get("lines", []):
+        out.append(f"{BYTE_CATEGORIES[row['category']]}, {row['where']} line "
+                   f"{row['line']:,}: {row['text']}")
+    if explanation.get("more"):
+        out.append(f"...and {explanation['more']:,} more line(s) not shown.")
+    if explanation.get("reordered"):
+        out.append("The same lines are in a different order.")
+    if not out:
+        out.append("No difference was found line by line.")
+    return "\n".join(out)
 
 
 def match_open_document(archive_file: Path, docs, manifest: dict | None = None):
@@ -9348,6 +9550,16 @@ def run_gui(paths):
             self.table.setEditTriggers(QTableWidget.NoEditTriggers)
             self.table.horizontalHeader().setStretchLastSection(True)
             lay.addWidget(self.table, 1)
+            # Session 23: when the names match but the bytes do not, say why. Read only.
+            self.why_label = QLabel("Why the bytes differ")
+            self.why_label.setObjectName("muted")
+            self.why = QPlainTextEdit()
+            self.why.setReadOnly(True)
+            self.why.setLineWrapMode(QPlainTextEdit.NoWrap)
+            self.why.setMaximumHeight(170)
+            for widget in (self.why_label, self.why):
+                widget.setVisible(False)
+                lay.addWidget(widget)
             box = QDialogButtonBox(QDialogButtonBox.Close)
             self.close_btn = box.button(QDialogButtonBox.Close)
             self.restore_btn = QPushButton("Restore into open file")
@@ -9365,15 +9577,75 @@ def run_gui(paths):
             lay.addWidget(box)
             self.archive_list.currentRowChanged.connect(self.show_archive)
             self.file_list.currentRowChanged.connect(lambda _row: self.show_diff())
-            self.archives = list_archives(BACKUP_ROOT)
+            self.archives: list = []
             self.manifests: dict = {}
-            if not self.archives:
-                self.summary.setText("No backups yet. Save or Deploy a game file to create one.")
-            for folder in self.archives:
+            # Session 23: reading the folders and comparing a copy run on the window's
+            # worker. ``closed`` and ``request`` drop an answer that comes back after
+            # the dialog closed, or after another copy was chosen.
+            self.closed = False
+            self.request = 0
+            self.jobs = getattr(parent, "jobs", None)
+            self.summary.setText("Reading the backups folder...")
+            self.run(lambda: self.read_archives(BACKUP_ROOT), self.fill_archives,
+                     self.archives_failed, "Reading the backups folder...")
+
+        def done(self, result: int) -> None:
+            """Every way of closing ends here: an answer still on its way is dropped."""
+            self.closed = True
+            super().done(result)
+
+        def run(self, work, done, failed, text: str) -> None:
+            """Run ``work`` on the window's worker, or here when there is none.
+
+            ``done`` and ``failed`` run only while this is still the latest
+            request and the dialog is open; otherwise the answer is dropped,
+            so closing part-way changes nothing.
+            """
+            self.request += 1
+            request = self.request
+
+            def live() -> bool:
+                return not self.closed and request == self.request
+
+            def finish(result):
+                if live():
+                    done(result)
+
+            def fail(exc):
+                if live():
+                    failed(exc)
+
+            if self.jobs is None:
                 try:
-                    found, problem = read_manifest(folder), ""
+                    result = work()
+                except Exception as exc:        # handed on, as a worker would
+                    fail(exc)
+                    return
+                finish(result)
+                return
+            self.jobs.start(text, work, finish, fail)
+
+        @staticmethod
+        def read_archives(root: Path) -> list:
+            """The backup folders and their manifests, newest first. Reads only."""
+            found = []
+            for folder in list_archives(root):
+                try:
+                    found.append((folder, read_manifest(folder), ""))
                 except ValueError as exc:
-                    found, problem = None, str(exc)
+                    found.append((folder, None, str(exc)))
+            return found
+
+        def archives_failed(self, exc: Exception) -> None:
+            if not isinstance(exc, OSError):
+                raise exc
+            self.summary.setText(f"Could not read the backups folder:\n{exc}")
+
+        def fill_archives(self, listing: list) -> None:
+            self.archives = [folder for folder, _manifest, _problem in listing]
+            self.summary.setText(
+                "" if listing else "No backups yet. Save or Deploy a game file to create one.")
+            for folder, found, problem in listing:
                 self.manifests[folder] = (found, problem)
                 item = QListWidgetItem(self.archive_label(folder, found, problem))
                 if found is not None:
@@ -9461,8 +9733,16 @@ def run_gui(paths):
             manifest, _problem = self.manifest_for(path)
             return match_open_document(path, self.docs, manifest)
 
+        def show_why(self, text: str) -> None:
+            """Show the read-only "Why the bytes differ" panel, or hide it for ""."""
+            self.why.setPlainText(text)
+            for widget in (self.why_label, self.why):
+                widget.setVisible(bool(text))
+
         def show_diff(self):
+            self.request += 1               # an answer still on its way is for another copy
             self.table.setRowCount(0)
+            self.show_why("")
             self.restore_btn.setEnabled(False)
             self.restore_selected_btn.setEnabled(False)
             path = self.selected_file()
@@ -9486,11 +9766,19 @@ def run_gui(paths):
                     self.summary.setText(
                         f"Open one file named {path.name} before comparing or restoring it.")
                 return
-            try:
-                rows, identical = compare_with_backup(doc, path)
-            except (OSError, UnicodeError) as exc:
-                self.summary.setText(f"Could not read the backup:\n{exc}")
-                return
+            # Reading and comparing the copy is the slow part (Session 23): a worker
+            # does it while the window is busy, so the open file holds still.
+            self.summary.setText(f"Comparing {path.name}...")
+            self.run(lambda: compare_backup_in_full(doc, path),
+                     lambda result: self.fill_diff(doc, how, path, *result),
+                     self.diff_failed, f"Comparing {path.name} from {path.parent.name}...")
+
+        def diff_failed(self, exc: Exception) -> None:
+            if not isinstance(exc, (OSError, UnicodeError)):
+                raise exc
+            self.summary.setText(f"Could not read the backup:\n{exc}")
+
+        def fill_diff(self, doc, how: str, path: Path, rows, identical, explanation) -> None:
             self.table.setRowCount(len(rows))
             for index, row in enumerate(rows):
                 # Column 0: checkbox for per-name restore
@@ -9520,8 +9808,16 @@ def run_gui(paths):
                 text += (f" It is compared with {doc.path}, which has the same name but is "
                          "not the file this copy came from.")
             self.summary.setText(text)
+            if explanation is not None:
+                self.show_why(describe_byte_differences(explanation))
             self.restore_btn.setEnabled(True)
             self.restore_selected_btn.setEnabled(True)
+
+        def restoring(self, busy: bool) -> None:
+            """While a copy is read for a restore, nothing else in the dialog starts."""
+            for widget in (self.restore_btn, self.restore_selected_btn, self.close_btn,
+                           self.archive_list, self.file_list):
+                widget.setEnabled(not busy)
 
         def restore(self):
             path = self.selected_file()
@@ -9535,24 +9831,14 @@ def run_gui(paths):
                 QMessageBox.Yes | QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
-            jobs = getattr(self.parent(), "jobs", None)
-            if jobs is None:
-                try:
-                    prepared = prepare_restore(doc, path)
-                except (OSError, UnicodeError) as exc:
-                    self.restore_failed(exc)
-                    return
-                self.finish_restore(doc, path, prepared)
-                return
             # Reading and parsing the copy is the slow part: a worker does it, and
-            # the dialog's buttons wait. The lines are taken on the GUI thread.
-            for button in (self.restore_btn, self.close_btn):
-                button.setEnabled(False)
+            # the dialog waits. The lines are taken on the GUI thread, and only
+            # while the dialog is still open (Session 23).
+            self.restoring(True)
             self.summary.setText(f"Reading {path.name}...")
-            jobs.start(f"Reading {path.name} from {path.parent.name}...",
-                       lambda: prepare_restore(doc, path),
-                       lambda prepared: self.finish_restore(doc, path, prepared),
-                       self.restore_failed)
+            self.run(lambda: prepare_restore(doc, path),
+                     lambda prepared: self.finish_restore(doc, path, prepared),
+                     self.restore_failed, f"Reading {path.name} from {path.parent.name}...")
 
         def restore_selected_names(self):
             """Restore only the ticked names from the backup into the open file.
@@ -9686,7 +9972,7 @@ def run_gui(paths):
             doc.touch()
 
         def finish_restore(self, doc, path: Path, prepared) -> None:
-            self.close_btn.setEnabled(True)
+            self.restoring(False)
             operation = Operation(f"restore {doc.path.name} from {path.parent.name}")
             with operation:
                 doc.apply_working(prepared)
@@ -9700,8 +9986,7 @@ def run_gui(paths):
                 f"Restored {path.name} into the open file. Save or Deploy to write it.")
 
         def restore_failed(self, exc: Exception) -> None:
-            self.close_btn.setEnabled(True)
-            self.restore_btn.setEnabled(True)
+            self.restoring(False)
             if not isinstance(exc, (OSError, UnicodeError)):
                 raise exc
             QMessageBox.critical(self, APP_NAME, f"Could not restore:\n{exc}")
@@ -14041,25 +14326,30 @@ def run_gui(paths):
                 "Name packs (*.json *.csv);;JSON (*.json);;CSV (*.csv);;All files (*)")
             if not path:
                 return
-            try:
-                raw = Path(path).read_bytes()
-            except OSError as exc:
+            docs = list(self.docs)
+
+            def work():
+                # Reading, parsing and matching the pack is the slow part (Session 23):
+                # a worker does it while the window is busy, so the documents hold still.
+                rows, skipped, error = read_pack_file(path)
+                if error:
+                    return error, skipped, None
+                return "", skipped, proposals_from_pack(docs, rows)
+
+            def failed(exc):
+                if not isinstance(exc, OSError):
+                    raise exc
                 QMessageBox.critical(self, APP_NAME, f"Could not read the pack:\n{exc}")
-                return
-            if raw.startswith(UTF8_BOM):
-                raw = raw[len(UTF8_BOM):]
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                QMessageBox.critical(
-                    self, APP_NAME, "Name packs must be UTF-8 text.")
-                return
-            kind = "csv" if path.casefold().endswith(".csv") else "json"
-            rows, skipped, error = parse_pack(text, kind)
+
+            self.jobs.start(f"Reading {Path(path).name}...", work,
+                            lambda result: self.show_pack(*result), failed)
+
+        def show_pack(self, error: str, skipped: int, proposals) -> None:
+            """The pack read on a worker: review it in the pack dialog, then apply it."""
             if error:
                 QMessageBox.critical(self, APP_NAME, error)
                 return
-            changes, missing, stats = proposals_from_pack(self.docs, rows)
+            changes, missing, stats = proposals
             summary = (
                 f"{stats['rows']} usable name(s). {stats['same']} already match. "
                 f"{stats['duplicate']} repeated key(s) kept the last spelling.")

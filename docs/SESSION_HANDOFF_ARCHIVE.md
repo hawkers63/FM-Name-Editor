@@ -10,6 +10,40 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 22 November 2026 (Europe/London) — Claude Code (Session 20)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Branch / commit:** main, local `feat: search scope and aliases, name-length gauges and keyboard cadence`, not pushed
+
+### Done this session
+
+- Stage 0: checked keys before changing anything. Alt+A, Alt+Down, Alt+Up and Ctrl+Shift+L were free; Shift+Enter already acted as Enter in a line edit; Tab and Enter in the grid editor had Qt's default handling. Baseline search keystroke at 4,297 clubs: 51–74 ms across all sections, 33–43 ms in one section (after the 200 ms typing pause).
+- Stage 1 (note 09 proposal 1): a scope label and Search all sections (N) beside the entity search box, Edit > Search all sections (Alt+A), a "No matches in … Found N in other sections" link that clears the filter, and a built-in club alias table used only when the words find nothing. The grid filter and the elsewhere count share one engine test, `entity_shown`.
+- Stage 2 (proposal 2): length counters under Long name, Short name and 3-letter code against `NAME_LENGTH_GUIDES` (28 / 14 / 3), grey, amber or red with words; the code is flagged for lower case or a length other than 3. The Illustrative card shows a name past its guide cut with an ellipsis, with a note. Warnings only.
+- Stage 3 (proposal 6): Alt+Down / Shift+Enter / Alt+Up in an inspector field; Edit > Copy long name to short name (Ctrl+Shift+L, in the palette); Tab / Shift+Tab / Enter in the grid's cell editor through a `CadenceDelegate`.
+- User guide (three new sections), CHANGELOG Unreleased, README "Planned for 3.6" line.
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Session 21 (Release 3.7): note 09 proposals 3 to 5, as the private roadmap plans.
+
+### Known issues / blockers
+
+- None. After the change a search keystroke takes 60–95 ms across all sections and 44–100 ms in one section; the slowest case is a search that finds nothing in a section and tries the alias and the other sections.
+- THEME gained a `problem` colour (coral, the same value as the nation badge) because the brief's "problem" key did not exist; amber is the existing `warning` key, not `edited`, which is violet and means Edited.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`,
+  `docs/SESSION_HANDOFF.md`; private `roadmap.md` (not tracked)
+
+---
+
 ## 22 November 2026 (Europe/London) — Grok Bot (Neal)
 
 - **Tool:** Grok Bot (Neal)
