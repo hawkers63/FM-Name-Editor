@@ -12,14 +12,13 @@ changes.
 
 ## Now
 
-- **Release 3.6** is current (22 November 2026): a search box that names the
-  section it searches, a few common club aliases, name-length counters, and
-  faster keyboard moves between rows.
+- **Release 3.7** is current (24 November 2026): a short name and 3-letter
+  code suggested from a club's long name, Name health checks with Fix
+  formatting, and in-memory snapshots to roll back a run of changes.
 
 ## Next
 
-- **Release 3.7**: suggested short names and codes, name health checks,
-  and in-memory snapshots to roll back a set of bulk changes.
+- Further work is to be planned.
 
 ## Later
 
@@ -28,6 +27,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.7 — suggested short names and codes, name health, and in-memory snapshots
 - 3.6 — search scope and aliases, name-length counters, and faster keyboard moves
 - 3.5 — start folders and favourites, the ID column, and Add name
 - 3.4 — illustrative previews and per-name backup restore

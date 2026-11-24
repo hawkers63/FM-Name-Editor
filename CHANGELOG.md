@@ -1,12 +1,16 @@
 # Changelog
 
-Release: 3.6
+Release: 3.7
 Status: released
-Application on disk: 3.6
+Application on disk: 3.7
 
-The program on disk reports `VERSION = "3.6"`. The launcher banner says v3.6.
+The program on disk reports `VERSION = "3.7"`. The launcher banner says v3.7.
 
 ## Unreleased
+
+## 3.7 (24 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.7 adds a short name and 3-letter code suggested from a club's long name, Name health checks with Fix formatting, and in-memory snapshots to roll back a run of changes. Session 21 closes 3.7.
 
 Session 21 — short names and codes from the long name, name health, and snapshots (Release 3.7, note 09 proposals 3 to 5):
 
@@ -15,7 +19,7 @@ Session 21 — short names and codes from the long name, name health, and snapsh
 - **Fix formatting.** Edit > Fix formatting, and the button in the inspector's Name health notice, tidy the names of the rows selected on the Entities tab as one Undo step: non-breaking spaces become plain ones and zero-width ones go, curly quotes and accent apostrophes become ', curly double quotes become ' too (a straight double quote cannot sit inside a name), an em dash becomes -, spaces in a row become one, the ends are trimmed, and 3-letter codes go into capitals. Only the quoted name of a line changes. A shared code is not a formatting fault, so it is left for you to decide.
 - **Snapshots, in memory only.** Edit > Create snapshot… (Ctrl+Alt+K) keeps the open files' lines under a name you give. Edit > Roll back to snapshot lists them, newest first, with the time taken, and puts every open file's lines back as they were then, as one Undo step that Undo takes away again. Snapshots are never written to disk, go when files are opened again, and are kept to ten: taking another lets the oldest go and names it. A roll back after a Save or Deploy matches the lines to the file on disk again, so what differs from the file is a pending change, reviewed and ticked as usual.
 - **Speed.** On copies of the live files (8,385 entities), a name-health pass takes about 42 ms, a snapshot about 75 ms, and rolling back a 500-name change about 120 ms. Adding lines, by Fill short name and code or a roll back that adds or takes out lines, reloads the views as typing into an empty field already does: about 0.6 s.
-- **Verification.** New `Session21Engine` (8), `Session21Fill` (2), `Session21Health` (3), `Session21Snapshots` (2) and `Session21Speed` (1, on copies of the live files). The Edit menu test in `Session6Window` and the status-filter test in `Session2Window` list the new entries.
+- **Verification.** New `Session21Engine` (8), `Session21Fill` (2), `Session21Health` (3), `Session21Snapshots` (2) and `Session21Speed` (1, on copies of the live files). The Edit menu test in `Session6Window` and the status-filter test in `Session2Window` list the new entries. Tests: 372 in the full suite, up from 356, all passing offscreen.
 
 ## 3.6 (22 November 2026)
 

@@ -10,6 +10,39 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 24 November 2026 (Europe/London) — Grok Bot (Neal)
+
+- **Tool:** Grok Bot (Neal)
+- **Model:** Grok Bot
+- **Branch / commit:** main, local `docs: finalise Release 3.7 version, headers, changelog and README`, annotated tag `v3.7`, not pushed
+
+### Done this session
+
+- Reviewed Session 21 (`b8673e8`): the commit changes only `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`, `docs/SESSION_HANDOFF.md` and `docs/SESSION_HANDOFF_ARCHIVE.md`. No private files, no tag. Binding rules hold: suggestions fill only empty fields on an explicit action; Fix formatting is one undoable step and does not resolve a shared code; snapshots stay in memory, capped at ten, and rollback is one undo step without clearing the stack. Ctrl+Shift+D is still Deploy. Rollback is a submenu and does not ask for confirmation (reported; not changed in this pass).
+- Ran the full suite once: 372 tests in 59.455s, all passing offscreen.
+- Finalised Release 3.7: `VERSION`, the launcher banner, the README and CHANGELOG headers, a dated CHANGELOG section with an empty Unreleased section above it, the public roadmap, and this handoff. Private `roadmap.md` was updated and not staged. The executable was built and not launched. Release notes were written. Nothing was pushed.
+
+### In progress
+
+- Nothing. Waiting for Mark to confirm the push and the GitHub Release.
+
+### Next steps
+
+- After Mark confirms: push `main` then tag `v3.7`, and create the GitHub Release with the exe.
+- Further sessions are to be planned.
+
+### Known issues / blockers
+
+- None that block the release. Rollback does not show a confirmation dialog (the brief had asked for one). Club names used as generic examples in tests and docs were left as they are for Mark to decide. The Session 21 handoff line about live-file health counts was not copied into the release notes.
+
+### Files touched
+
+- `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
+  `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`;
+  private `roadmap.md` (not tracked)
+
+---
+
 ## 24 November 2026 (Europe/London) — Claude Code (Session 21)
 
 - **Tool:** claude (Claude Code)
@@ -142,65 +175,3 @@ and Codex CLI. Update it at the end of every session.
 - `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
   `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`; private `roadmap.md` and
   `memory.md` (not tracked)
----
-
-## 22 November 2026 (Europe/London) — Claude Code
-
-- **Tool:** Claude Code
-- **Model:** Opus 5.5 (`claude-opus-5-5`)
-- **Branch / commit:** main, one local commit for Session 19
-  (`feat: start folders and favourites, ID column and Add name`), not pushed
-
-### Done this session (Session 19, Release 3.5, note 08)
-
-- **Stage 0:** long-name sorting confirmed in source and left alone. The
-  sort arrow is drawn, but it is small, grey, and at the far edge of the
-  stretched Long name column, so the sorted heading is now bold (font role
-  on both grid models). `QFileDialog` calls that passed "" or a bare file
-  name: `open_dialog`, `ImportDialog.pick_old` and `pick_base`,
-  `import_pack`, and `export_pack` ("fm-name-pack.json").
-- **Stage 1:** every picker starts in the last folder File > Open used,
-  else `lnc\all` of the selected database (from `GAME_DB_ROOT` and the
-  selector), else the user folder, with the missing folder named in the
-  status bar. File > Name files in the selected database, up to three
-  favourites in the File menu, File > Favourite folders….
-  `open_folder` and `favourite_folders` live in `state\settings.json`
-  through `keep_settings`; bad entries are ignored; a damaged file is left
-  byte for byte. Extra safeguard: Export name pack refuses a path in the
-  game's folders (`in_game_tree`), since its picker can now open there.
-- **Stage 2:** View > Show ID column, on by default and remembered
-  (`id_column` in the view). **Decision 26 revised:** the entity grid
-  shows the ID by default again; the inspector and All lines keep it.
-  Width from `fit_columns`; numeric sort with empty or non-numeric IDs
-  last; sorting adds no undo step.
-- **Stage 3:** Edit > Add name… (`AddNameDialog`, `add_entity_lines`):
-  lines go in through `append_entry` under `#Imported by FM Name Editor`
-  in one `recording(...)` operation; an existing family and ID (compared
-  by number) selects that row and adds nothing; nothing is written to disk.
-- **Docs:** user guide, CHANGELOG **Unreleased**, README "Planned for
-  3.5" line, private `roadmap.md`.
-- **Tests:** new `Session19Engine` (7), `Session19Folders` (9),
-  `Session19IdColumn` (4), `Session19AddName` (7); menu lists updated in
-  `Session6Window`, `Session7Window` and `Session14Visual`. Targeted runs
-  only; full suite not run (Neal runs it at release).
-
-### In progress
-
-- Nothing. Session 19 is the only session in Release 3.5.
-
-### Next steps
-
-- Neal: Release 3.5 (version headers, dated CHANGELOG section, full
-  suite, tag, exe), pushed only once Mark confirms.
-- `memory.md`: update decision 26 to say Session 19 revised it (the brief
-  said not to read `memory.md` this session).
-- Session 20 (Release 3.6, note 09) after the release.
-
-### Known issues / blockers
-
-- None found.
-
-### Files touched
-
-- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`,
-  `docs/SESSION_HANDOFF.md`; private `roadmap.md` (not tracked)

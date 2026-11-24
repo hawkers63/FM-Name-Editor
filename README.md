@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.6](https://img.shields.io/badge/Release-v3.6-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.7](https://img.shields.io/badge/Release-v3.7-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-356%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-372%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.6
+Release: 3.7
 Status: released
-Application on disk: 3.6
+Application on disk: 3.7
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.7:** a short name and 3-letter code suggested from a club's long name (**Edit > Fill short name and code**, Ctrl+Alt+D); **Name health**, which counts and lists stray spaces, typographic punctuation, lower-case codes, and codes shared in a file section, with **Fix formatting**; and **snapshots** of the open files kept in memory, to roll back a run of changes in one step (Ctrl+Alt+K). Nothing is written until Save or Deploy.
 
 **New in 3.6:** a search box that names the section it searches, with **Search all sections** (Alt+A) and a few common club aliases; name-length counters against typical guides, with a cut preview on the Illustrative card; and keyboard moves between rows in the inspector (Alt+Down, Alt+Up) and along a row in the grid (Tab, Enter). Nothing is written until Save or Deploy.
 
@@ -185,6 +187,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.7**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.7) | 24&nbsp;Nov&nbsp;2026 | 🩺 Suggested short names and codes, name health, and in-memory snapshots |
 | [**3.6**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.6) | 22&nbsp;Nov&nbsp;2026 | 🔎 Search scope and aliases, name-length counters, and faster keyboard moves |
 | [**3.5**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.5) | 22&nbsp;Nov&nbsp;2026 | 📂 Useful start folders and favourites, the ID column on the entity grid, and Add name |
 | [**3.4**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.4) | 21&nbsp;Nov&nbsp;2026 | 🖼️ Illustrative previews in the inspector, and per-name restore from a backup |
@@ -202,6 +205,18 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.7 adds</b> &nbsp;·&nbsp; 24&nbsp;Nov&nbsp;2026</summary>
+
+3.7 adds a short name and 3-letter code suggested from a club's long name, Name health checks with Fix formatting, and in-memory snapshots to roll back a run of changes.
+
+- **Fill short name and code.** For a club with no short name or no 3-letter code, the inspector shows a suggestion from the long name. **Use suggestion**, or **Edit > Fill short name and code** (Ctrl+Alt+D), adds only the empty fields as one undo step. A field that already has a name is never overwritten, and typing a long name never fills the siblings by itself. Clubs only. Nothing is written until Save or Deploy.
+- **Name health.** The status bar counts open names with something to check, for example stray spaces, typographic punctuation, a lower-case 3-letter code, or a code shared with another club in the same file section. A **Name health** filter lists them; their Status reads Check, in amber, and the inspector names each finding. Checks only: nothing changes on its own.
+- **Fix formatting.** Edit > Fix formatting, and the button in the inspector, tidy the selected rows as one undo step (whitespace, typographic punctuation, and 3-letter codes in capitals). A shared code is left for you to decide. Names are not shortened to the length guides.
+- **Snapshots, in memory only.** Edit > Create snapshot… (Ctrl+Alt+K) keeps the open files' lines under a name you give. Edit > Roll back to snapshot lists them and puts the lines back as one undo step; Undo takes the roll back away again. Snapshots are never written to disk, are kept to ten, and go when files are opened again or the editor exits.
+
+</details>
 
 <details>
 <summary><b>What 3.6 adds</b> &nbsp;·&nbsp; 22&nbsp;Nov&nbsp;2026</summary>
@@ -403,7 +418,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Planned for 3.7:** a short name and 3-letter code suggested from a club's long name (Ctrl+Alt+D); Name health, which counts and lists stray spaces, typographic punctuation, lower-case codes, and codes shared in a file section, with Fix formatting; and snapshots of the open files kept in memory, to roll back a run of changes in one step (Ctrl+Alt+K).
+- Further work will be listed here when it is agreed for the public plan.
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.6
+FM Name Editor v3.7
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -56,6 +56,9 @@ Release 3.6 adds a search box that names the section it searches,
 a few common club aliases, name-length counters against typical
 guides, and faster keyboard moves between rows in the inspector
 and along a row in the grid.
+Release 3.7 adds a short name and 3-letter code suggested from a
+club's long name, Name health checks with Fix formatting, and
+in-memory snapshots to roll back a run of changes.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -102,7 +105,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.6"
+VERSION = "3.7"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")
