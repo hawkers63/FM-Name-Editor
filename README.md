@@ -50,6 +50,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 ## ✨ Key features
 
+**In development (not yet released):** **Edit > Roll back to snapshot** asks before it rolls back. The question names the snapshot, the time it was taken, and the files, and says the roll back replaces the working copy in memory only, with Undo to take it away. Cancel is the default, and Esc or closing the question cancels; no file on disk changes until Save or Deploy.
+
 **New in 3.7:** a short name and 3-letter code suggested from a club's long name (**Edit > Fill short name and code**, Ctrl+Alt+D); **Name health**, which counts and lists stray spaces, typographic punctuation, lower-case codes, and codes shared in a file section, with **Fix formatting**; and **snapshots** of the open files kept in memory, to roll back a run of changes in one step (Ctrl+Alt+K). Nothing is written until Save or Deploy.
 
 **New in 3.6:** a search box that names the section it searches, with **Search all sections** (Alt+A) and a few common club aliases; name-length counters against typical guides, with a cut preview on the Illustrative card; and keyboard moves between rows in the inspector (Alt+Down, Alt+Up) and along a row in the grid (Tab, Enter). Nothing is written until Save or Deploy.

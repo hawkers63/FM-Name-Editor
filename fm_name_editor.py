@@ -418,8 +418,9 @@ USER_GUIDE = (
      "Edit > Create snapshot (Ctrl+Alt+K) keeps the open files' lines as they are now, "
      "under a name you give, in memory only: nothing is written to disk, and snapshots "
      "go when files are opened again. Edit > Roll back to snapshot lists them, newest "
-     "first; choosing one puts every open file's lines back as they were then, as one "
-     "Undo step, so Undo takes the roll back away again. After a Save or Deploy, a roll "
+     "first; choosing one asks first (Cancel is the default, and Esc cancels), then puts "
+     "every open file's lines back in memory as they were then, as one Undo step, so "
+     "Undo takes the roll back away again. No file on disk changes. After a Save or Deploy, a roll "
      "back leaves the differences as unsaved changes to review. Up to ten are kept; "
      "taking another lets the oldest go, and the status bar says which."),
     ("Add a name for an ID",
@@ -13618,17 +13619,73 @@ def run_gui(paths):
                 item.triggered.connect(
                     lambda _checked=False, chosen=snapshot: self.roll_back_snapshot(chosen))
 
+        def rollback_box(self, snapshot: Snapshot):
+            """The question asked before a roll back, and its Roll back button.
+
+            Cancel is the default button and answers Esc and the title bar's close.
+            """
+            files = ", ".join(doc.path.name for doc in snapshot.states) or "the open files"
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Question)
+            box.setWindowTitle("Roll back to snapshot")
+            box.setText(f"Roll back to snapshot '{snapshot.label}', taken at "
+                        f"{snapshot.taken:%H:%M:%S} on {snapshot.taken:%d %B %Y}?")
+            box.setInformativeText(
+                f"The lines of {files} go back to how they were then. This replaces the "
+                "working copy in memory only: no file on disk changes, and nothing is "
+                "written until you Save or Deploy and review the changes. Undo takes the "
+                "roll back away again.")
+            roll = box.addButton("Roll back", QMessageBox.AcceptRole)
+            cancel = box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(cancel)
+            box.setEscapeButton(cancel)
+            return box, roll
+
+        def confirm_rollback(self, snapshot: Snapshot) -> bool:
+            """Ask before a roll back; only the Roll back button says yes.
+
+            The inspector's fields are quiet while the question is up, so a name
+            being typed there is kept as it is, not used, when focus moves away.
+            """
+            box, roll = self.rollback_box(snapshot)
+            edits = list(self.inspector_edits.values())
+            quiet = [edit.blockSignals(True) for edit in edits]
+            try:
+                box.exec()
+                chosen = box.clickedButton() == roll
+            finally:
+                for edit, was in zip(edits, quiet):
+                    edit.blockSignals(was)
+                box.deleteLater()
+            return chosen
+
         def roll_back_snapshot(self, snapshot: Snapshot) -> None:
             """Put the open files' lines back as ``snapshot`` kept them, as one operation."""
             if snapshot not in self.snapshots:
                 return
-            with self.recording(f"roll back to snapshot '{snapshot.label}'") as operation:
+            if not self.confirm_rollback(snapshot):
+                self.statusBar().showMessage(
+                    f"Roll back to snapshot '{snapshot.label}' cancelled: nothing changed.", 6000)
+                return
+            def workspace():
+                # What a roll back can change that a reader sees: the working bytes,
+                # the lines a write would take out, and the restore flags.
+                return [(doc.to_bytes(), [(entry.raw, entry.eol) for entry in doc.removed_rows],
+                         doc.restore_pending, doc.restored_from, doc.whole_excluded)
+                        for doc in self.docs]
+
+            before = workspace()
+            operation = Operation(f"roll back to snapshot '{snapshot.label}'")
+            with operation:
                 roll_back_to(snapshot)
-            if not operation.changed:
+            # After a write, the matching to the disk file is made afresh even when
+            # nothing differs; that alone is no step for Undo.
+            if not operation.changed or workspace() == before:
                 self.statusBar().showMessage(
                     f"The open files already match snapshot '{snapshot.label}': nothing to "
                     "roll back.", 8000)
                 return
+            self.push_operation(operation)
             if operation.structural:
                 self.reload_views()
             else:

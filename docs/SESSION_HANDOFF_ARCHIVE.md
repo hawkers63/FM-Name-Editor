@@ -10,6 +10,39 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 22 November 2026 (Europe/London) — Grok Bot (Neal)
+
+- **Tool:** Grok Bot (Neal)
+- **Model:** Grok Bot
+- **Branch / commit:** main, local `docs: finalise Release 3.5 version, headers, changelog and README`, annotated tag `v3.5`, not pushed
+
+### Done this session
+
+- Reviewed Session 19 (`dd67263`): the commit changes only `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md` and `docs/SESSION_HANDOFF.md`. No private files, no playthrough details, no tag. The export-pack guard (`in_game_tree`) is used only there; Save and Deploy are unchanged.
+- Ran the full suite once: 331 tests in 50.390s, all passing offscreen.
+- Finalised Release 3.5: `VERSION`, the launcher banner, the README and CHANGELOG headers, a dated CHANGELOG section with an empty Unreleased section above it, the public roadmap, and this handoff. Private `roadmap.md` and decision 26 in `memory.md` were updated and not staged. The executable was built and not launched. Release notes were written. Nothing was pushed.
+
+### In progress
+
+- Nothing. Waiting for Mark to confirm the push and the GitHub Release.
+
+### Next steps
+
+- After Mark confirms: push `main` then tag `v3.5`, and create the GitHub Release with the exe.
+- Session 20 (Release 3.6, note 09 stage 1).
+
+### Known issues / blockers
+
+- None for the release. An uncommitted edit to `AGENTS.md` (Token-lean workflow) was left as it is and was not staged.
+
+### Files touched
+
+- `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
+  `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`; private `roadmap.md` and
+  `memory.md` (not tracked)
+
+---
+
 ## 22 November 2026 (Europe/London) — Claude Code
 
 - **Tool:** Claude Code

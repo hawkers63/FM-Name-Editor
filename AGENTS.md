@@ -19,7 +19,7 @@ every session.
   without disturbing a line you did not touch.
 - **Repository:** https://github.com/hawkers63/FM-Name-Editor
 - **Local path (Hawkeye):** `C:\FM Name Editor`
-- **Current release:** 3.4 (`VERSION` in `fm_name_editor.py`)
+- **Current release:** see `VERSION` in `fm_name_editor.py` (the source of truth)
 - **Licence:** Proprietary, all rights reserved (see `LICENSE`).
 
 The facts that change (paths, counts, defect status) live in `memory.md`;
@@ -60,7 +60,7 @@ whether from that phrase or a pasted pre-session prompt:
    work, and do not pull work forward from later sessions unless it is a
    one-line prerequisite.
 3. Follow the tool-specific notes:
-   - **Claude Code:** follow `CLAUDE.md` as well (Neal's session brief,
+   - **Claude Code:** follow `CLAUDE.md` as well (the selected session brief,
      Stage 0, Out of scope, acceptance tests, the test-suite rule, the
      eight-point close-out, and never push).
    - **Codex CLI and Grok Build CLI:** this file is enough. Both load
@@ -85,7 +85,8 @@ whether from that phrase or a pasted pre-session prompt:
    - `memory.md` (private, if present) — only if a fact changed.
    Then make **one** Conventional Commit (`feat:`, `fix:`, `test:`,
    `docs:`) that includes the session's work and the handoff updates
-   together. Do not leave a failing targeted test at the end of a session.
+   together. `roadmap.md` and `memory.md` are updated locally only: never
+   stage or commit them. Do not leave a failing targeted test at the end of a session.
    If a session cannot finish in one sitting, split it: write the remainder
    into the private roadmap as the next session, update the handoff, and
    commit what is complete.
@@ -112,27 +113,28 @@ Full runs make Hawkeye lag and sometimes freeze, so:
 5. Never two test processes at once, and nothing left running in the
    background.
 6. Your session summary lists the targeted tests you ran and their
-   results, plus "full suite not run (Neal runs it at release)".
-7. Neal runs the full suite once per release while verifying, before
+   results, plus "full suite not run (Forge runs it at release)".
+7. Forge runs the full suite once per release while verifying, before
    asking Mark to push.
 
 ### Releasing
 
 A release closes when the last session in it is done. At that point you
-stop and hand over to Neal, Mark's repository and release manager. In that
+stop and hand over to Forge, Mark's repository and release specialist. In that
 session:
 
 1. Finish the session as usual: targeted tests green, the session's
    entries under **Unreleased** in `CHANGELOG.md`, the handoff, the private
-   `roadmap.md` and `memory.md` updated, and one commit. Do not push it.
-2. Leave the release itself to Neal. Do not bump `VERSION`, the launcher
+   `roadmap.md` and `memory.md` updated locally (not staged), and one commit.
+   Do not push it.
+2. Leave the release itself to Forge. Do not bump `VERSION`, the launcher
    banner, or the three `Release / Status / Application on disk` headers;
    do not move **Unreleased** to a dated release section; do not create or
    push a `vX.Y` tag; do not push the branch.
-3. Close by telling Mark that the release's sessions are done and Neal can
+3. Close by telling Mark that the release's sessions are done and Forge can
    take over.
 
-Neal then checks the files against the repository (including the ahead
+Forge then checks the files against the repository (including the ahead
 count, with `git log origin/main..main`), finalises the version headers,
 the dated release section in `CHANGELOG.md`, and `README.md`, runs the
 full test suite once, makes the release commit and the annotated `vX.Y`
@@ -152,7 +154,7 @@ is never committed. The next session starts only when Mark says
 - **The game tree is sacred.** Writes outside `C:\FM Name Editor` go only to the paths named in `memory.md`, after an archive copy and a confirmation. Never delete game files. Never use the Steam tree as a write fixture in tests. Refuse to write game files while `fm.exe` is running; never stop that process.
 - **One dependency.** PySide6 only. No second GUI toolkit, no charts, no AI SDK, no service. Ask before adding any package.
 - **One module.** Keep the engine and GUI in `fm_name_editor.py`, engine helpers free of Qt imports so the tests can import them.
-- **The window answers within a second.** With both FM27 files open there are 16,448 lines and 4,297 clubs, so nothing a click does may ask a model for every row. The grids sort in Python on the model (`sort_entities`, `sort_entries`, `reorder_rows`), never through the proxy, which only filters. Columns are sized from their texts (`fit_columns`), never with `resizeColumnToContents` on a big table. A reload resets each model once (`reload_views`), and an edit that moves no lines refreshes through `MainWindow.after_edit`. `Session7Speed` times this on copies of the live files.
+- **The window answers within a second.** With both FM27 files open there are many thousands of lines and clubs, so nothing a click does may ask a model for every row. The grids sort in Python on the model (`sort_entities`, `sort_entries`, `reorder_rows`), never through the proxy, which only filters. Columns are sized from their texts (`fit_columns`), never with `resizeColumnToContents` on a big table. A reload resets each model once (`reload_views`), and an edit that moves no lines refreshes through `MainWindow.after_edit`. `Session7Speed` times this on copies of the live files.
 - **Slow work runs on a worker.** Opening files, reading a backup, and the check for a running game go through `MainWindow.jobs` (`Jobs.start(text, work, done, failed)`). The work touches no widget or model: it reads files or runs a process and returns a value, and `done` or `failed` runs on the GUI thread. While a job runs, `set_busy` switches off the grids and every action in `busy_actions`; a new action that opens, changes, or writes files belongs in that list. A game check that fails counts as unknown, never as closed. Writes stay on the GUI thread: they are short and settle the documents the views show.
 - **Nothing in the repository from `D:\Steam`.** No `.lnc`, `.dbc`, `.edt`, `.ddt` copies, no `backups\`, no `.bak-*`, no `__pycache__`, and no `notes\`, `memory.md`, `roadmap.md`, `profiles\`, or `state\`.
 - **Local files.** Spelling profiles live in `profiles\`; local settings (the remembered view, saved searches, the chosen profile) in `state\settings.json`; collections in `state\collections.json`. All are written through `write_file_atomically`. Save and Deploy never change a profile; only Record edits, New, Rename, and Delete do. Deleting a profile moves it into `profiles\deleted`; deleting a collection keeps it under "deleted" in its file. A damaged local file is named and left alone, never overwritten.
@@ -165,7 +167,7 @@ is never committed. The next session starts only when Mark says
 
 ```
 python -m unittest discover -s tests -k <ClassOrMethod>   # targeted run while working
-python -m unittest discover -s tests -v                  # full suite: Neal, once per release
+python -m unittest discover -s tests -v                  # full suite: Forge, once per release
 python fm_name_editor.py
 python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 ```
@@ -176,6 +178,6 @@ Set `QT_QPA_PLATFORM=offscreen` when running tests without a desktop. `python` o
 
 Remote: `https://github.com/hawkers63/FM-Name-Editor` (`origin`, branch `main`, public). Work on `main`. Branch before experiments; `main` holds released or session-complete work only.
 
-Session commits stay local on `main` until Neal or Jane pushes them, and only when Mark has confirmed a sync or a release (see **Releasing**). Claude Code never pushes, tags, or force-pushes. Do not force-push. Commits use Conventional Commits and, when the session brief gives an attribution line, end with that line.
+Session commits stay local on `main` until Forge pushes them, and only when Mark has confirmed a sync or a release (see **Releasing**). Claude Code never pushes, tags, or force-pushes. Do not force-push. Commits use Conventional Commits and, when the session brief gives an attribution line, end with that line.
 
 The global Grok file `~/.grok/AGENTS.md` is personal and must be left alone; do not copy it into this repository or move rules out of it.

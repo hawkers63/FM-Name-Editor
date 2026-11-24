@@ -13,10 +13,10 @@ them twice in Grok.
 ## Session protocol (Claude Code)
 
 Mark opens a session with **"Let's get started."**, followed by the
-standing rules and a **session brief** that Neal writes for each session
+standing rules and the **session brief** selected for that session
 (numbered stages, an **Out of scope** list, and acceptance tests for each
-stage). The brief and the standing rules bind; where they are stricter
-than this file or `AGENTS.md`, follow them. When you see that:
+stage). The selected brief is authoritative, with the standing rules;
+where they are stricter than this file or `AGENTS.md`, follow them. When you see that:
 
 1. Read `CLAUDE.md` (and the imported `AGENTS.md`), `docs/SESSION_HANDOFF.md`,
    `CHANGELOG.md`, and `git status` / `git log --oneline -5`. If they are
@@ -36,18 +36,19 @@ than this file or `AGENTS.md`, follow them. When you see that:
 5. End the session as `AGENTS.md` describes: targeted tests green; one
    combined Conventional Commit (`feat:`, `fix:`, `test:`, `docs:`) that
    includes the work, `docs/SESSION_HANDOFF.md`, `CHANGELOG.md`
-   (**Unreleased** until the release ships), and the private `roadmap.md` /
-   `memory.md` updates if those files changed. **Never push.** Session
-   commits stay local on `main` until Neal releases them (see **Releasing**
+   (**Unreleased** until the release ships). Update the private `roadmap.md`
+   / `memory.md` locally if they changed; never stage them. **Never push.** Session
+   commits stay local on `main` until Forge releases them (see **Releasing**
    in `AGENTS.md`).
 6. Close with this report, in this order: (1) what shipped, stage by stage;
    (2) commit hash(es) and changed files; (3) the targeted tests run, with
-   counts and results, and "Full suite not run (Neal runs it at release).";
+   counts and results, and "Full suite not run (Forge runs it at release)." unless the brief
+   requires a full run, then its actual result;
    (4) version sync: `VERSION`, the launcher banner, and the README and
    CHANGELOG headers unchanged, with this session's entries under
    **Unreleased**; (5) "Private files not tracked: confirmed"; (6) bugs
    found but not fixed, or "none"; (7) "Confidentiality: no playthrough
-   details included."; (8) what is next, or "Release X.Y ready for Neal".
+   details included."; (8) what is next, or "Release X.Y ready for Forge".
 
 If a session cannot finish in one sitting, split it. Write the remainder
 into the private roadmap as the next session, update the handoff, and
@@ -61,11 +62,11 @@ treat auto memory as the shared project record; other tools cannot see it.
 
 Remote: `https://github.com/hawkers63/FM-Name-Editor` (`origin`, branch
 `main`, public). **Claude never pushes, tags, or force-pushes.** Session
-commits stay local on `main`; Neal pushes them with the release, and only
+commits stay local on `main`; Forge pushes them with the release, and only
 after Mark confirms (see **Releasing** in `AGENTS.md`). Commits use
 Conventional Commits and end with the attribution line given in the
 session. Branch before experiments; `main` holds released or
 session-complete work only.
 
-Neal keeps this file up to date with the current Claude workflow, and
-writes the brief for the next session.
+Forge keeps this file up to date with the current Claude workflow; Mark
+selects the brief for each session.

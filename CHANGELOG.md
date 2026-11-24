@@ -8,6 +8,13 @@ The program on disk reports `VERSION = "3.7"`. The launcher banner says v3.7.
 
 ## Unreleased
 
+Session 22 — a roll back to a snapshot asks first, and the agent guides are brought up to date (target 3.8, not released):
+
+- **Roll back asks first.** Choosing a snapshot under Edit > Roll back to snapshot now shows a question that names the snapshot, the time it was taken and the open files, and says the roll back replaces the working copy in memory only (no file on disk changes until Save or Deploy) and that Undo takes it away. Cancel is the default; Esc, Enter and closing the question all cancel, and only Roll back goes ahead. A name being typed in the inspector is kept, not used, while the question is up. A snapshot that has gone asks nothing and changes nothing. The submenu, Ctrl+Alt+K and the limit of ten are unchanged.
+- **No empty Undo step.** Rolling back again to a snapshot the open files already match, after a Save or Deploy, no longer leaves a step on the Undo stack that changes nothing.
+- **Agent guides.** `AGENTS.md` points to `VERSION` for the current release, states the responsiveness rule without fixed data counts, names Forge as the release specialist, makes the selected session brief authoritative, and says the private plan and memory files are updated locally and never committed.
+- **Verification.** New `Session22RollbackConfirm` (4); `Session21Snapshots` and `Session21Speed` answer the question explicitly.
+
 ## 3.7 (24 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.7 adds a short name and 3-letter code suggested from a club's long name, Name health checks with Fix formatting, and in-memory snapshots to roll back a run of changes. Session 21 closes 3.7.

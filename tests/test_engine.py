@@ -9651,7 +9651,7 @@ class Session21Snapshots(_Session21Window, unittest.TestCase):
         return run
 
     def test_a_roll_back_undoes_many_steps_as_one(self):
-        from PySide6.QtWidgets import QDialog
+        from PySide6.QtWidgets import QDialog, QMessageBox
 
         win = self.window()
         self.assertEqual(win.snapshot_act.shortcut().toString(), "Ctrl+Alt+K")
@@ -9682,7 +9682,8 @@ class Session21Snapshots(_Session21Window, unittest.TestCase):
         self.assertTrue(any(row[0] == f"Edit > Roll back to snapshot > {text}"
                             for row in win.palette_commands()))     # refills the menu
         [item] = win.rollback_menu.actions()
-        item.trigger()
+        with mock.patch.object(QMessageBox, "exec", answer_rollback("roll back")):
+            item.trigger()
         self.assertEqual(win.docs[0].to_bytes(), original)
         self.assertFalse(win.docs[0].dirty)
         self.assertEqual(win.undo_stack.count(), steps + 1)
@@ -9694,7 +9695,8 @@ class Session21Snapshots(_Session21Window, unittest.TestCase):
         self.assertEqual(win.docs[0].to_bytes(), edited)
         win.undo_stack.redo()
         self.assertEqual(win.docs[0].to_bytes(), original)
-        win.roll_back_snapshot(snapshot)                      # nothing differs now
+        with mock.patch.object(QMessageBox, "exec", answer_rollback("roll back")):
+            win.roll_back_snapshot(snapshot)                  # nothing differs now
         self.assertEqual(win.undo_stack.count(), steps + 1)
         self.assertIn("nothing to roll back", win.statusBar().currentMessage())
 
@@ -9715,6 +9717,178 @@ class Session21Snapshots(_Session21Window, unittest.TestCase):
         with mock.patch.object(QMessageBox, "information") as told:
             win.snapshot_act.trigger()
         self.assertIn("Open a name file first", told.call_args.args[2])
+
+
+def answer_rollback(how: str, seen: list | None = None, during=None):
+    """A stand-in for the roll back question's exec: show the real box and answer it.
+
+    ``how`` is "roll back" (its affirmative button), "cancel" (the Cancel
+    button), "escape" (the Esc key), "enter" (Enter on the default button)
+    or "close" (the title bar's close). ``during`` runs while the box is up.
+    """
+    def run(box):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        if seen is not None:
+            seen.append(box)
+        box.show()
+        QApplication.processEvents()
+        if during is not None:
+            during(box)
+        if how == "roll back":
+            next(button for button in box.buttons() if button.text() == "Roll back").click()
+        elif how == "cancel":
+            box.button(QMessageBox.Cancel).click()
+        elif how == "escape":
+            QTest.keyClick(box, Qt.Key_Escape)
+        elif how == "enter":
+            QTest.keyClick(box, Qt.Key_Return)
+        else:
+            box.close()
+        QApplication.processEvents()
+        return box.result()
+    return run
+
+
+class Session22RollbackConfirm(_Session21Window, unittest.TestCase):
+    """Session 22: a roll back to a snapshot asks first, and only Roll back goes ahead."""
+
+    @staticmethod
+    def state(win) -> dict:
+        doc = win.docs[0]
+        stack = win.undo_stack
+        return {"bytes": doc.to_bytes(),
+                "lines": [(entry.raw, entry.eol, entry.reason, entry.excluded)
+                          for entry in doc.entries],
+                "dirty": doc.dirty, "baseline": doc.baseline_bytes,
+                "snapshots": list(win.snapshots),
+                "undo": (stack.count(), stack.index(), stack.undoText(), stack.redoText())}
+
+    def edited_window(self):
+        """A window with a snapshot taken, then lines added, a name changed, one unticked."""
+        win = self.window()
+        snapshot = win.keep_snapshot("Before the edits")
+        self.select(win, "2")
+        win.fill_siblings_act.trigger()                       # adds two lines
+        self.select(win, "4")
+        win.inspector_edits["long"].setText("Real Madrid CF")
+        win.commit_inspector("long", win.inspector_edits["long"])
+        win.undo_stack.undo()
+        win.undo_stack.redo()                                 # something to redo is not lost
+        win.undo_stack.undo()
+        next(entry for entry in win.docs[0].entries if entry.changed).excluded = True
+        return win, snapshot
+
+    def test_the_question_names_the_snapshot_and_files_and_defaults_to_cancel(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QMessageBox
+
+        win, snapshot = self.edited_window()
+        box, roll = win.rollback_box(snapshot)
+        self.addCleanup(box.deleteLater)
+        text = box.text() + "\n" + box.informativeText()
+        self.assertEqual(box.windowTitle(), "Roll back to snapshot")
+        for words in ("'Before the edits'", f"{snapshot.taken:%H:%M:%S}",
+                      "FM27_Club_Names.lnc", "in memory only", "no file on disk changes",
+                      "Save or Deploy", "Undo takes the roll back away"):
+            self.assertIn(words, text)
+        cancel = box.button(QMessageBox.Cancel)
+        self.assertEqual(roll.text(), "Roll back")
+        self.assertEqual(box.defaultButton(), cancel)
+        self.assertEqual(box.escapeButton(), cancel)
+        for answer in ("escape", "enter", "close"):          # the real box, each way out
+            box, roll = win.rollback_box(snapshot)
+            self.addCleanup(box.deleteLater)
+            answer_rollback(answer)(box)
+            self.assertEqual(box.clickedButton(), box.button(QMessageBox.Cancel), answer)
+        box, roll = win.rollback_box(snapshot)
+        self.addCleanup(box.deleteLater)
+        box.show()
+        QTest.keyClick(box, Qt.Key_Escape)
+        self.assertFalse(box.isVisible())
+
+    def test_cancel_escape_enter_and_close_change_nothing(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QMessageBox
+
+        win, snapshot = self.edited_window()
+        self.select(win, "3")
+        draft = win.inspector_edits["long"]
+        draft.setFocus()
+        QTest.keyClicks(draft, " draft")
+        typed = draft.text()
+        before = self.state(win)
+        for answer in ("cancel", "escape", "enter", "close"):
+            seen = []
+            with mock.patch.object(QMessageBox, "exec",
+                                   answer_rollback(answer, seen, during=lambda _box: draft.clearFocus())), \
+                    mock.patch.object(editor, "write_file_atomically") as written:
+                win.roll_back_snapshot(snapshot)
+            self.assertEqual(len(seen), 1, answer)
+            self.assertEqual(self.state(win), before, answer)
+            self.assertEqual(draft.text(), typed, answer)           # the draft is kept...
+            self.assertFalse(written.called, answer)
+            self.assertIn("cancelled", win.statusBar().currentMessage())
+        self.assertNotIn("draft", win.docs[0].to_bytes().decode("utf-8"))   # ...not used
+
+    def test_roll_back_restores_the_snapshot_as_one_step_across_a_save(self):
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        win = self.window()
+        doc = win.docs[0]
+        original, lines = doc.to_bytes(), len(doc.entries)
+        with mock.patch.object(editor, "write_file_atomically") as written:
+            snapshot = win.keep_snapshot("Before the edits")
+        self.assertFalse(written.called)
+        self.select(win, "2")
+        win.fill_siblings_act.trigger()                       # adds two lines
+        self.select(win, "4")
+        win.inspector_edits["long"].setText("Real Madrid CF")
+        win.commit_inspector("long", win.inspector_edits["long"])
+        with mock.patch.object(QDialog, "exec", press_write([])):
+            win.save()
+        saved = doc.path.read_bytes()
+        self.assertEqual(doc.baseline_bytes, saved)
+        self.assertFalse(doc.dirty)
+        steps = win.undo_stack.count()
+        seen = []
+        with mock.patch.object(QMessageBox, "exec", answer_rollback("roll back", seen)), \
+                mock.patch.object(editor, "write_file_atomically") as written:
+            win.roll_back_snapshot(snapshot)
+        self.assertFalse(written.called)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(doc.to_bytes(), original)
+        self.assertEqual(len(doc.entries), lines)             # the added lines are gone
+        self.assertEqual(doc.path.read_bytes(), saved)        # the disk is not touched
+        self.assertEqual(doc.baseline_bytes, saved)           # the written baseline stays
+        self.assertTrue(doc.dirty)
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        self.assertEqual(win.undo_stack.undoText(), "roll back to snapshot 'Before the edits'")
+        win.undo_stack.undo()
+        self.assertEqual(doc.to_bytes(), saved)
+        self.assertFalse(doc.dirty)
+        win.undo_stack.redo()
+        self.assertEqual(doc.to_bytes(), original)
+        with mock.patch.object(QMessageBox, "exec", answer_rollback("roll back")):
+            win.roll_back_snapshot(snapshot)                  # nothing differs now
+        self.assertEqual(win.undo_stack.count(), steps + 1)   # no empty step
+        self.assertIn("nothing to roll back", win.statusBar().currentMessage())
+
+    def test_an_expired_snapshot_asks_nothing_and_changes_nothing(self):
+        win, snapshot = self.edited_window()
+        for number in range(editor.SNAPSHOT_LIMIT):
+            win.keep_snapshot(f"Step {number}")
+        self.assertNotIn(snapshot, win.snapshots)
+        before = self.state(win)
+        win.roll_back_snapshot(snapshot)        # the unattended guards fail any question
+        self.assertEqual(self.state(win), before)
+        self.assertTrue(win.load([str(win.docs[0].path)]))
+        before = self.state(win)
+        win.roll_back_snapshot(before["snapshots"][0] if before["snapshots"] else snapshot)
+        self.assertEqual(self.state(win), before)
 
 
 @unittest.skipUnless(all((LIVE_DIR / name).is_file() for name in editor.NAME_FILES),
@@ -9759,7 +9933,8 @@ class Session21Speed(unittest.TestCase):
                 win.after_edit()
 
             timed("bulk of 500", bulk)
-            timed("roll back", lambda: win.roll_back_snapshot(snapshot))
+            with mock.patch.object(win, "confirm_rollback", return_value=True):
+                timed("roll back", lambda: win.roll_back_snapshot(snapshot))
             self.assertFalse(any(doc.dirty for doc in win.docs))
             self.assertLess(max(timings.values()), 1.0, timings)
 
