@@ -12,9 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.8** is finalised locally (24 November 2026); publication is
-  pending. Snapshot rollback asks for confirmation, defaults to Cancel,
-  and avoids an empty Undo step when the working files already match.
+- **Release 3.8** is current (24 November 2026): snapshot rollback asks
+  for confirmation, defaults to Cancel, and avoids an empty Undo step when
+  the working files already match.
 
 ## Next
 

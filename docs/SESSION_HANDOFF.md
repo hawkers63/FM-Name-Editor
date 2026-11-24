@@ -10,17 +10,18 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
-## 24 November 2026 (Europe/London) — Session 22 and Forge local v3.8 finalisation
+## 24 November 2026 (Europe/London) — Session 22 and local v3.8 finalisation
 
-### Forge — local release preparation
+### Neal — local release preparation
 
 - Mark authorised local version alignment, dated changelog, checks, release commit and annotated v3.8 tag; no push, build or publication.
-- Independently reviewed implementation commit `a7de817`; full offscreen regression passed: 376 tests in 67.832s, no failures or skips. This result predates version finalisation; the finalised tree requires its own full run before commit and a close-out run.
+- Independently reviewed implementation commit `a7de817`; full offscreen regression passed: 376 tests in 67.832s, no failures or skips. This result predates version finalisation.
 - Release source VERSION, apex version, launcher banner and README/CHANGELOG headers aligned to 3.8. Status explicitly says locally finalised; publication pending. Changelog dated 24 November 2026 with Unreleased retained; public roadmap synchronised. No executable built or launched.
-- Fresh `git fetch origin main` found the implementation one commit ahead with no divergence before finalisation. Remote v3.7 was checked; v3.8 was absent at that check. Exact outgoing hashes/counts and final test results are supplied in Forge's close-out, not inferred here.
-- Carry forward as proposed Stage 0 for Mark's selection: intermittent Save timing (not diagnosed), and the targeted-only/full-suite instruction discrepancy. No unselected feature or performance fix included.
-- Private roadmap and proposed next-session prompt remain local and untracked. Historical private-path exposure remains unresolved under Mark's local-only continuation permission.
-- Publication requires a separate fresh approval after exact outgoing commit/tag review. Nothing in this entry grants it.
+- Fresh `git fetch origin main` found the implementation one commit ahead with no divergence before finalisation. Remote v3.7 was checked; v3.8 was absent at that check. Exact outgoing hashes/counts and final test results are supplied in Neal's close-out, not inferred here.
+- Carry forward as proposed Stage 0 for Mark's selection: intermittent Save timing (not diagnosed). No unselected feature or performance fix included.
+- Private roadmap and proposed next-session prompt remain local and untracked.
+- Later on 24 November 2026, with Mark's approval, v3.8 was pushed, tagged and published on GitHub as the latest release.
+- Testing policy confirmed by Mark on 24 November 2026: coding sessions run targeted tests only; Neal runs the full suite once per release, and not for documentation-only changes. The per-commit full-run rule is withdrawn.
 
 ### Claude Code implementation record (before local finalisation)
 
@@ -31,22 +32,22 @@ and Codex CLI. Update it at the end of every session.
 ### Done this session
 
 - Stage 0 (selected option 1): Edit > Roll back to snapshot now asks first (`MainWindow.rollback_box`, `confirm_rollback`). The question names the snapshot, its time and the open files, says the roll back replaces the working copy in memory only and that Undo takes it away. Cancel is the default and the escape button; Esc, Enter and the title-bar close cancel; only Roll back proceeds. Inspector field signals are held while it is up, so a draft is kept, not used. An expired snapshot still asks nothing and changes nothing. A confirmed roll back that changes nothing visible (including a repeat after a Save) leaves no empty Undo step. Submenu, Ctrl+Alt+K, RAM-only lifecycle and the limit of ten unchanged; engine unchanged.
-- Stage 1 (selected option 4): `AGENTS.md` release field points to `VERSION`; the one-second rule has no fixed data counts; Forge replaces the old manager names in the workflow text; `CLAUDE.md` makes the selected brief authoritative; both say the private plan and memory files are updated locally and never staged.
+- Stage 1 (selected option 4): `AGENTS.md` release field points to `VERSION`; the one-second rule has no fixed data counts; Neal replaces the old manager names in the workflow text; `CLAUDE.md` makes the selected brief authoritative; both say the private plan and memory files are updated locally and never staged.
 - Stage 2: help text, CHANGELOG Unreleased, README "in development" note (not released). Oldest handoff entry moved to the archive.
 - Tests: new `Session22RollbackConfirm` (4); `Session21Snapshots` and `Session21Speed` answer the question explicitly. Targeted runs green; full offscreen suite with the scratch temp root: 376 tests, OK, no failures or skips.
 
 ### In progress
 
-- Nothing. v3.8 is unreleased; release preparation is Forge's, under Mark's authority.
+- Nothing. v3.8 is unreleased; release preparation is Neal's, under Mark's authority.
 
 ### Next steps
 
-- Forge: independent review of the outgoing delta and release preparation; Mark alone approves any push.
+- Neal: independent review of the outgoing delta and release preparation; Mark alone approves any push.
 - Mark selects any further scope.
 
 ### Known issues / blockers
 
-- Testing-policy discrepancy, for Mark/Forge: the guides still say targeted runs only with one full run at release; this session's brief required a full run before each commit. Left as written in the guides.
+- Testing policy: resolved by Mark on 24 November 2026 (see the Neal entry above).
 - Save timing in `Session7Speed`: an earlier full run measured Save just over the 1 s cap; it passed in this session's run. Not diagnosed; proposed as Stage 0 of the following session for Mark's decision.
 
 ### Files touched

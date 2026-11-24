@@ -68,7 +68,7 @@ whether from that phrase or a pasted pre-session prompt:
      present; treat that file as Claude-only notes, not as a second
      rulebook.
 4. Do not run the full test suite at the start of a session (see
-   [Test suite](#test-suite-keep-runs-to-a-minimum)).
+   [Test suite](#test-suite-who-runs-what-marks-rule-18-november-2026)).
 5. Work in this order: engine change, tests for it, then GUI, then documents.
 6. **End of session — one combined commit.** Targeted tests for what you
    changed must be green. Then, in the same sitting, update:
@@ -96,48 +96,59 @@ Do not treat a tool's private memory or session log as the shared record.
 Claude auto memory, Codex rollouts under `~/.codex/sessions`, and Grok
 sessions or memory under `~/.grok/` stay on this PC and are not committed.
 
-### Test suite: keep runs to a minimum (Mark's rule, 18 November 2026)
+### Test suite: who runs what (Mark's rule, 18 November 2026)
 
 Full runs make Hawkeye lag and sometimes freeze, so:
 
+Coding sessions (Claude Code, Codex CLI, Grok Build CLI):
+
 1. No test run at the start of a session.
-2. Never run the full suite at the end of a session, before a commit, or
-   for the release handover.
+2. Never run the full suite: not at the end of a session, not before a
+   commit, and not for the release handover.
 3. While working, run only the tests for what you are changing: one test
    method for red/green, then its class (for example
    `python -m unittest discover -s tests -k Session7Speed`).
-4. Run the window (UI) tests only when UI code changed, and then only the
-   relevant classes. If a menu, submenu, or shortcut changes, also run `-k`
-   on every class that asserts menu contents (search `tests\test_engine.py`
-   for `edit_menu`, `menus`, and `shortcut_rows`).
-5. Never two test processes at once, and nothing left running in the
-   background.
-6. Your session summary lists the targeted tests you ran and their
-   results, plus "full suite not run (Forge runs it at release)".
-7. Forge runs the full suite once per release while verifying, before
-   asking Mark to push.
+4. Run window (UI) tests only when UI code changed, and then only the
+   relevant classes. If a menu, submenu or shortcut changes, also run every
+   class that asserts menu contents (search `tests/test_engine.py` for
+   `edit_menu`, `menus` and `shortcut_rows`).
+5. Report targeted commands and actual results, and say "Full suite not
+   run (Neal runs it)."
+
+Neal:
+
+6. Neal runs the full offscreen suite once per release, with the output
+   captured, before the release commit and tag. There is no full run for
+   documentation-only changes. A failure blocks the release; do not re-run
+   solely to obtain a pass, or alter thresholds, skips or retries to obtain
+   one.
+
+Everyone:
+
+7. One test process at a time, in the foreground; nothing left running in
+   the background.
 
 ### Releasing
 
 A release closes when the last session in it is done. At that point you
-stop and hand over to Forge, Mark's repository and release specialist. In that
+stop and hand over to Neal, Mark's repository and release specialist. In that
 session:
 
 1. Finish the session as usual: targeted tests green, the session's
    entries under **Unreleased** in `CHANGELOG.md`, the handoff, the private
    `roadmap.md` and `memory.md` updated locally (not staged), and one commit.
    Do not push it.
-2. Leave the release itself to Forge. Do not bump `VERSION`, the launcher
+2. Leave the release itself to Neal. Do not bump `VERSION`, the launcher
    banner, or the three `Release / Status / Application on disk` headers;
    do not move **Unreleased** to a dated release section; do not create or
    push a `vX.Y` tag; do not push the branch.
-3. Close by telling Mark that the release's sessions are done and Forge can
+3. Close by telling Mark that the release's sessions are done and Neal can
    take over.
 
-Forge then checks the files against the repository (including the ahead
+Neal then checks the files against the repository (including the ahead
 count, with `git log origin/main..main`), finalises the version headers,
 the dated release section in `CHANGELOG.md`, and `README.md`, runs the
-full test suite once, makes the release commit and the annotated `vX.Y`
+full test suite (see Test suite), makes the release commit and the annotated `vX.Y`
 tag, and pushes the branch and the tag only once Mark confirms, then
 builds `FM Name Editor.exe` with `build_exe.bat` (see the README) and
 attaches `dist\FM Name Editor.exe` to the GitHub Release. The exe itself
@@ -167,7 +178,7 @@ is never committed. The next session starts only when Mark says
 
 ```
 python -m unittest discover -s tests -k <ClassOrMethod>   # targeted run while working
-python -m unittest discover -s tests -v                  # full suite: Forge, once per release
+python -m unittest discover -s tests -v                  # full suite: Neal (see Test suite)
 python fm_name_editor.py
 python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 ```
@@ -178,6 +189,6 @@ Set `QT_QPA_PLATFORM=offscreen` when running tests without a desktop. `python` o
 
 Remote: `https://github.com/hawkers63/FM-Name-Editor` (`origin`, branch `main`, public). Work on `main`. Branch before experiments; `main` holds released or session-complete work only.
 
-Session commits stay local on `main` until Forge pushes them, and only when Mark has confirmed a sync or a release (see **Releasing**). Claude Code never pushes, tags, or force-pushes. Do not force-push. Commits use Conventional Commits and, when the session brief gives an attribution line, end with that line.
+Session commits stay local on `main` until Neal pushes them, and only when Mark has confirmed a sync or a release (see **Releasing**). Claude Code never pushes, tags, or force-pushes. Do not force-push. Commits use Conventional Commits and, when the session brief gives an attribution line, end with that line.
 
 The global Grok file `~/.grok/AGENTS.md` is personal and must be left alone; do not copy it into this repository or move rules out of it.
