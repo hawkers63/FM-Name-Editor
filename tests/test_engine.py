@@ -1228,7 +1228,8 @@ class Session2Window(unittest.TestCase):
         win = self._window()
         self.assertEqual(
             [button.text() for button in win.status_buttons],
-            ["All", "Edited", "No short-name override", "No code override"])
+            ["All", "Edited", "No short-name override", "No code override",
+             "Name health"])                                        # Session 21
         for model, title in ((win.entity_model, "File section"),
                              (win.line_model, "File section or ending")):
             self.assertEqual(model.headerData(0, Qt.Horizontal, Qt.DisplayRole), title)
@@ -2677,10 +2678,12 @@ class Session6Window(unittest.TestCase):
                              ["Undo", "Redo", "", "Edit cell",
                               "Add name...",                               # Session 19
                               "Revert selected",
-                              "Copy long name to short name", "",         # Session 20
+                              "Copy long name to short name",             # Session 20
+                              "Fill short name and code", "Fix formatting", "",  # S21
                               "Find", "Search all sections",              # Session 20
                               "Replace...", "Bulk tools...",              # Session 7
                               "Batch rename selected...", "&Selection", "",
+                              "Create snapshot...", "Roll back to snapshot", "",  # S21
                               "Command palette..."])                      # Session 15
             self.assertFalse(win.undo_act.isEnabled())
             self.assertEqual(win.undo_act.shortcut().toString(), "Ctrl+Z")
@@ -9246,6 +9249,519 @@ class Session20Cadence(_Session20Window, unittest.TestCase):
         self.assertNotEqual(view.state(), QAbstractItemView.EditingState)
         self.assertEqual(win.inspector_entity.id, "1")
         self.assertEqual(win.undo_stack.count(), 1)
+
+
+class Session21Engine(unittest.TestCase):
+    """Release 3.7, session 21 (note 09 proposals 3 to 5): short names and codes from a
+    long name, name health, and snapshots kept in memory."""
+
+    TEXT = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Manchester City"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t1\t"MAN"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Manchester United"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Arsenal"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t3\t"Gunners"\t""\n'
+        "#Spain\n"
+        '"CLUB_NAME_CHANGE"\t4\t"Real Madrid"\t""\n'
+        '"COMP_LONG_NAME_CHANGE"\t9\t"Premier Division"\t""\n'
+    )
+
+    def doc(self, text: str = ""):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "FM27_Club_Names.lnc"
+        write_lnc(path, text or self.TEXT)
+        return editor.LncDoc(path)
+
+    @staticmethod
+    def by_id(doc) -> dict:
+        return {entity.id: entity for entity in editor.build_entities([doc])}
+
+    def test_short_names_and_codes_from_a_long_name(self):
+        cases = {
+            "AFC Bournemouth": ("Bournemouth", "BOU"),
+            "Arsenal FC": ("Arsenal", "ARS"),
+            "Crystal Palace": ("Crystal Palace", "CRY"),
+            "Newcastle United": ("Newcastle Utd", "NEW"),
+            "Manchester United": ("Man Utd", "MAN"),
+            "Sheffield Wednesday": ("Sheff Wed", "SHE"),
+            "Real Sociedad de Fútbol": ("Real Sociedad", "REA"),
+            "Borussia Mönchengladbach": ("M'gladbach", "BOR"),
+            "Club Atlético de Madrid": ("Atlético", "ATL"),
+            "Olympique de Marseille": ("Marseille", "OLY"),
+            "Brighton & Hove Albion": ("Brighton", "BHA"),
+            "Queens Park Rangers": ("Queens Park", "QPR"),
+            "Paris Saint-Germain": ("Paris", "PSG"),
+            "Sporting Clube de Portugal": ("Sporting", "SCP"),
+            "1. FC Köln": ("Köln", "KOL"),
+            "TSG 1899 Hoffenheim": ("Hoffenheim", "HOF"),
+            "Bayer 04 Leverkusen": ("Leverkusen", "BAY"),
+            "Wolverhampton Wanderers": ("Wolverhampton", "WOL"),
+        }
+        for long_name, expected in cases.items():
+            with self.subTest(long_name):
+                self.assertEqual(editor.synthesise_siblings(long_name), expected)
+                self.assertLessEqual(len(expected[0]), editor.NAME_LENGTH_GUIDES["short"])
+
+    def test_codes_avoid_the_section_and_suggestions_stay_honest(self):
+        self.assertEqual(editor.synthesise_siblings("Manchester United", ["man"])[1], "MUN")
+        self.assertEqual(editor.synthesise_siblings("Real Sociedad", [" REA "])[1], "RSO")
+        every = editor.code_candidates("Arsenal")
+        self.assertEqual(every[0], "ARS")
+        self.assertTrue(all(len(code) == 3 and code.isupper() for code in every))
+        # Every code taken: the first comes back, for Name health to flag.
+        self.assertEqual(editor.synthesise_siblings("Arsenal", every)[1], "ARS")
+        self.assertEqual(editor.synthesise_siblings(""), ("", ""))
+        # No letters A to Z: no code. A short name is never cut inside a word.
+        self.assertEqual(editor.synthesise_siblings("Ολυμπια"),
+                         ("Ολυμπια", ""))
+        self.assertEqual(editor.short_name_from("Wolverhamptonshire Rovers"),
+                         "Wolverhamptonshire")
+        # A pinned spelling pair shortens a word too, and wins over the built-in one.
+        self.assertEqual(editor.short_name_from("Blackburn Rovers"), "Blackburn")
+        self.assertEqual(editor.short_name_from("Blackburn Rovers", [("Rovers", "Rvrs")]),
+                         "Blackburn Rvrs")
+        self.assertEqual(editor.short_name_from("Newcastle United", [("United", "Utd.")]),
+                         "Newcastle Utd.")
+
+    def test_a_suggestion_fills_only_a_clubs_empty_fields(self):
+        doc = self.doc()
+        clubs = editor.build_entities([doc])
+        found = {entity.id: entity for entity in clubs}
+        self.assertEqual(editor.sibling_suggestion(found["1"], clubs), {"short": "Man City"})
+        self.assertEqual(editor.sibling_suggestion(found["2"], clubs),
+                         {"short": "Man Utd", "code": "MUN"})      # MAN is club 1's
+        self.assertEqual(editor.sibling_suggestion(found["3"], clubs), {"code": "ARS"})
+        self.assertEqual(editor.sibling_suggestion(found["9"], clubs), {})   # a competition
+        before = doc.to_bytes()
+        with editor.Operation("fill") as operation:
+            self.assertEqual(editor.fill_siblings(found["2"], {"short": "Man Utd",
+                                                               "code": "MUN"}), 2)
+        lines = [entry.raw for entry in doc.entries]
+        at = lines.index('"CLUB_NAME_CHANGE"\t2\t"Manchester United"\t""')
+        self.assertEqual(lines[at + 1:at + 3],
+                         ['"CLUB_SHORT_NAME_CHANGE"\t2\t"Man Utd"\t""',
+                          '"CLUB_3LETTER_NAME_CHANGE"\t2\t"MUN"\t""'])
+        added = doc.entries[at + 1]
+        self.assertEqual((added.imported, added.reason, added.section),
+                         (True, "suggest", "England"))
+        self.assertEqual(editor.CHANGE_REASONS["suggest"], "Suggested")
+        # Every other line is as it was: the new lines are all that differ.
+        self.assertEqual(doc.to_bytes().replace(
+            b'"CLUB_SHORT_NAME_CHANGE"\t2\t"Man Utd"\t""\n'
+            b'"CLUB_3LETTER_NAME_CHANGE"\t2\t"MUN"\t""\n', b""), before)
+        self.assertEqual(editor.fill_siblings(found["2"], {"short": "Other"}), 0)
+        operation.undo()
+        self.assertEqual(doc.to_bytes(), before)
+
+    def test_name_findings_word_each_formatting_fault(self):
+        def texts(text, label="Long name", code=False):
+            return [issue.text for issue in editor.name_findings(text, label, "long", code)]
+
+        def kinds(text, code=False):
+            return [issue.kind for issue in editor.name_findings(text, "Long name", "long", code)]
+
+        self.assertEqual(kinds("Chelsea"), [])
+        self.assertEqual(texts(" Chelsea"), ["Long name has a space at the start."])
+        self.assertEqual(texts("Valencia CF "), ["Long name has a space at the end."])
+        self.assertEqual(texts(" Real Betis ", "Short name"),
+                         ["Short name has a space at both ends."])
+        self.assertEqual(texts("Sporting  Clube"), ["Long name has two spaces in a row."])
+        self.assertEqual(kinds("Real Madrid"), ["invisible"])
+        self.assertEqual(kinds("Real​Madrid"), ["invisible"])
+        self.assertEqual(texts("M’gladbach", "Short name"),
+                         ["Short name has typographic punctuation (’)."])
+        self.assertEqual(kinds("St`Pauli"), ["punctuation"])
+        self.assertEqual(kinds("Copa — Final"), ["punctuation"])
+        self.assertEqual(kinds("Liga 1 – Apertura"), [])    # an en dash is left alone
+        self.assertEqual(texts("ars", "3-letter code", True),
+                         ["3-letter code has lower-case letters."])
+        self.assertEqual(kinds("ars"), [])                       # only a code is checked for case
+        self.assertTrue(all(issue.fixable for issue in editor.name_findings(
+            " a  b’ ", "Long name", "long")))
+
+    def test_a_code_shared_in_a_file_section_is_flagged_on_each_club(self):
+        doc = self.doc(
+            "#England\n"
+            '"CLUB_NAME_CHANGE"\t1\t"Chelsea"\t""\n'
+            '"CLUB_3LETTER_NAME_CHANGE"\t1\t"CHE"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Cheltenham Town"\t""\n'
+            '"CLUB_3LETTER_NAME_CHANGE"\t2\t"che"\t""\n'
+            "#Spain\n"
+            '"CLUB_NAME_CHANGE"\t3\t"Cherry Club"\t""\n'
+            '"CLUB_3LETTER_NAME_CHANGE"\t3\t"CHE"\t""\n')
+        clubs = editor.build_entities([doc])
+        found = {entity.id: entity for entity in clubs}
+        self.assertEqual([issue.text for issue in editor.lint_entity(found["1"], clubs)],
+                         ["3-letter code CHE is also used by Cheltenham Town in this file "
+                          "section."])
+        self.assertEqual([issue.kind for issue in editor.lint_entity(found["2"], clubs)],
+                         ["case", "clash"])
+        self.assertEqual(editor.lint_entity(found["3"], clubs), [])
+        self.assertEqual(editor.lint_entity(found["1"]), [])    # no section given, no clash
+        health = editor.name_health(clubs)
+        self.assertEqual(sorted(health), [("club", "1", ""), ("club", "2", "")])
+        self.assertEqual([issue.kind for issue in health[("club", "2", "")]], ["case", "clash"])
+        self.assertFalse(health[("club", "1", "")][0].fixable)
+        self.assertEqual(editor.health_summary(health), (1, 2))
+        self.assertEqual(editor.name_health([]), {})
+
+    def test_fix_formatting_changes_only_the_quoted_names_that_need_it(self):
+        self.assertEqual(editor.tidy_name("  Real  Madrid’s  "), "Real Madrid's")
+        self.assertEqual(editor.tidy_name("“The” Club — B"), "'The' Club - B")
+        self.assertEqual(editor.tidy_name("ars ", code=True), "ARS")
+        self.assertEqual(editor.tidy_name("Liga 1 – Apertura"), "Liga 1 – Apertura")
+        doc = self.doc(
+            "#England\n"
+            '"CLUB_NAME_CHANGE"\t1\t" Chelsea  FC "\t""\n'
+            '"CLUB_3LETTER_NAME_CHANGE"\t1\t"che"\t""\n'
+            '"CLUB_NAME_CHANGE"\t2\t"Arsenal"\t""\n')
+        before = doc.to_bytes()
+        with editor.Operation("fix") as operation:
+            self.assertEqual(editor.fix_formatting(editor.build_entities([doc])), 2)
+        self.assertEqual(doc.to_bytes(), before.replace(b'" Chelsea  FC "', b'"Chelsea FC"')
+                         .replace(b'"che"', b'"CHE"'))
+        self.assertEqual({entry.reason for entry in doc.names() if entry.changed}, {"tidy"})
+        self.assertEqual(editor.name_health(editor.build_entities([doc])), {})
+        with editor.Operation("again") as again:
+            self.assertEqual(editor.fix_formatting(editor.build_entities([doc])), 0)
+        self.assertFalse(again.changed)
+        operation.undo()
+        self.assertEqual(doc.to_bytes(), before)
+
+    def test_a_roll_back_puts_the_lines_back_as_one_undo_step(self):
+        doc = self.doc()
+        before = doc.to_bytes()
+        snapshot = editor.take_snapshot([doc], "Before the edits")
+        self.assertEqual(snapshot.label, "Before the edits")
+        found = self.by_id(doc)
+        with editor.Operation("edit"):
+            editor.set_entity_field(found["1"], "long", "Renamed City", [doc])
+        with editor.Operation("add"):
+            editor.set_entity_field(found["4"], "short", "Real", [doc])  # a new line
+        edited = doc.to_bytes()
+        with editor.Operation("roll back") as rollback:
+            touched = editor.roll_back_to(snapshot)
+        self.assertEqual(doc.to_bytes(), before)
+        self.assertFalse(doc.dirty)
+        self.assertTrue(rollback.structural)
+        self.assertEqual([entry.id for entry in touched], ["1"])
+        self.assertEqual(editor.collect_changes([doc]), [])
+        rollback.undo()
+        self.assertEqual(doc.to_bytes(), edited)
+        rollback.redo()
+        self.assertEqual(doc.to_bytes(), before)
+        with editor.Operation("again") as again:
+            self.assertEqual(editor.roll_back_to(snapshot), [])
+        self.assertFalse(again.changed)
+        self.assertEqual(editor.SNAPSHOT_LIMIT, 10)
+
+    def test_a_roll_back_across_a_write_leaves_a_pending_change(self):
+        doc = self.doc()
+        snapshot = editor.take_snapshot([doc], "Before")
+        with editor.Operation("edit"):
+            editor.set_entity_field(self.by_id(doc)["3"], "long", "Arsenal FC", [doc])
+        doc.mark_clean(doc.to_bytes())          # stands for a Save that wrote it
+        self.assertFalse(doc.dirty)
+        with editor.Operation("roll back") as rollback:
+            touched = editor.roll_back_to(snapshot)
+        [entry] = touched
+        self.assertEqual((entry.name, entry.orig_name, entry.reason),
+                         ("Arsenal", "Arsenal FC", "snapshot"))
+        self.assertTrue(doc.dirty)
+        self.assertEqual([row.state for row in editor.collect_changes([doc])], ["edited"])
+        rollback.undo()
+        self.assertFalse(doc.dirty)
+        self.assertFalse(entry.changed)
+        rollback.redo()
+        self.assertTrue(doc.dirty)
+        self.assertEqual(entry.name, "Arsenal")
+
+
+class _Session21Window(_Session20Window):
+    """A window on a small club file: one club to fill, one to tidy, one complete."""
+
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Manchester City"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t1\t"Man City"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t1\t"MAN"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Manchester United"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t" Chelsea "\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t3\t"Chelsea"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t3\t"che"\t""\n'
+        "#Spain\n"
+        '"CLUB_NAME_CHANGE"\t4\t"Real Madrid"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t4\t"Real Madrid"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t4\t"RMA"\t""\n'
+    )
+
+    @staticmethod
+    def raws(win) -> list[str]:
+        return [entry.raw for entry in win.docs[0].entries]
+
+
+class Session21Fill(_Session21Window, unittest.TestCase):
+    """Proposal 3: a short name and code suggested from the long name, added on request."""
+
+    def test_the_suggestion_shows_first_and_one_step_adds_it(self):
+        win = self.window()
+        self.assertEqual(win.fill_siblings_act.shortcut().toString(), "Ctrl+Alt+D")
+        self.assertIn(win.fill_siblings_act, win.busy_actions)
+        self.select(win, "2")
+        self.assertTrue(win.suggestion_box.isVisibleTo(win))
+        self.assertEqual(win.inspector_suggestion.text(),
+                         'Suggested from the long name: short name "Man Utd" and 3-letter '
+                         'code "MUN". Nothing changes until you use it.')   # MAN is club 1's
+        before = win.docs[0].to_bytes()
+        steps = win.undo_stack.count()
+        win.fill_siblings_act.trigger()
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        raws = self.raws(win)
+        at = raws.index('"CLUB_NAME_CHANGE"\t2\t"Manchester United"\t""')
+        self.assertEqual(raws[at + 1:at + 3],
+                         ['"CLUB_SHORT_NAME_CHANGE"\t2\t"Man Utd"\t""',
+                          '"CLUB_3LETTER_NAME_CHANGE"\t2\t"MUN"\t""'])
+        self.assertEqual(win.inspector_entity.id, "2")
+        self.assertEqual(win.inspector_edits["short"].text(), "Man Utd")
+        self.assertEqual(win.inspector_edits["code"].text(), "MUN")
+        self.assertIn("Added (Suggested)", win.inspector_fields["code"]["marker"].text())
+        self.assertFalse(win.suggestion_box.isVisibleTo(win))
+        self.assertIn('Added short name "Man Utd" and 3-letter code "MUN"',
+                      win.statusBar().currentMessage())
+        win.undo_stack.undo()
+        self.assertEqual(win.docs[0].to_bytes(), before)
+        self.assertEqual(win.inspector_entity.id, "2")
+        self.assertTrue(win.suggestion_box.isVisibleTo(win))
+
+    def test_use_suggestion_fills_only_the_empty_field_and_complete_clubs_get_none(self):
+        win = self.window('"CLUB_NAME_CHANGE"\t5\t"Arsenal FC"\t""\n'
+                          '"CLUB_SHORT_NAME_CHANGE"\t5\t"Gunners"\t""\n')
+        self.select(win, "5")
+        self.assertEqual(win.inspector_suggestion.text(),
+                         'Suggested from the long name: 3-letter code "ARS". Nothing changes '
+                         'until you use it.')
+        win.inspector_use.click()
+        found = {entity.id: entity for entity in win.all_entities}
+        self.assertEqual((found["5"].name_in("short"), found["5"].name_in("code")),
+                         ("Gunners", "ARS"))
+        self.assertEqual(self.raws(win)[-1], '"CLUB_3LETTER_NAME_CHANGE"\t5\t"ARS"\t""')
+        self.select(win, "4")
+        self.assertFalse(win.suggestion_box.isVisibleTo(win))
+        steps = win.undo_stack.count()
+        win.fill_siblings_act.trigger()
+        self.assertEqual(win.undo_stack.count(), steps)
+        self.assertIn("Nothing to fill", win.statusBar().currentMessage())
+        win.entity_view.clearSelection()
+        win.fill_siblings_act.trigger()
+        self.assertIn("Select a club first", win.statusBar().currentMessage())
+
+
+class Session21Health(_Session21Window, unittest.TestCase):
+    """Proposal 4: Name health in the status bar, the grid, and the inspector, and the fix."""
+
+    def status_text(self, win, ident: str) -> tuple[str, str]:
+        from PySide6.QtCore import Qt
+
+        model = win.entity_model
+        row = next(n for n, entity in enumerate(model.rows) if entity.id == ident)
+        index = model.index(row, model.columns().index("status"))
+        return model.data(index, Qt.DisplayRole), model.data(index, Qt.ToolTipRole)
+
+    def test_the_count_the_grid_and_the_inspector_name_the_faults_and_fix_them(self):
+        win = self.window()
+        self.assertEqual(sorted(win.health), [("club", "3", "")])
+        self.assertTrue(win.health_label.isVisibleTo(win))
+        self.assertIn("1 to check", win.health_label.text())
+        self.assertEqual(win.health_label.objectName(), "warning")
+        status, tip = self.status_text(win, "3")
+        self.assertEqual(status, "Check")
+        self.assertEqual(tip, "Name health\nLong name has a space at both ends.\n"
+                              "3-letter code has lower-case letters.")
+        self.assertEqual(self.status_text(win, "1"), ("", None))
+        self.select(win, "3")
+        self.assertTrue(win.health_box.isVisibleTo(win))
+        self.assertIn("• Long name has a space at both ends.", win.inspector_health.text())
+        self.assertTrue(win.inspector_fix.isVisibleTo(win))
+        before = win.docs[0].to_bytes()
+        steps = win.undo_stack.count()
+        win.inspector_fix.click()
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        self.assertEqual(win.undo_stack.undoText(), "fix formatting: 2 names")
+        self.assertEqual(win.docs[0].to_bytes(), before.replace(b'" Chelsea "', b'"Chelsea"')
+                         .replace(b'"che"', b'"CHE"'))
+        self.assertEqual(win.health, {})
+        self.assertEqual((win.health_label.text(), win.health_label.objectName()),
+                         ("Name health: clean", "added"))
+        self.assertFalse(win.health_box.isVisibleTo(win))
+        self.assertEqual(self.status_text(win, "3")[0], "Edited")
+        win.undo_stack.undo()
+        self.assertEqual(win.docs[0].to_bytes(), before)
+        self.assertIn("1 to check", win.health_label.text())
+        self.assertTrue(win.health_box.isVisibleTo(win))
+
+    def test_the_link_lists_them_and_a_shared_code_is_left_to_decide(self):
+        win = self.window("#England\n"                    # the same file section again
+                          '"CLUB_NAME_CHANGE"\t5\t"Manchester Athletic"\t""\n'
+                          '"CLUB_3LETTER_NAME_CHANGE"\t5\t"MAN"\t""\n')
+        self.choose_section(win, "Spain")
+        self.search(win, "zzz")
+        win.show_name_health()            # the count's link
+        self.assertEqual(win.status_mode, "health")
+        self.assertTrue(next(button for button in win.status_buttons
+                             if button.property("mode") == "health").isChecked())
+        self.assertEqual((win.entity_search.text(), win.section_filter), ("", ""))
+        self.assertEqual(sorted(self.shown(win)), ["1", "3", "5"])
+        self.select(win, "1")
+        self.assertIn("3-letter code MAN is also used by Manchester Athletic",
+                      win.inspector_health.text())
+        self.assertFalse(win.inspector_fix.isVisibleTo(win))      # nothing to tidy
+        steps = win.undo_stack.count()
+        win.fix_formatting_act.trigger()
+        self.assertEqual(win.undo_stack.count(), steps)
+        self.assertIn("yours to decide", win.statusBar().currentMessage())
+        win.inspector_edits["code"].setText("MCI")
+        win.commit_inspector("code", win.inspector_edits["code"])
+        self.assertEqual(sorted(self.shown(win)), ["3"])          # club 1 is fine now
+
+    def test_fix_formatting_takes_every_selected_row_in_one_step(self):
+        win = self.window('"CLUB_NAME_CHANGE"\t5\t"Sporting  Clube"\t""\n')
+        win.show_name_health()
+        self.assertEqual(sorted(self.shown(win)), ["3", "5"])
+        win.entity_view.selectAll()
+        win.fix_formatting_act.trigger()
+        self.assertEqual(win.undo_stack.undoText(), "fix formatting: 3 names")
+        self.assertEqual(self.shown(win), [])
+        self.assertEqual(win.health, {})
+        win.tabs.setCurrentIndex(1)
+        win.fix_formatting_act.trigger()
+        self.assertIn("works on the Entities tab", win.statusBar().currentMessage())
+
+
+class Session21Snapshots(_Session21Window, unittest.TestCase):
+    """Proposal 5: snapshots of the open files' lines, in memory, and the roll back."""
+
+    @staticmethod
+    def name_it(text: str):
+        def run(dialog):
+            dialog.name_edit.setText(text)
+            dialog.try_accept()
+            return dialog.result()
+        return run
+
+    def test_a_roll_back_undoes_many_steps_as_one(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        self.assertEqual(win.snapshot_act.shortcut().toString(), "Ctrl+Alt+K")
+        self.assertIn(win.snapshot_act, win.busy_actions)
+        self.assertIn(win.rollback_menu.menuAction(), win.busy_actions)
+        win.fill_snapshot_menu()
+        [empty] = win.rollback_menu.actions()
+        self.assertEqual((empty.text(), empty.isEnabled()), ("No snapshots yet", False))
+        original = win.docs[0].to_bytes()
+        with mock.patch.object(QDialog, "exec", self.name_it("Before the edits")):
+            win.snapshot_act.trigger()
+        [snapshot] = win.snapshots
+        self.assertEqual(snapshot.label, "Before the edits")
+        self.assertIn("nothing is written to disk", win.statusBar().currentMessage())
+        self.select(win, "2")
+        win.fill_siblings_act.trigger()                       # adds two lines
+        self.select(win, "3")
+        win.inspector_fix.click()
+        self.select(win, "4")
+        win.inspector_edits["long"].setText("Real Madrid CF")
+        win.commit_inspector("long", win.inspector_edits["long"])
+        edited = win.docs[0].to_bytes()
+        steps = win.undo_stack.count()
+        win.fill_snapshot_menu()
+        [item] = win.rollback_menu.actions()
+        text = item.text()
+        self.assertTrue(text.startswith("Before the edits ("))
+        self.assertTrue(any(row[0] == f"Edit > Roll back to snapshot > {text}"
+                            for row in win.palette_commands()))     # refills the menu
+        [item] = win.rollback_menu.actions()
+        item.trigger()
+        self.assertEqual(win.docs[0].to_bytes(), original)
+        self.assertFalse(win.docs[0].dirty)
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        self.assertEqual(win.undo_stack.undoText(), "roll back to snapshot 'Before the edits'")
+        self.assertEqual(sorted(win.health), [("club", "3", "")])
+        self.assertEqual({entity.id: entity for entity in win.all_entities}["2"].name_in("code"),
+                         "")
+        win.undo_stack.undo()
+        self.assertEqual(win.docs[0].to_bytes(), edited)
+        win.undo_stack.redo()
+        self.assertEqual(win.docs[0].to_bytes(), original)
+        win.roll_back_snapshot(snapshot)                      # nothing differs now
+        self.assertEqual(win.undo_stack.count(), steps + 1)
+        self.assertIn("nothing to roll back", win.statusBar().currentMessage())
+
+    def test_snapshots_are_kept_to_ten_and_go_when_files_are_opened_again(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self.window()
+        for number in range(1, 12):
+            win.keep_snapshot(f"Step {number}")
+        self.assertEqual(len(win.snapshots), editor.SNAPSHOT_LIMIT)
+        self.assertEqual(win.snapshots[0].label, "Step 2")
+        self.assertIn("The oldest, 'Step 1', was let go", win.statusBar().currentMessage())
+        win.fill_snapshot_menu()
+        self.assertTrue(win.rollback_menu.actions()[0].text().startswith("Step 11 ("))
+        self.assertTrue(win.load([str(win.docs[0].path)]))
+        self.assertEqual(win.snapshots, [])
+        win.docs.clear()
+        with mock.patch.object(QMessageBox, "information") as told:
+            win.snapshot_act.trigger()
+        self.assertIn("Open a name file first", told.call_args.args[2])
+
+
+@unittest.skipUnless(all((LIVE_DIR / name).is_file() for name in editor.NAME_FILES),
+                     "FM27 name files are not on this machine")
+class Session21Speed(unittest.TestCase):
+    """The one-second rule with name health and snapshots, on copies of the live files."""
+
+    def test_health_a_cell_edit_and_a_roll_back_at_the_size_of_both_files(self):
+        import time
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name in editor.NAME_FILES:
+                copy = Path(tmp) / name
+                copy.write_bytes((LIVE_DIR / name).read_bytes())
+                paths.append(str(copy))
+            win.show()
+            self.assertTrue(win.load(paths))
+            self.assertEqual(win.entity_model.rowCount(), 4297)
+            timings = {}
+
+            def timed(name, work):
+                start = time.perf_counter()
+                work()
+                timings[name] = round(time.perf_counter() - start, 3)
+
+            timed("health", win.refresh_health)
+            snapshot = win.keep_snapshot("Before")
+            model = win.entity_model
+            column = model.columns().index("long")
+            timed("cell edit", lambda: model.setData(model.index(0, column), "Renamed Club"))
+            clubs = [entity for entity in win.all_entities
+                     if entity.family == "club" and entity.slots.get("long")][:500]
+
+            def bulk():
+                with win.recording("bulk"):
+                    for entity in clubs:
+                        editor.try_set_name(entity.slots["long"][0],
+                                            entity.name_in("long") + " X", "bulk")
+                win.after_edit()
+
+            timed("bulk of 500", bulk)
+            timed("roll back", lambda: win.roll_back_snapshot(snapshot))
+            self.assertFalse(any(doc.dirty for doc in win.docs))
+            self.assertLess(max(timings.values()), 1.0, timings)
 
 
 if __name__ == "__main__":

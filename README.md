@@ -403,7 +403,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 
 ## 🧭 What's next
 
-- **Release 3.7:** suggested short names and codes, name health checks, and in-memory snapshots to roll back a set of bulk changes.
+- **Planned for 3.7:** a short name and 3-letter code suggested from a club's long name (Ctrl+Alt+D); Name health, which counts and lists stray spaces, typographic punctuation, lower-case codes, and codes shared in a file section, with Fix formatting; and snapshots of the open files kept in memory, to roll back a run of changes in one step (Ctrl+Alt+K).
 
 The detailed roadmap and working notes stay on the developer's PC and are not part of the public repository.
 

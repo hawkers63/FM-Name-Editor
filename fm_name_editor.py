@@ -216,8 +216,9 @@ THEME = {
     "badge_person": "#94a3b8",
 }
 # The state words in the grids, and the theme colour each is drawn in. A
-# repeated key is named first, then added, then edited.
-STATE_COLOUR_NAMES = {"Duplicate": "warning", "Added": "added", "Edited": "edited"}
+# repeated key is named first, then a name to check, then added, then edited.
+STATE_COLOUR_NAMES = {"Duplicate": "warning", "Check": "warning",   # Check: Session 21
+                      "Added": "added", "Edited": "edited"}
 
 THEME_QSS = """
 QWidget { background-color: $window; color: $text; font-size: 13px; }
@@ -320,7 +321,7 @@ def theme_style_sheet(theme=None) -> str:
 
 def state_colour_name(text: str) -> str:
     """The theme colour for a status text, or "" for none: a repeated key first,
-    then added, then edited."""
+    then a name to check, then added, then edited."""
     for word, name in STATE_COLOUR_NAMES.items():
         if word in text:
             return name
@@ -387,6 +388,37 @@ USER_GUIDE = (
      "name into the Short name field for trimming; nothing changes until you press "
      "Enter. In a grid cell opened with F2, Tab keeps it and opens the next name on the "
      "same row (Shift+Tab the one before), and Enter keeps it and opens the cell below."),
+    ("Short name and code from the long name",
+     "For a club with no short name or no 3-letter code, the inspector suggests them from "
+     "the long name, for example Man Utd and MUN for Manchester United. Club-type words "
+     "such as FC or AFC go, a few long words are shortened (United to Utd, and any "
+     "spelling pairs you pinned), and words are dropped until the short name fits its "
+     "guide of 14; a single long word is never cut. The code is three capital letters A "
+     "to Z, from the initials or the first letters, and avoids the codes of the other "
+     "clubs in the same file section where it can. The suggestion is shown first: Use "
+     "suggestion, or Edit > Fill short name and code (Ctrl+Alt+D), adds only the empty "
+     "fields, as one Undo step. A field that has a line is never changed, and nothing is "
+     "written until Save or Deploy."),
+    ("Name health",
+     "The status bar counts the open names with something to check: a space at an end or "
+     "two in a row, a non-breaking or zero-width space, typographic punctuation (curly "
+     "quotes, a backtick or an accent used as an apostrophe, an em dash), a 3-letter code "
+     "in lower case, and a 3-letter code another club uses in the same file section. The "
+     "file section stands in for a division, which the files do not record. Click the "
+     "count, or choose Name health beside the search box, to list them: their Status "
+     "reads Check, and the inspector names each finding. Fix formatting (on the Edit "
+     "menu, and in the inspector) tidies the names of the selected rows as one Undo "
+     "step: ends trimmed, plain single spaces, straight quotes, a plain dash, and codes "
+     "in capitals. A shared code is yours to decide, so it is left alone. These are "
+     "checks only: nothing changes until you choose."),
+    ("Snapshots",
+     "Edit > Create snapshot (Ctrl+Alt+K) keeps the open files' lines as they are now, "
+     "under a name you give, in memory only: nothing is written to disk, and snapshots "
+     "go when files are opened again. Edit > Roll back to snapshot lists them, newest "
+     "first; choosing one puts every open file's lines back as they were then, as one "
+     "Undo step, so Undo takes the roll back away again. After a Save or Deploy, a roll "
+     "back leaves the differences as unsaved changes to review. Up to ten are kept; "
+     "taking another lets the oldest go, and the status bar says which."),
     ("Add a name for an ID",
      "The name files hold spelling overrides, not every club in the game, so a club "
      "that keeps the game's own name has no line to find. Edit > Add name adds lines "
@@ -590,6 +622,9 @@ CHANGE_REASONS = {
     "profile": "Profile",
     "restore": "Restore",
     "undo": "Undo or redo",
+    "suggest": "Suggested",         # Session 21: Fill short name and code
+    "tidy": "Fix formatting",       # Session 21
+    "snapshot": "Snapshot",         # Session 21: a roll back that crossed a write
 }
 
 
@@ -1295,6 +1330,14 @@ def _note_ending(entry) -> None:
         operation.note_ending(entry)
 
 
+def _note_rebase(doc) -> None:
+    """Tell any operation being recorded that doc's lines were matched to the disk file
+    again, so its undo and redo match them again too (Session 21: a roll back to a
+    snapshot taken before a write)."""
+    for operation in _RECORDING:
+        operation.note_rebase(doc)
+
+
 def _line_state(entry) -> tuple:
     return (entry.name, entry.source, entry.reason, entry.profile_mark)
 
@@ -1354,6 +1397,7 @@ class Operation:
         self._endings: dict = {}    # entry -> [before, after]
         self._docs: dict = {}       # doc -> [before, after]
         self._versions: dict = {}   # doc -> its disk_version when last applied, undone, or redone
+        self._rebase: set = set()   # docs matched to the disk file again whenever it moves
 
     def __enter__(self) -> "Operation":
         _RECORDING.append(self)
@@ -1387,6 +1431,10 @@ class Operation:
         if doc not in self._docs:
             self._docs[doc] = [_doc_state(doc), None]
             self._seen(doc)
+
+    def note_rebase(self, doc) -> None:
+        self._rebase.add(doc)
+        self._seen(doc)
 
     @property
     def changed(self) -> bool:
@@ -1441,7 +1489,8 @@ class Operation:
 
     def _settle(self) -> None:
         for doc in self._versions:
-            if doc in self._docs and doc.disk_version != self._versions[doc]:
+            if ((doc in self._docs and doc.disk_version != self._versions[doc])
+                    or doc in self._rebase):
                 doc.rebase()
             self._versions[doc] = doc.disk_version
             doc.touch()
@@ -1785,11 +1834,17 @@ class NameEntity:
         return not self.slots.get(slot)
 
 
-def entity_status(entity: NameEntity) -> str:
-    """Short status for the entity grid."""
+def entity_status(entity: NameEntity, health=None) -> str:
+    """Short status for the entity grid.
+
+    ``health`` is a name_health result (Session 21): an entity in it reads
+    "Check", after a repeated key.
+    """
     parts = []
     if entity.duplicate():
         parts.append("Duplicate")
+    if health and entity_key(entity) in health:
+        parts.append("Check")
     added = any(entry.imported for entry in entity.entries())
     edited = any(entry.changed and not entry.imported for entry in entity.entries())
     if added:
@@ -1864,7 +1919,7 @@ def no_override_text(family: str, slot: str) -> str:
 # ----- Session 20: search scope, club aliases, length guides -----
 
 def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all",
-                 keys=None, alias: str = "") -> bool:
+                 keys=None, alias: str = "", health=None) -> bool:
     """Whether the entity grid shows an entity: the one test the grid's filter
     and the "found elsewhere" count share.
 
@@ -1873,7 +1928,8 @@ def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all"
     formal name from CLUB_ALIASES) the words are not used: every word of the
     alias must appear in the entity's names instead. ``section`` and
     ``keys`` (a collection's members, or None) are the scope; "" and None
-    mean every section.
+    mean every section. The "health" mode shows the entities in ``health``,
+    a name_health result (Session 21).
     """
     if keys is not None and entity_key(entity) not in keys:
         return False
@@ -1885,6 +1941,8 @@ def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all"
         return False
     if mode == "missing_code" and not entity.missing("code"):
         return False
+    if mode == "health" and not (health and entity_key(entity) in health):
+        return False
     names = [entity.name_in(slot) for slot, _label, _cmd in FAMILY_FIELDS[entity.family]]
     if alias:
         hay = fold(" ".join(names))
@@ -1895,9 +1953,10 @@ def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all"
     return True
 
 
-def count_shown(entities, words, mode: str = "all", alias: str = "") -> int:
+def count_shown(entities, words, mode: str = "all", alias: str = "", health=None) -> int:
     """How many entities a search finds in every section, whatever the scope."""
-    return sum(1 for entity in entities if entity_shown(entity, words, "", mode, None, alias))
+    return sum(1 for entity in entities
+               if entity_shown(entity, words, "", mode, None, alias, health))
 
 
 # Common short names for well-known clubs, each with the formal name it stands
@@ -1996,6 +2055,483 @@ def cut_to_guide(text: str, guide: int) -> str:
     return text[:guide - 1].rstrip() + "…"
 
 
+# ----- Session 21 (note 09, proposals 3 to 5): short names and codes from a long
+# name, name health, and snapshots of the open files kept in memory -----
+
+# Words a club's short name usually leaves out at either end of its long name:
+# the club-type letters, and words for the club or the game itself.
+SIBLING_AFFIXES = frozenset(fold(word) for word in AFFIXES + (
+    "SV", "TSV", "FSV", "VfB", "VfL", "TSG", "SpVgg", "BSC", "CD", "UD", "SD", "RC",
+    "RCD", "SS", "SSC", "US", "ACF", "OGC", "AJ", "IF", "BK", "FF",
+    "Club", "Clube", "Football", "Fútbol", "Futebol"))
+# A long name too long for a short one is cut before the first joining word.
+SIBLING_JOINERS = frozenset({"de", "del", "do", "da", "di", "of", "and", "&"})
+# Words in front of a place that a short name drops when it needs the room.
+SIBLING_DESCRIPTORS = frozenset(fold(word) for word in (
+    "Borussia", "Olympique", "Eintracht", "Bayer", "Deportivo", "Racing", "Fortuna"))
+# Words a short name shortens when it needs the room, keyed by their folded form.
+# A pinned spelling pair (Session 17) is used the same way, and wins.
+SIBLING_ABBREVIATIONS = {
+    "united": "Utd", "manchester": "Man", "sheffield": "Sheff", "wednesday": "Wed",
+    "nottingham": "Nott'm", "monchengladbach": "M'gladbach", "saint": "St.",
+}
+_NUMBER_WORD = re.compile(r"\d+\.?")
+
+
+def _is_number(word: str) -> bool:
+    return _NUMBER_WORD.fullmatch(word) is not None
+
+
+def _strip_sibling_ends(words) -> list:
+    """Drop club-type words from both ends, and joining words from the end.
+
+    At least one word is kept. A number in front goes with a club-type word
+    after it, as in "1. FC Köln".
+    """
+    words = list(words)
+    while len(words) > 1:
+        if fold(words[0]) in SIBLING_AFFIXES:
+            words.pop(0)
+        elif len(words) > 2 and _is_number(words[0]) and fold(words[1]) in SIBLING_AFFIXES:
+            words.pop(0)
+        else:
+            break
+    while len(words) > 1 and (fold(words[-1]) in SIBLING_AFFIXES
+                              or fold(words[-1]) in SIBLING_JOINERS):
+        words.pop()
+    return words
+
+
+def short_name_from(long_name: str, pairs=()) -> str:
+    """A short name suggested from a long name, within the short-name guide when it can be.
+
+    The club-type words at either end go first ("AFC Bournemouth" ->
+    "Bournemouth", "Real Sociedad de Fútbol" -> "Real Sociedad"). A name
+    still too long then loses, in turn and only while it is too long: its
+    numbers; long words, by SIBLING_ABBREVIATIONS and the pinned pairs
+    (``pairs``, (full, short)); the words from the first joining word on
+    ("Club Atlético de Madrid" -> "Atlético"), or the words before it when
+    they only describe ("Olympique de Marseille" -> "Marseille"); a
+    describing word in front ("Borussia M'gladbach" -> "M'gladbach"); and
+    then words from the end. A single word is never cut, so a long one is
+    left for the length counter to flag. "" for an empty name.
+    """
+    guide = NAME_LENGTH_GUIDES["short"]
+    words = _strip_sibling_ends(long_name.split())
+
+    def fits(items) -> bool:
+        return len(" ".join(items)) <= guide
+
+    if not words or fits(words):
+        return " ".join(words)
+    kept = [word for word in words if not _is_number(word)]
+    if kept and len(kept) < len(words):
+        words = _strip_sibling_ends(kept)
+    if not fits(words):
+        table = dict(SIBLING_ABBREVIATIONS)
+        table.update((fold(full), short) for full, short in pairs)
+        words = [table.get(fold(word), word) for word in words]
+    if not fits(words):
+        for number in range(1, len(words)):
+            if fold(words[number]) in SIBLING_JOINERS:
+                before = _strip_sibling_ends(words[:number])
+                after = words[number + 1:]
+                if after and all(fold(word) in SIBLING_DESCRIPTORS for word in before):
+                    words = _strip_sibling_ends(after)
+                else:
+                    words = before
+                break
+    while len(words) > 1 and not fits(words) and fold(words[0]) in SIBLING_DESCRIPTORS:
+        words = words[1:]
+    while len(words) > 1 and not fits(words):
+        words = _strip_sibling_ends(words[:-1])
+    return " ".join(words)
+
+
+def code_candidates(long_name: str) -> list[str]:
+    """3-letter codes for a long name, the likeliest first, in capital letters A to Z.
+
+    The words are the long name's after its club-type ends are dropped,
+    without joining words or numbers, split at hyphens, accents taken off.
+    Three or more words give their initials first ("Queens Park Rangers"
+    -> QPR); then come the first three letters ("Arsenal" -> ARS,
+    "Newcastle United" -> NEW); the first letter of one word and two of
+    the next (MUN), or two and one (MAU); then other letters in order. A
+    name with no letters A to Z (in another script, say) has none.
+    """
+    letters = []
+    for word in _strip_sibling_ends(long_name.split()):
+        if fold(word) in SIBLING_JOINERS or _is_number(word):
+            continue
+        for part in word.split("-"):
+            text = re.sub(r"[^A-Z]", "", fold(part).upper())
+            if text:
+                letters.append(text)
+    found: list[str] = []
+
+    def add(code: str) -> None:
+        if len(code) == 3 and code not in found:
+            found.append(code)
+
+    if not letters:
+        return found
+    if len(letters) >= 3:
+        add("".join(word[0] for word in letters[:3]))
+    joined = "".join(letters)
+    add(joined[:3])
+    if len(letters) >= 2:
+        add(letters[0][:1] + letters[1][:2])
+        add(letters[0][:2] + letters[1][:1])
+    for source in (letters[0], joined):
+        for second in range(1, len(source)):
+            for third in range(second + 1, len(source)):
+                add(source[0] + source[second] + source[third])
+    return found
+
+
+def synthesise_siblings(long_name: str, taken_codes=(), pairs=()) -> tuple[str, str]:
+    """A suggested short name and 3-letter code for a club's long name.
+
+    The code is the first of code_candidates that no other club in the
+    file section uses (``taken_codes``, any case); when every one is taken,
+    the first, which Name health then flags. Either may be "" when nothing
+    can be suggested. A suggestion only: nothing is changed here.
+    """
+    taken = {code.strip().upper() for code in taken_codes}
+    codes = code_candidates(long_name)
+    code = next((item for item in codes if item not in taken), codes[0] if codes else "")
+    return short_name_from(long_name, pairs), code
+
+
+def sibling_suggestion(entity: NameEntity, entities, pairs=()) -> dict:
+    """What Fill short name and code would add for a club: {"short": text, "code": text}.
+
+    Only a club with a long name gets one, and only for a field that has no
+    line yet: a field with a line is never changed. The code avoids the codes
+    of the other clubs in the same file section, when it can. Empty when
+    there is nothing to fill.
+    """
+    if entity.family != "club" or not entity.name_in("long").strip():
+        return {}
+    empty = [slot for slot in ("short", "code") if not entity.slots.get(slot)]
+    if not empty:
+        return {}
+    taken = [other.name_in("code") for other in entities
+             if other.family == "club" and other.section == entity.section
+             and other is not entity]
+    short, code = synthesise_siblings(entity.name_in("long"), taken, pairs)
+    made = {"short": short, "code": code}
+    return {slot: made[slot] for slot in empty if name_is_legal(made[slot])}
+
+
+def fill_siblings(entity: NameEntity, names: dict, reason: str = "suggest") -> int:
+    """Add the short name and code in ``names`` as new lines, in memory. Returns lines added.
+
+    A field that already has a line is left alone. Each new line goes just
+    after the entity's last line before it in field order (long name, short
+    name, code), so the file keeps that order, and takes its file section.
+    Record it as one operation.
+    """
+    added = 0
+    for slot in ("short", "code"):
+        text = names.get(slot, "").strip()
+        if not text or entity.slots.get(slot):
+            continue
+        anchor = None
+        for key, _label, _cmd in FAMILY_FIELDS[entity.family]:
+            if key == slot:
+                break
+            group = entity.slots.get(key)
+            if group:
+                anchor = group[-1]
+        if anchor is None:
+            continue
+        try:
+            created = insert_name_after(anchor, command_for(entity.family, slot), entity.id,
+                                        text, entity.lang, reason)
+        except ValueError:
+            continue
+        entity.slots.setdefault(slot, []).append(created)
+        added += 1
+    return added
+
+
+# Name health: things in a name that are easy to miss and easy to put right.
+# Shown, never applied on their own: Fix formatting puts right the ones it can.
+TYPOGRAPHIC_MARKS = {           # each with the plain character Fix formatting uses
+    "‘": "'", "’": "'", "´": "'", "`": "'",
+    # A straight double quote would end the quoted field, so curly ones become '.
+    "“": "'", "”": "'",
+    "—": "-",              # em dash
+}
+INVISIBLE_SPACES = {            # non-breaking and zero-width spaces
+    " ": " ", " ": " ", " ": " ",
+    "​": "", "‌": "", "‍": "", "﻿": "",
+}
+LINT_KINDS = {
+    "ends": "Space at an end",
+    "spaces": "Two spaces in a row",
+    "invisible": "Non-breaking or zero-width space",
+    "punctuation": "Typographic punctuation",
+    "case": "Lower-case code",
+    "clash": "Code shared in the file section",
+}
+# Families whose code is a 3-letter code (a club's, a nation's): the ones whose
+# codes are checked for case and shared within a file section.
+THREE_LETTER_FAMILIES = frozenset(family for family in FAMILY_FIELDS
+                                  if length_guide(family, "code") == 3)
+
+
+class LintIssue:
+    """One name-health finding: ``kind`` (a key of LINT_KINDS), the field ``slot``,
+    the sentence the inspector shows, and whether Fix formatting puts it right."""
+
+    __slots__ = ("kind", "slot", "text", "fixable")
+
+    def __init__(self, kind: str, slot: str, text: str, fixable: bool = True):
+        self.kind = kind
+        self.slot = slot
+        self.text = text
+        self.fixable = fixable
+
+    def __repr__(self) -> str:
+        return f"LintIssue({self.kind!r}, {self.slot!r}, {self.text!r})"
+
+
+def _unusual(text: str) -> bool:
+    return "`" in text or not text.isascii()
+
+
+def name_findings(text: str, label: str, slot: str, code: bool = False) -> list[LintIssue]:
+    """The formatting findings for one name; ``code`` checks a 3-letter code's case too."""
+    found = []
+    lead, trail = text[:1].isspace(), text[-1:].isspace()
+    if lead or trail:
+        where = "both ends" if lead and trail else "the start" if lead else "the end"
+        found.append(LintIssue("ends", slot, f"{label} has a space at {where}."))
+    if "  " in text:
+        found.append(LintIssue("spaces", slot, f"{label} has two spaces in a row."))
+    if _unusual(text):
+        if any(ch in INVISIBLE_SPACES for ch in text):
+            found.append(LintIssue(
+                "invisible", slot, f"{label} has a non-breaking or zero-width space."))
+        marks = "".join(dict.fromkeys(ch for ch in text if ch in TYPOGRAPHIC_MARKS))
+        if marks:
+            found.append(LintIssue(
+                "punctuation", slot,
+                f"{label} has typographic punctuation ({' '.join(marks)})."))
+    if code and text != text.upper():
+        found.append(LintIssue("case", slot, f"{label} has lower-case letters."))
+    return found
+
+
+def _shared_code(entity: NameEntity) -> str:
+    """The 3-letter code compared with the file section's other codes, or ""."""
+    if entity.family not in THREE_LETTER_FAMILIES:
+        return ""
+    return entity.name_in("code").strip().upper()
+
+
+def _clash_issue(entity: NameEntity, code: str, others) -> LintIssue:
+    label = next(label for key, label, _cmd in FAMILY_FIELDS[entity.family] if key == "code")
+    names = [other.name_in("long") or f"ID {other.id}" for other in others]
+    if len(names) == 1:
+        who = names[0]
+    elif len(names) == 2:
+        who = f"{names[0]} and {names[1]}"
+    else:
+        kind = ENTITY_KINDS[entity.family].lower()
+        who = f"{len(names)} other {kind}s, including {names[0]} and {names[1]}"
+    return LintIssue("clash", "code",
+                     f"{label} {code} is also used by {who} in this file section.", False)
+
+
+# Each family's fields as name health reads them: (slot, label, checked as a code).
+_HEALTH_FIELDS = {family: tuple((slot, label, family in THREE_LETTER_FAMILIES and slot == "code")
+                                for slot, label, _cmd in fields)
+                  for family, fields in FAMILY_FIELDS.items()}
+
+
+def _looks_tidy(text: str, code: bool) -> bool:
+    """A quick test that a name has nothing for name_findings to say (most names)."""
+    return (text.isascii() and "`" not in text and "  " not in text
+            and not text[:1].isspace() and not text[-1:].isspace()
+            and not (code and text != text.upper()))
+
+
+def _format_findings(entity: NameEntity) -> list[LintIssue]:
+    found = []
+    slots = entity.slots
+    for slot, label, code in _HEALTH_FIELDS[entity.family]:
+        group = slots.get(slot)
+        if not group:
+            continue
+        seen = set()
+        for entry in group:
+            text = entry.name
+            if text not in seen and not _looks_tidy(text, code):
+                seen.add(text)
+                found.extend(name_findings(text, label, slot, code))
+    return found
+
+
+def lint_entity(entity: NameEntity, section_entities=()) -> list[LintIssue]:
+    """Name health for one entity: spaces at the ends or doubled, non-breaking or
+    zero-width spaces, typographic punctuation (curly quotes, a backtick or an
+    accent as an apostrophe, an em dash), a 3-letter code in lower case, and a
+    3-letter code another club (or nation) in ``section_entities`` shares in the
+    same file section. A file section stands in for a division: the files do
+    not say which division a club plays in.
+    """
+    found = _format_findings(entity)
+    code = _shared_code(entity)
+    if code:
+        others = [other for other in section_entities
+                  if other is not entity and other.family == entity.family
+                  and other.section == entity.section and _shared_code(other) == code]
+        if others:
+            found.append(_clash_issue(entity, code, others))
+    return found
+
+
+def name_health(entities) -> dict:
+    """lint_entity for every entity at once: {entity_key: [LintIssue, ...]}, issues only.
+
+    The shared codes are grouped in one pass, so the whole of both FM27
+    files is checked in a few tens of milliseconds.
+    """
+    entities = list(entities)
+    codes = [_shared_code(entity) for entity in entities]
+    groups: dict[tuple, list] = {}
+    for entity, code in zip(entities, codes):
+        if code:
+            groups.setdefault((entity.family, entity.section, code), []).append(entity)
+    found = {}
+    for entity, code in zip(entities, codes):
+        issues = _format_findings(entity)
+        if code:
+            group = groups[(entity.family, entity.section, code)]
+            if len(group) > 1:
+                issues.append(_clash_issue(entity, code,
+                                           [other for other in group if other is not entity]))
+        if issues:
+            found[entity_key(entity)] = issues
+    return found
+
+
+def health_summary(health: dict) -> tuple[int, int]:
+    """(entities Fix formatting can help, entities sharing a code) in a name_health result."""
+    fixable = sum(1 for issues in health.values() if any(issue.fixable for issue in issues))
+    shared = sum(1 for issues in health.values() if any(issue.kind == "clash" for issue in issues))
+    return fixable, shared
+
+
+def tidy_name(text: str, code: bool = False) -> str:
+    """A name as Fix formatting leaves it.
+
+    Non-breaking spaces become plain ones and zero-width ones go; curly
+    quotes, a backtick or an accent used as an apostrophe become ' and an
+    em dash becomes -; spaces in a row become one, and the ends are
+    trimmed. ``code`` also puts a 3-letter code in capitals.
+    """
+    if _unusual(text):
+        text = "".join(INVISIBLE_SPACES.get(ch, TYPOGRAPHIC_MARKS.get(ch, ch)) for ch in text)
+    text = re.sub(" {2,}", " ", text).strip()
+    return text.upper() if code else text
+
+
+def fix_formatting(entities, reason: str = "tidy") -> int:
+    """Fix formatting in memory for these entities' names. Returns the lines changed.
+
+    Only the quoted name of a line changes (tidy_name). A shared code is not
+    a formatting fault, so it is left for you to decide. Record it as one
+    operation.
+    """
+    changed = 0
+    for entity in entities:
+        code_family = entity.family in THREE_LETTER_FAMILIES
+        for slot, _label, _cmd in FAMILY_FIELDS[entity.family]:
+            for entry in entity.slots.get(slot) or ():
+                tidy = tidy_name(entry.name, code_family and slot == "code")
+                if tidy != entry.name and name_is_legal(tidy):
+                    entry.set_name(tidy, reason)
+                    changed += 1
+    return changed
+
+
+# Snapshots: the open files' working lines at one moment, kept in memory only.
+SNAPSHOT_LIMIT = 10             # the oldest is let go when an eleventh is taken
+
+
+class Snapshot:
+    """The working lines of the open files as they were at one moment.
+
+    For each document: its state (the lines, encoding, ending, and restore
+    flags), each line's name, reason, profile mark and ending, and the disk
+    version then. Nothing is written to disk; a snapshot lasts until the
+    files are opened again.
+    """
+
+    __slots__ = ("label", "taken", "states")
+
+    def __init__(self, label: str, taken: datetime, states: dict):
+        self.label = label
+        self.taken = taken
+        self.states = states
+
+
+def take_snapshot(docs, label: str, taken: datetime | None = None) -> Snapshot:
+    """Keep the open files' working lines, in memory, under ``label``."""
+    states = {doc: (_doc_state(doc),
+                    [(entry, _line_state(entry), entry.eol) for entry in doc.entries],
+                    doc.disk_version)
+              for doc in docs}
+    return Snapshot(label, taken or datetime.now(), states)
+
+
+def roll_back_to(snapshot: Snapshot) -> list:
+    """Put the working lines back as they were when ``snapshot`` was taken. Returns the lines changed.
+
+    Run it inside an Operation, so one Undo takes the roll back away. Only
+    lines that differ are touched. The disk baseline stays put: where a
+    write came between, the lines are matched to the disk file again
+    (LncDoc.rebase), so a line that differs from the file now is a pending
+    change. A line put back to its text on disk forgets its include tick.
+    """
+    touched = []
+    for doc, (doc_state, lines, version) in snapshot.states.items():
+        if _doc_state(doc) != doc_state:
+            _note_lines_of(doc)
+            _put_doc(doc, doc_state)
+        for entry, state, eol in lines:
+            if entry.eol != eol:
+                _note_ending(entry)
+                entry.eol = eol
+                touched.append(entry)
+            if _line_state(entry) != state:
+                _note_line(entry)
+                name, source, reason, mark = state
+                if entry.kind == "person" and entry.source != source:
+                    entry.set_source(source, reason)
+                if entry.name != name:
+                    entry.set_name(name, reason)
+                entry.reason, entry.profile_mark = reason, mark
+                touched.append(entry)
+        if doc.disk_version != version:
+            _note_rebase(doc)
+            doc.rebase()
+        mine = set(touched)
+        for entry, _state, _eol in lines:
+            if entry.kind not in ROW_KINDS:
+                continue
+            if not entry.changed:
+                entry.excluded = False
+            elif entry.reason in (None, "undo") and entry in mine:
+                entry.reason = "snapshot"
+        doc.touch()
+    return list(dict.fromkeys(touched))
+
+
 def describe_lines(entries) -> str:
     """Where lines sit in memory: "FM27_Club_Names.lnc, line 1034", or several."""
     by_file: dict[str, list[int]] = {}
@@ -2089,8 +2625,11 @@ def _id_number(id_: str) -> int:
     return int(id_) if id_.isascii() and id_.isdigit() else -1
 
 
-def entity_text(entity: NameEntity, key: str) -> str:
-    """The text of one entity-grid column: "section", "id", "lang", "status", or a field."""
+def entity_text(entity: NameEntity, key: str, health=None) -> str:
+    """The text of one entity-grid column: "section", "id", "lang", "status", or a field.
+
+    ``health`` (a name_health result) adds "Check" to the status.
+    """
     if key == "section":
         return entity.section
     if key == "id":
@@ -2098,7 +2637,7 @@ def entity_text(entity: NameEntity, key: str) -> str:
     if key == "lang":
         return entity.lang
     if key == "status":
-        return entity_status(entity)
+        return entity_status(entity, health)
     return entity.name_in(key)
 
 
@@ -2144,12 +2683,16 @@ def _sorted_by_text(rows, text_of, key: str, descending: bool) -> list:
     return [row for _text, row in filled] + [row for text, row in keyed if not text]
 
 
-def sort_entities(entities, key: str, descending: bool = False) -> list:
+def sort_entities(entities, key: str, descending: bool = False, health=None) -> list:
     """Entities in grid order for one column (see _sorted_by_text). The default is the long name.
 
     Pass the entities in build_entities order (file section, then ID), so
-    ties and an empty ``key`` follow it.
+    ties and an empty ``key`` follow it. ``health`` sorts the status with
+    its "Check" (Session 21).
     """
+    if health:
+        return _sorted_by_text(entities, lambda entity, column: entity_text(
+            entity, column, health), key, descending)
     return _sorted_by_text(entities, entity_text, key, descending)
 
 
@@ -5458,6 +6001,7 @@ STATUS_FILTERS = {
     "edited": "Edited",
     "missing_short": "No short-name override",
     "missing_code": "No code override",
+    "health": "Name health",        # Session 21: names with something to check
 }
 # The All lines columns, as the line model and the settings file name them.
 LINE_COLUMNS = ("section", "type", "id", "name", "lang", "file", "status")
@@ -6986,6 +7530,7 @@ def run_gui(paths):
             self.base_rows: list[NameEntity] = []   # build_entities order: section, then ID
             self.sort_key = "long"                  # "" keeps base_rows order
             self.sort_descending = False
+            self.health: dict = {}                  # name_health result; the window's (Session 21)
             self.bold = QFont()
             self.bold.setBold(True)
             self._structure = False
@@ -7013,14 +7558,16 @@ def run_gui(paths):
             self.base_rows = list(rows)
             if self.sort_key and self.sort_key not in self._keys:
                 self.sort_key, self.sort_descending = "long", False
-            self.rows = sort_entities(self.base_rows, self.sort_key, self.sort_descending)
+            self.rows = sort_entities(self.base_rows, self.sort_key, self.sort_descending,
+                                      self.health)
             self.endResetModel()
 
         def sort_by(self, column: int, descending: bool) -> None:
             """Sort by a column, or go back to file-section order when ``column`` is -1."""
             self.sort_key = self._keys[column] if 0 <= column < len(self._keys) else ""
             self.sort_descending = descending
-            reorder_rows(self, sort_entities(self.base_rows, self.sort_key, descending))
+            reorder_rows(self, sort_entities(self.base_rows, self.sort_key, descending,
+                                             self.health))
 
         def sort_column(self) -> int:
             return self._keys.index(self.sort_key) if self.sort_key in self._keys else -1
@@ -7057,12 +7604,16 @@ def run_gui(paths):
                 entity = self.rows[index.row()]
                 if key in self._slots:
                     return entity.name_in(key)
-                return entity_text(entity, key)
+                return entity_text(entity, key, self.health)
             if role == FONT:
                 return self.bold if self.rows[index.row()].changed() else None
             key = self._keys[index.column()]
             if role == FOREGROUND and key == "status":
-                return state_colour(entity_status(self.rows[index.row()]))
+                return state_colour(entity_status(self.rows[index.row()], self.health))
+            if role == TOOLTIP and key == "status":
+                issues = self.health.get(entity_key(self.rows[index.row()]))
+                if issues:
+                    return "Name health\n" + "\n".join(issue.text for issue in issues)
             if role == TOOLTIP and key in self._slots:
                 group = self.rows[index.row()].slots.get(key) or []
                 if len(group) > 1:
@@ -7107,6 +7658,7 @@ def run_gui(paths):
             self.mode = "all"
             self.keys = None                    # a collection's members, or None for all
             self.alias = ""                     # a club's formal name, when an alias matched
+            self.health = None                  # name_health result for the "health" mode
             self.setDynamicSortFilter(False)
 
         def configure(self, text: str, section: str, mode: str, keys=None) -> None:
@@ -7131,7 +7683,7 @@ def run_gui(paths):
 
         def filterAcceptsRow(self, row, parent):
             return entity_shown(self.sourceModel().rows[row], self.words, self.section,
-                                self.mode, self.keys, self.alias)
+                                self.mode, self.keys, self.alias, self.health)
 
     class BulkDialog(QDialog):
         """Preview a bulk rename, then apply it in memory.
@@ -9868,6 +10420,11 @@ def run_gui(paths):
             self._updating = False
             self._sizing = False
             self._inspector_family = ""
+            # Session 21: name health for every open entity (name_health), shared with the
+            # entity model and its filter, and snapshots of the lines, kept in memory only.
+            self.health: dict = {}
+            self.snapshots: list[Snapshot] = []
+            self._snapshots_taken = 0
             # A damaged settings file is named in the status bar and never written
             # over (note 05, finding 5); the window opens with its defaults.
             self.state, self.state_problem = read_state(STATE_ROOT)
@@ -9905,6 +10462,8 @@ def run_gui(paths):
             self.entity_model.dataChanged.connect(self.on_entity_data)
             self.entity_model.operation_done.connect(self.push_operation)
             self.entity_model.rejected.connect(self.say_refused)
+            self.entity_model.health = self.health
+            self.entity_proxy.health = self.health
 
             self.build_actions()
             self.build_menus()
@@ -9922,6 +10481,13 @@ def run_gui(paths):
             self.metrics = QLabel()
             self.metrics.setObjectName("metrics")
             self.statusBar().addPermanentWidget(self.metrics)
+            # Session 21: how many open names have something to check; its link lists them.
+            self.health_label = QLabel("")
+            self.health_label.setObjectName("muted")
+            self.health_label.setTextFormat(Qt.RichText)
+            self.health_label.linkActivated.connect(lambda _link: self.show_name_health())
+            self.health_label.hide()
+            self.statusBar().addPermanentWidget(self.health_label)
             self.selection_pill = QPushButton()
             self.selection_pill.setObjectName("small")
             self.selection_pill.setToolTip("Batch rename the selected entities (Ctrl+B)")
@@ -9988,7 +10554,9 @@ def run_gui(paths):
                 self.select_word_act, self.select_pattern_act, self.select_section_act,
                 self.invert_selection_act, self.clear_selection_act, self.palette_act,
                 self.open_db_folder_act, *self.favourite_acts, self.favourites_act,
-                self.add_name_act, self.search_all_act, self.copy_long_act]
+                self.add_name_act, self.search_all_act, self.copy_long_act,
+                self.fill_siblings_act, self.fix_formatting_act, self.snapshot_act,
+                self.rollback_menu.menuAction()]
             self.busy_widgets = [self.centralWidget(), self.version_box, self.profile_box]
             self.busy_widgets.append(self.selection_pill)
             self._enabled_before: dict = {}
@@ -10082,6 +10650,22 @@ def run_gui(paths):
                 "Copy long name to short name", self.copy_long_to_short, ["Ctrl+Shift+L"],
                 "Put the inspector's long name into its Short name field, to trim. Nothing "
                 "changes until you press Enter there.")
+            # Session 21 (note 09). Ctrl+Alt+D and Ctrl+Alt+K were free.
+            self.fill_siblings_act = a(
+                "Fill short name and code", self.fill_short_and_code, ["Ctrl+Alt+D"],
+                "Add the selected club's missing short name and 3-letter code, suggested from "
+                "its long name, as one Undo step. Nothing is written until Save or Deploy.")
+            self.fix_formatting_act = a(
+                "Fix formatting", self.fix_formatting_selected, (),
+                "In the selected rows: trim spaces at the ends and in a row, use plain spaces, "
+                "quotes and dashes, and put 3-letter codes in capitals, as one Undo step")
+            self.snapshot_act = a(
+                "Create snapshot...", self.create_snapshot, ["Ctrl+Alt+K"],
+                "Keep the open files' lines as they are now, in memory only, to roll back to "
+                "later. Nothing is written to disk.")
+            self.rollback_menu = QMenu("Roll back to snapshot", self)
+            self.rollback_menu.setToolTipsVisible(True)
+            self.rollback_menu.aboutToShow.connect(self.fill_snapshot_menu)
             self.replace_act = a("Replace...", self.open_replace, QKeySequence.Replace,
                                  "Find and replace with a regular expression")
             self.bulk_act = a(
@@ -10229,7 +10813,8 @@ def run_gui(paths):
             self.fill_favourite_actions()
             self.edit_menu = menu(
                 "&Edit", self.undo_act, self.redo_act, None, self.edit_cell_act,
-                self.add_name_act, self.revert_act, self.copy_long_act, None, self.find_act,
+                self.add_name_act, self.revert_act, self.copy_long_act,
+                self.fill_siblings_act, self.fix_formatting_act, None, self.find_act,
                 self.search_all_act, self.replace_act, self.bulk_act)
             self.edit_menu.addAction(self.batch_rename_act)
             self.selection_menu = self.edit_menu.addMenu("&Selection")
@@ -10237,6 +10822,9 @@ def run_gui(paths):
                            self.select_section_act, self.invert_selection_act,
                            self.clear_selection_act):
                 self.selection_menu.addAction(action)
+            self.edit_menu.addSeparator()
+            self.edit_menu.addAction(self.snapshot_act)
+            self.edit_menu.addMenu(self.rollback_menu)
             self.edit_menu.addSeparator()
             self.edit_menu.addAction(self.palette_act)
             self.tools_menu = menu("&Tools", self.harmonise_act)
@@ -10639,6 +11227,7 @@ def run_gui(paths):
             self.docs.clear()
             self.docs.extend(docs)
             self.undo_stack.clear()     # its steps belong to the files that were open
+            self.snapshots.clear()      # and so do the snapshots (Session 21)
             self.section_filter = ""
             self.collection_filter = ""
             self.status_mode = "all"
@@ -10771,7 +11360,10 @@ def run_gui(paths):
             search, Changed only, Edited); otherwise repainting it is enough.
             Then the counts, and the inspector, are brought up to date, and
             the token index is refreshed for any entity whose names changed.
+            Name health is checked again first, for the grid, its filter, and
+            the count (Session 21).
             """
+            self.refresh_health()
             if self.line_proxy.words or self.line_proxy.changed_only:
                 relayout(self.line_model)
             else:
@@ -11086,9 +11678,11 @@ def run_gui(paths):
                         proxy.set_alias("")
                 if not alias and (self.section_filter or self.collection_filter):
                     rows = self.entity_model.rows
-                    elsewhere = count_shown(rows, proxy.words, self.status_mode)
+                    elsewhere = count_shown(rows, proxy.words, self.status_mode,
+                                            health=self.health)
                     if not elsewhere and target:
-                        elsewhere = count_shown(rows, [], self.status_mode, target)
+                        elsewhere = count_shown(rows, [], self.status_mode, target,
+                                                self.health)
             self.show_search_scope(alias, elsewhere)
 
         def search_scope(self) -> tuple[str, int]:
@@ -11340,6 +11934,7 @@ def run_gui(paths):
             clubs = sum(1 for entity in self.all_entities if entity.family == "club")
             comps = sum(1 for entity in self.all_entities if entity.family == "comp")
             self.metrics.setText(f"{clubs:,} clubs    {comps:,} competitions    {unsaved}")
+            self.show_health_count()
             changes = collect_changes(self.docs)
             self.tabs.setTabText(
                 self.CHANGES_TAB, f"Changes ({len(changes):,})" if changes else "Changes")
@@ -11433,6 +12028,7 @@ def run_gui(paths):
             self._updating = True
             try:
                 self.all_entities = build_entities(self.docs)
+                self.refresh_health()
                 self.token_index.rebuild(self.all_entities)
                 self._entry_entity = {entry: entity
                                       for entity in self.all_entities
@@ -11571,7 +12167,8 @@ def run_gui(paths):
                 if key == stretch:
                     continue
                 if key == "status":
-                    texts[column] = {entity_status(entity) for entity in rows} | {"Added, Edited"}
+                    texts[column] = ({entity_status(entity, self.health) for entity in rows}
+                                     | {"Added, Edited", "Check, Edited"})
                 else:
                     texts[column] = {entity_text(entity, key) for entity in rows}
                 caps[column] = (200 if key in ("section", "lang")
@@ -11983,6 +12580,7 @@ def run_gui(paths):
                                          action.isEnabled()))
 
             self.fill_add_to_menu()
+            self.fill_snapshot_menu()
             for menu in self.menus:
                 add_menu(menu, menu.title().replace("&", ""))
             for search in self.saved_searches:
@@ -12411,6 +13009,23 @@ def run_gui(paths):
             self.inspector_meta.setToolTip(FILE_SECTION_HINT)
             self.inspector_meta.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.inspector_lay.addWidget(self.inspector_meta)
+            # Session 21: what Name health found in this entity's names, and the fix.
+            self.health_box = QWidget()
+            health_lay = QVBoxLayout(self.health_box)
+            health_lay.setContentsMargins(0, 4, 0, 4)
+            self.inspector_health = QLabel("")
+            self.inspector_health.setObjectName("warning")
+            self.inspector_health.setWordWrap(True)
+            self.inspector_health.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            health_lay.addWidget(self.inspector_health)
+            self.inspector_fix = QPushButton("Fix formatting")
+            self.inspector_fix.setObjectName("small")
+            self.inspector_fix.setToolTip(self.fix_formatting_act.toolTip())
+            self.inspector_fix.clicked.connect(
+                lambda _checked=False: self.fix_formatting_selected())
+            health_lay.addWidget(self.inspector_fix, 0, Qt.AlignLeft)
+            self.health_box.hide()
+            self.inspector_lay.addWidget(self.health_box)
             for slot, label, _cmd in FAMILY_FIELDS[self.family]:
                 rule = QFrame()
                 rule.setObjectName("rule")
@@ -12485,6 +13100,23 @@ def run_gui(paths):
                                                "gauge": gauge, "where": where, "raw": raw,
                                                "problem": problem, "hint": hint}
 
+            # Session 21: a short name and code suggested from the long name, for a club
+            # missing either. Shown first; Use suggestion adds them as one Undo step.
+            self.suggestion_box = QWidget()
+            suggestion_lay = QVBoxLayout(self.suggestion_box)
+            suggestion_lay.setContentsMargins(0, 4, 0, 4)
+            self.inspector_suggestion = QLabel("")
+            self.inspector_suggestion.setObjectName("muted")
+            self.inspector_suggestion.setWordWrap(True)
+            suggestion_lay.addWidget(self.inspector_suggestion)
+            self.inspector_use = QPushButton("Use suggestion")
+            self.inspector_use.setObjectName("small")
+            self.inspector_use.setToolTip(self.fill_siblings_act.toolTip() + " (Ctrl+Alt+D)")
+            self.inspector_use.clicked.connect(lambda _checked=False: self.fill_short_and_code())
+            suggestion_lay.addWidget(self.inspector_use, 0, Qt.AlignLeft)
+            self.suggestion_box.hide()
+            self.inspector_lay.addWidget(self.suggestion_box)
+
             # Illustrative preview card (Session 18)
             self.illustrative_card = IllustrativePreviewCard(self)
             self.inspector_lay.addWidget(self.illustrative_card)
@@ -12529,6 +13161,7 @@ def run_gui(paths):
                         self.show_field_problem(widgets, "")
                         widgets["hint"].setText("")
                         widgets["hint"].hide()
+                    self.show_entity_health(None)
                     if hasattr(self, "illustrative_card"):
                         self.illustrative_card.update_from_entity(None)
                     self.inspector_revert.setEnabled(False)
@@ -12572,6 +13205,7 @@ def run_gui(paths):
                     self.show_field_problem(widgets, draft[1] if draft else "")
                     widgets["hint"].setText(view.hint)
                     widgets["hint"].setVisible(bool(view.hint))
+                self.show_entity_health(entity)
                 # Update illustrative preview card (Session 18)
                 if hasattr(self, "illustrative_card"):
                     self.illustrative_card.update_from_entity(entity)
@@ -12807,6 +13441,199 @@ def run_gui(paths):
             self.statusBar().showMessage(
                 "Long name copied into Short name. Trim it, then press Enter to use it; "
                 "Esc puts back the name in memory.", 10000)
+
+        # ----- Session 21: short names and codes, name health, snapshots -----
+        def refresh_health(self) -> None:
+            """Check every open name again (name_health). The grid, its filter, the count in
+            the status bar, and the inspector share the one result."""
+            self.health.clear()
+            self.health.update(name_health(self.all_entities))
+
+        def show_health_count(self) -> None:
+            """The status bar's Name health count: a link that lists the names to check."""
+            label = self.health_label
+            if not self.docs:
+                label.hide()
+                return
+            label.show()
+            count = len(self.health)
+            if not count:
+                set_level(label, "Name health: clean", "added")
+                label.setToolTip(
+                    "No spaces at the ends or in a row, no non-breaking or typographic "
+                    "characters, no lower-case codes, and no 3-letter code shared in a file "
+                    "section.")
+                return
+            fixable, shared = health_summary(self.health)
+            set_level(label, f'Name health: <a href="health">{count:,} to check</a>', "warning")
+            label.setToolTip(
+                f"{count_of(count, 'entity', 'entities')} to check. Fix formatting can put "
+                f"right {fixable:,}; {shared:,} share a 3-letter code in a file section, which "
+                "is yours to decide. Click to list them with the Name health filter. "
+                "Nothing is changed until you choose.")
+
+        def show_name_health(self) -> None:
+            """The Name health link: list the entities to check, in a family that has some."""
+            families = {key[0] for key in self.health}
+            if not families:
+                self.statusBar().showMessage("Nothing to check in the open names.", 6000)
+                return
+            self.tabs.setCurrentIndex(0)
+            if self.family not in families:
+                self.family = next(family for family in FAMILY_LABELS if family in families)
+                self.section_filter = ""
+                for button in self.family_buttons:
+                    button.setChecked(button.property("family") == self.family)
+                self.apply_family()
+            self.clear_entity_filters()
+            self.status_mode = "health"
+            for button in self.status_buttons:
+                button.setChecked(button.property("mode") == "health")
+            self.apply_entity_filter()
+
+        def show_entity_health(self, entity) -> None:
+            """The inspector's Name health notice, and the short name and code suggested from
+            the long name. Both are shown only: nothing changes until a button is used."""
+            issues = self.health.get(entity_key(entity), []) if entity is not None else []
+            if issues:
+                self.inspector_health.setText(
+                    "Name health\n" + "\n".join(f"\u2022 {issue.text}" for issue in issues))
+                self.inspector_fix.setVisible(any(issue.fixable for issue in issues))
+            self.health_box.setVisible(bool(issues))
+            names = (sibling_suggestion(entity, self.all_entities, self.rules.pinned_pairs)
+                     if entity is not None else {})
+            if names:
+                self.inspector_suggestion.setText(
+                    f"Suggested from the long name: {self.describe_siblings(names)}. Nothing "
+                    "changes until you use it.")
+            self.suggestion_box.setVisible(bool(names))
+
+        @staticmethod
+        def describe_siblings(names: dict) -> str:
+            """'short name "Man Utd" and 3-letter code "MUN"': a suggestion, in words."""
+            return " and ".join(f'{label} "{names[slot]}"' for slot, label
+                                in (("short", "short name"), ("code", "3-letter code"))
+                                if slot in names)
+
+        def fill_short_and_code(self) -> None:
+            """Edit > Fill short name and code (Ctrl+Alt+D), and the inspector's Use suggestion.
+
+            The selected club's empty short name and 3-letter code get the lines
+            sibling_suggestion proposes, as one operation; a field that has a
+            line is never changed. Nothing is written until Save or Deploy.
+            """
+            entity = self.inspector_entity
+            if entity is None or entity.family != "club":
+                self.statusBar().showMessage(
+                    "Select a club first: its short name and 3-letter code are suggested from "
+                    "its long name.", 8000)
+                return
+            names = sibling_suggestion(entity, self.all_entities, self.rules.pinned_pairs)
+            if not names:
+                self.statusBar().showMessage(
+                    "Nothing to fill: this club has a short name and a 3-letter code already, "
+                    "or no long name to suggest them from.", 8000)
+                return
+            words = self.describe_siblings(names)
+            with self.recording(f"fill {words}"):
+                added = fill_siblings(entity, names)
+            if not added:
+                return
+            self.reload_views()
+            self.statusBar().showMessage(
+                f"Added {words}, suggested from the long name. Undo takes "
+                f"{'them' if added > 1 else 'it'} back; nothing is written until Save or "
+                "Deploy.", 10000)
+
+        def fix_formatting_selected(self) -> None:
+            """Edit > Fix formatting, and the inspector's button: tidy the names of the rows
+            selected on the Entities tab (fix_formatting), as one operation. A shared code
+            is left for you to decide."""
+            if self.tabs.currentIndex() != 0:
+                self.statusBar().showMessage(
+                    "Fix formatting works on the Entities tab: select the rows there.", 8000)
+                return
+            entities = self.selected_entities()
+            if not entities:
+                self.statusBar().showMessage("Select rows on the Entities tab first.", 6000)
+                return
+            with self.recording("fix formatting") as operation:
+                changed = fix_formatting(entities)
+                operation.label = "fix formatting: " + count_of(changed, "name")
+            if not changed:
+                self.statusBar().showMessage(
+                    "Nothing to fix in the selected rows. A 3-letter code shared in a file "
+                    "section is yours to decide: type another one.", 8000)
+                return
+            self.after_edit()
+            self.statusBar().showMessage(
+                f"Fixed formatting in {count_of(changed, 'name')}. Undo takes it back; nothing "
+                "is written until Save or Deploy.", 10000)
+
+        def create_snapshot(self) -> None:
+            """Edit > Create snapshot... (Ctrl+Alt+K): name a snapshot of the open files' lines."""
+            if not self.docs:
+                QMessageBox.information(self, APP_NAME, "Open a name file first.")
+                return
+            dialog = ProfileDialog(self, "Create snapshot",
+                                   lambda name: label_problem(name, kind="snapshot"),
+                                   name=f"Snapshot {self._snapshots_taken + 1}", note=None)
+            if dialog.exec():
+                self.keep_snapshot(dialog.values()[0])
+
+        def keep_snapshot(self, label: str) -> Snapshot:
+            """Keep the open files' working lines under ``label``, in memory only.
+
+            Up to SNAPSHOT_LIMIT are kept: taking one more lets the oldest go, and
+            says which. They last until files are opened again.
+            """
+            snapshot = take_snapshot(self.docs, label)
+            self.snapshots.append(snapshot)
+            self._snapshots_taken += 1
+            message = (f"Snapshot '{label}' kept in memory at {snapshot.taken:%H:%M}. Edit > "
+                       "Roll back to snapshot puts the lines back; nothing is written to disk.")
+            if len(self.snapshots) > SNAPSHOT_LIMIT:
+                oldest = self.snapshots.pop(0)
+                message += (f" The oldest, '{oldest.label}', was let go: up to "
+                            f"{SNAPSHOT_LIMIT} are kept.")
+            self.statusBar().showMessage(message, 10000)
+            return snapshot
+
+        def fill_snapshot_menu(self) -> None:
+            """Edit > Roll back to snapshot: the snapshots, newest first."""
+            menu = self.rollback_menu
+            menu.clear()
+            if not self.snapshots:
+                menu.addAction("No snapshots yet").setEnabled(False)
+                return
+            for snapshot in reversed(self.snapshots):
+                item = menu.addAction(f"{snapshot.label} ({snapshot.taken:%H:%M})")
+                item.setToolTip(
+                    f"Put every open file's lines back as they were at "
+                    f"{snapshot.taken:%H:%M:%S}, in memory, as one Undo step. Nothing is "
+                    "written until Save or Deploy.")
+                item.triggered.connect(
+                    lambda _checked=False, chosen=snapshot: self.roll_back_snapshot(chosen))
+
+        def roll_back_snapshot(self, snapshot: Snapshot) -> None:
+            """Put the open files' lines back as ``snapshot`` kept them, as one operation."""
+            if snapshot not in self.snapshots:
+                return
+            with self.recording(f"roll back to snapshot '{snapshot.label}'") as operation:
+                roll_back_to(snapshot)
+            if not operation.changed:
+                self.statusBar().showMessage(
+                    f"The open files already match snapshot '{snapshot.label}': nothing to "
+                    "roll back.", 8000)
+                return
+            if operation.structural:
+                self.reload_views()
+            else:
+                self.after_edit()
+            self.statusBar().showMessage(
+                f"Rolled back to snapshot '{snapshot.label}' ({snapshot.taken:%H:%M}): the "
+                "lines are as they were then. Undo takes the roll back away; nothing is "
+                "written until Save or Deploy.", 10000)
 
         # ----- going places -----
         def show_changes_tab(self) -> None:
