@@ -8,19 +8,22 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.7](https://img.shields.io/badge/Release-v3.7-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.8](https://img.shields.io/badge/Release-v3.8%20local-8b5cf6)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-372%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-376%20passing-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
+The download link opens the latest published release, not this locally finalised
+v3.8 source. No v3.8 executable has been built in this finalisation.
+
 <sub>
-Release: 3.7
-Status: released
-Application on disk: 3.7
+Release: 3.8
+Status: locally finalised; publication pending
+Application on disk: 3.8
 </sub>
 
 </div>
@@ -50,7 +53,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 ## ✨ Key features
 
-**In development (not yet released):** **Edit > Roll back to snapshot** asks before it rolls back. The question names the snapshot, the time it was taken, and the files, and says the roll back replaces the working copy in memory only, with Undo to take it away. Cancel is the default, and Esc or closing the question cancels; no file on disk changes until Save or Deploy.
+**New in 3.8 (finalised locally; publication pending):** **Edit > Roll back to snapshot** asks before it rolls back. The question names the snapshot, the time it was taken, and the files, and says the roll back replaces the working copy in memory only, with Undo to take it away. Cancel is the default, and Esc or closing the question cancels; no file on disk changes until Save or Deploy.
 
 **New in 3.7:** a short name and 3-letter code suggested from a club's long name (**Edit > Fill short name and code**, Ctrl+Alt+D); **Name health**, which counts and lists stray spaces, typographic punctuation, lower-case codes, and codes shared in a file section, with **Fix formatting**; and **snapshots** of the open files kept in memory, to roll back a run of changes in one step (Ctrl+Alt+K). Nothing is written until Save or Deploy.
 

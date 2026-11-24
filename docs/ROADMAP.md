@@ -12,9 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.7** is current (24 November 2026): a short name and 3-letter
-  code suggested from a club's long name, Name health checks with Fix
-  formatting, and in-memory snapshots to roll back a run of changes.
+- **Release 3.8** is finalised locally (24 November 2026); publication is
+  pending. Snapshot rollback asks for confirmation, defaults to Cancel,
+  and avoids an empty Undo step when the working files already match.
 
 ## Next
 

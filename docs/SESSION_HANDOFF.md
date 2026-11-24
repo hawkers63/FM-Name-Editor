@@ -10,7 +10,19 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
-## 24 November 2026 (Europe/London) — Claude Code (Session 22, target 3.8)
+## 24 November 2026 (Europe/London) — Session 22 and Forge local v3.8 finalisation
+
+### Forge — local release preparation
+
+- Mark authorised local version alignment, dated changelog, checks, release commit and annotated v3.8 tag; no push, build or publication.
+- Independently reviewed implementation commit `a7de817`; full offscreen regression passed: 376 tests in 67.832s, no failures or skips. This result predates version finalisation; the finalised tree requires its own full run before commit and a close-out run.
+- Release source VERSION, apex version, launcher banner and README/CHANGELOG headers aligned to 3.8. Status explicitly says locally finalised; publication pending. Changelog dated 24 November 2026 with Unreleased retained; public roadmap synchronised. No executable built or launched.
+- Fresh `git fetch origin main` found the implementation one commit ahead with no divergence before finalisation. Remote v3.7 was checked; v3.8 was absent at that check. Exact outgoing hashes/counts and final test results are supplied in Forge's close-out, not inferred here.
+- Carry forward as proposed Stage 0 for Mark's selection: intermittent Save timing (not diagnosed), and the targeted-only/full-suite instruction discrepancy. No unselected feature or performance fix included.
+- Private roadmap and proposed next-session prompt remain local and untracked. Historical private-path exposure remains unresolved under Mark's local-only continuation permission.
+- Publication requires a separate fresh approval after exact outgoing commit/tag review. Nothing in this entry grants it.
+
+### Claude Code implementation record (before local finalisation)
 
 - **Tool:** claude (Claude Code)
 - **Model:** Claude Opus 5.5 (`claude-opus-5-5`)

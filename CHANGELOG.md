@@ -1,14 +1,19 @@
 # Changelog
 
-Release: 3.7
-Status: released
-Application on disk: 3.7
+Release: 3.8
+Status: locally finalised; publication pending
+Application on disk: 3.8
 
-The program on disk reports `VERSION = "3.7"`. The launcher banner says v3.7.
+The source on disk reports `VERSION = "3.8"`. The launcher banner says v3.8.
+No v3.8 executable has been built in this local finalisation.
 
 ## Unreleased
 
-Session 22 — a roll back to a snapshot asks first, and the agent guides are brought up to date (target 3.8, not released):
+## 3.8 (24 November 2026)
+
+Finalised locally; not yet pushed or published. Session 22 closes the selected scope.
+
+Session 22 — a roll back to a snapshot asks first, and the agent guides are brought up to date:
 
 - **Roll back asks first.** Choosing a snapshot under Edit > Roll back to snapshot now shows a question that names the snapshot, the time it was taken and the open files, and says the roll back replaces the working copy in memory only (no file on disk changes until Save or Deploy) and that Undo takes it away. Cancel is the default; Esc, Enter and closing the question all cancel, and only Roll back goes ahead. A name being typed in the inspector is kept, not used, while the question is up. A snapshot that has gone asks nothing and changes nothing. The submenu, Ctrl+Alt+K and the limit of ten are unchanged.
 - **No empty Undo step.** Rolling back again to a snapshot the open files already match, after a Save or Deploy, no longer leaves a step on the Undo stack that changes nothing.

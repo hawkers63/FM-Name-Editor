@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.7
+FM Name Editor v3.8
 ===================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -59,6 +59,8 @@ and along a row in the grid.
 Release 3.7 adds a short name and 3-letter code suggested from a
 club's long name, Name health checks with Fix formatting, and
 in-memory snapshots to roll back a run of changes.
+Release 3.8 asks for confirmation before a snapshot rollback, defaults
+to Cancel, and avoids an empty Undo step for an unchanged rollback.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -105,7 +107,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.7"
+VERSION = "3.8"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")
