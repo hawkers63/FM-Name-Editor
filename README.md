@@ -8,7 +8,7 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.8](https://img.shields.io/badge/Release-v3.8-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.9](https://img.shields.io/badge/Release-v3.9-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
@@ -18,9 +18,9 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club,
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.8
+Release: 3.9
 Status: released
-Application on disk: 3.8
+Application on disk: 3.9
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.9:** Save is quicker, because the word index behind right-click no longer splits every name again after a write. **Import pack** and the **Backups** window read and compare files in the background, so the window keeps responding, and closing the Backups window part-way leaves nothing half done. When a backup's names all match but the files are not byte-identical, the Backups window now says why: the encoding or BOM, line endings, comments, blank lines, unsupported lines, or name lines written differently, read only.
 
 **New in 3.8:** **Edit > Roll back to snapshot** asks before it rolls back. The question names the snapshot, the time it was taken, and the files, and says the roll back replaces the working copy in memory only, with Undo to take it away. Cancel is the default, and Esc or closing the question cancels; no file on disk changes until Save or Deploy.
 
@@ -189,6 +191,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.9**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.9) | 24&nbsp;Nov&nbsp;2026 | ⚡ Quicker Save, pack import and backups in the background, and why a backup's bytes differ |
 | [**3.8**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.8) | 24&nbsp;Nov&nbsp;2026 | 🛡️ Snapshot rollback confirmation, Cancel by default, and no empty Undo step for an unchanged rollback |
 | [**3.7**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.7) | 24&nbsp;Nov&nbsp;2026 | 🩺 Suggested short names and codes, name health, and in-memory snapshots |
 | [**3.6**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.6) | 22&nbsp;Nov&nbsp;2026 | 🔎 Search scope and aliases, name-length counters, and faster keyboard moves |
@@ -208,6 +211,16 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.9 adds</b> &nbsp;·&nbsp; 24&nbsp;Nov&nbsp;2026</summary>
+
+- **Quicker Save.** The right-click word index remembers each name's words, so the reload after a write no longer splits every name again. The one-second limit is unchanged.
+- **Pack import and backups in the background.** Import pack, and the Backups window's listing, comparison and whole-file restore read, run on the worker. Closing the window part-way, or choosing another copy, drops the answer still on its way: nothing is shown or restored.
+- **Why the bytes differ.** When every supported name matches a backup but the bytes do not, a read-only panel lists the encoding or BOM, line endings, comments, blank lines, unsupported lines and name lines written differently, with counts and the first 20 lines.
+- **Windows download.** A fresh v3.9 executable is attached to the [v3.9 release](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.9), with its SHA-256 in the release notes.
+
+</details>
 
 <details>
 <summary><b>What 3.8 adds</b> &nbsp;·&nbsp; 24&nbsp;Nov&nbsp;2026</summary>

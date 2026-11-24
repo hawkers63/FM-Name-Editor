@@ -34,7 +34,12 @@ and Codex CLI. Update it at the end of every session.
 
 ### Known issues / blockers
 
-- None found. Note from the brief: Forge launched the 3.8 exe for a smoke test, against the never-launch rule; the release itself is reported fine. This session launched nothing.
+- None found. The 3.8 executable was launched once for a smoke test at that release, against the never-launch rule; the release itself is fine. This session launched nothing.
+
+### Neal — release 3.9
+
+- Reviewed `ffb6d66`. Set `VERSION`, the module header, the launcher banner, the README and CHANGELOG headers and the public roadmap to 3.9; dated the changelog section 24 November 2026 with an empty Unreleased kept.
+- Ran the full offscreen suite once for the release: 384 tests in 59.460s, all passing; built the Windows executable from the release commit without launching it. Push and publication wait for Mark's confirmation.
 
 ### Files touched
 

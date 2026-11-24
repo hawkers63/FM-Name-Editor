@@ -1,12 +1,16 @@
 # Changelog
 
-Release: 3.8
+Release: 3.9
 Status: released
-Application on disk: 3.8
+Application on disk: 3.9
 
-The source on disk reports `VERSION = "3.8"`. The launcher banner says v3.8.
+The source on disk reports `VERSION = "3.9"`. The launcher banner says v3.9.
 
 ## Unreleased
+
+## 3.9 (24 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.9 makes Save quicker, moves pack import and the Backups window's reading onto the worker, and explains why a backup whose names match is not byte-identical. Session 23 closes 3.9.
 
 Session 23 — Save timing, a responsive pack import and Backups window, and why the bytes differ:
 
@@ -14,7 +18,7 @@ Session 23 — Save timing, a responsive pack import and Backups window, and why
 - **Pack import in the background.** Import pack reads, checks and matches the pack on the worker, with the window's actions off until it is done, then shows the pack dialog as before.
 - **Backups window in the background.** The backups folder is listed, and a copy is read and compared, on the worker. Closing the window part-way, or choosing another copy, drops the answer still on its way: nothing is shown or restored, and no error appears. While a copy is read for a restore, the lists and buttons wait.
 - **Why the bytes differ.** When every supported name matches a backup but the files are not byte-identical, the Backups window lists why, read only: the encoding or BOM, line endings, comments, blank lines, unsupported lines, and name lines written differently, with counts and the first 20 lines. Files longer than 200,000 lines are not compared line by line.
-- **Verification.** New `Session23Engine` (4) and `Session23Window` (4); `Session8Workers` waits for the Backups window's listing before it restores.
+- **Verification.** New `Session23Engine` (4) and `Session23Window` (4); `Session8Workers` waits for the Backups window's listing before it restores. Tests: 384 in the full suite, up from 376, all passing offscreen.
 
 ## 3.8 (24 November 2026)
 

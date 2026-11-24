@@ -12,9 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.8** is current (24 November 2026): snapshot rollback asks
-  for confirmation, defaults to Cancel, and avoids an empty Undo step when
-  the working files already match.
+- **Release 3.9** is current (24 November 2026): a quicker Save, pack
+  import and the Backups window read in the background, and a read-only
+  explanation of why a backup's bytes differ when its names match.
 
 ## Next
 
@@ -27,6 +27,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.8 — snapshot rollback asks first, with Cancel by default
 - 3.7 — suggested short names and codes, name health, and in-memory snapshots
 - 3.6 — search scope and aliases, name-length counters, and faster keyboard moves
 - 3.5 — start folders and favourites, the ID column, and Add name
