@@ -8,7 +8,7 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.11](https://img.shields.io/badge/Release-v3.11-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.11](https://img.shields.io/badge/Release-v3.11.1-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
@@ -18,9 +18,9 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club,
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.11
-Status: released
-Application on disk: 3.11
+Release: 3.11.1
+Status: ready for release; not yet published
+Application on disk: 3.11.1
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.11.1:** A one-fix release (ready for release; not yet published). **Edit > Roll back to snapshot** no longer leaves a saved file flagged as a pending restore when the snapshot was taken while a restore was pending.
 
 **New in 3.11:** A bug-fix release. In **Review changes**, a file whose changes are all unticked is no longer written by **Deploy**, wherever it would go. **Restore selected names** compares the exact names before it restores, so names that contain " | " can no longer slip past its check, and duplicate names are shown in quotes. **Undo** and **Redo** of a selected restore now take the file's restore state with them, and the **Backups** window keeps its "Restored …" message ahead of the fresh comparison.
 
@@ -195,6 +197,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| **3.11.1** | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fix: a snapshot roll back no longer leaves a saved file flagged as a pending restore |
 | [**3.11**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11) | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fixes: unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state |
 | [**3.10**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.10) | 25&nbsp;Nov&nbsp;2026 | 🗄️ Restore selected names in the background, with names changed since the list was shown refused |
 | [**3.9**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.9) | 24&nbsp;Nov&nbsp;2026 | ⚡ Quicker Save, pack import and backups in the background, and why a backup's bytes differ |

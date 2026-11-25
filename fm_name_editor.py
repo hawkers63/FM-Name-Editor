@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.11
-====================
+FM Name Editor v3.11.1
+======================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
 reverse engineering, sublicensing or commercial use without prior written
@@ -71,6 +71,8 @@ Release 3.11 keeps a file whose changes are all unticked out of Deploy,
 compares the exact names before a selected restore, lets Undo and Redo
 take a restore's file state with them, and keeps the "Restored" message
 in the Backups window.
+Release 3.11.1 clears the restore flags of a file that a snapshot roll back
+leaves clean, so it is no longer shown as a pending restore.
 
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
@@ -118,7 +120,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.11"
+VERSION = "3.11.1"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

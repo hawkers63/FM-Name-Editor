@@ -12,11 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.11** is current (25 November 2026), with bug
-  fixes: a file whose changes are all unticked stays out of Deploy,
-  Restore selected names compares the names themselves, Undo and Redo
-  take a restore's file state with them, the "Restored" message stays in
-  the Backups window, and the test suite runs clean on Linux.
+- **Release 3.11.1** is ready for release (25 November 2026), a
+  one-fix release: a snapshot roll back no longer leaves a saved file
+  flagged as a pending restore.
 
 ## Next
 
@@ -29,6 +27,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.11 — unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state
 - 3.10 — Restore selected names in the background, refusing names changed since the list was shown
 - 3.9 — a quicker Save, pack import and backups in the background, and why a backup's bytes differ
 - 3.8 — snapshot rollback asks first, with Cancel by default

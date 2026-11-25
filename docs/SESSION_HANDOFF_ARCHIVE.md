@@ -10,6 +10,39 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 24 November 2026 (Europe/London) — Grok Bot (Neal)
+
+- **Tool:** Grok Bot (Neal)
+- **Model:** Grok Bot
+- **Branch / commit:** main, local `docs: finalise Release 3.7 version, headers, changelog and README`, annotated tag `v3.7`, not pushed
+
+### Done this session
+
+- Reviewed Session 21 (`b8673e8`): the commit changes only `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`, `docs/SESSION_HANDOFF.md` and `docs/SESSION_HANDOFF_ARCHIVE.md`. No private files, no tag. Binding rules hold: suggestions fill only empty fields on an explicit action; Fix formatting is one undoable step and does not resolve a shared code; snapshots stay in memory, capped at ten, and rollback is one undo step without clearing the stack. Ctrl+Shift+D is still Deploy. Rollback is a submenu and does not ask for confirmation (reported; not changed in this pass).
+- Ran the full suite once: 372 tests in 59.455s, all passing offscreen.
+- Finalised Release 3.7: `VERSION`, the launcher banner, the README and CHANGELOG headers, a dated CHANGELOG section with an empty Unreleased section above it, the public roadmap, and this handoff. Private `roadmap.md` was updated and not staged. The executable was built and not launched. Release notes were written. Nothing was pushed.
+
+### In progress
+
+- Nothing. Waiting for Mark to confirm the push and the GitHub Release.
+
+### Next steps
+
+- After Mark confirms: push `main` then tag `v3.7`, and create the GitHub Release with the exe.
+- Further sessions are to be planned.
+
+### Known issues / blockers
+
+- None that block the release. Rollback does not show a confirmation dialog (the brief had asked for one). Club names used as generic examples in tests and docs were left as they are for Mark to decide. The Session 21 handoff line about live-file health counts was not copied into the release notes.
+
+### Files touched
+
+- `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
+  `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`;
+  private `roadmap.md` (not tracked)
+
+---
+
 ## 24 November 2026 (Europe/London) — Claude Code (Session 21)
 
 - **Tool:** claude (Claude Code)
