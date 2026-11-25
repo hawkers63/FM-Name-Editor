@@ -8,6 +8,15 @@ The source on disk reports `VERSION = "3.11.1"`. The launcher banner says v3.11.
 
 ## Unreleased
 
+Session 27 — a slimmer view rail, a calmer grid and one filter bar (release 3.12):
+
+- **A rail instead of tabs.** Entities, All lines and Changes are three icon buttons in a slim rail down the window's left edge, in place of the full-width tab bar, so the grids gain its height. Each button names its view in its tooltip and to a screen reader, and the Changes button carries the number of changes under its icon, hidden when there are none. Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+Shift+C, the View menu, the command palette and the remembered view work as before.
+- **A calmer grid.** Rows in the entity grid, All lines and Changes are 30 pixels tall instead of 24, with a thin rule under each row and no vertical lines; the stripes and the selection colours are unchanged. Statuses (Edited, Added, Duplicate, Check, and the states on Changes) and codes are drawn as rounded pills, each status word in its usual colour.
+- **An empty override reads as one.** In the entity grid, an empty short name or code shows a muted dash, with "No short-name override" or "No code override" as its tooltip. Only the grid draws it: sorting (empty cells still go last), the status filters, the search, name health, Changes and every write still see the empty value, so the dash never reaches a file.
+- **One filter bar with counts.** The family buttons and the status filters share one bar above the search box, each button with its count from the open files, for example Clubs 120. A family's count follows the status filter, and a filter's count follows the family chosen; the search words, a file section and a collection do not change them. When the window is too narrow for one row, as at 150% scaling, the filters move under the families instead of widening the window.
+- **User guide.** The sentences that named the tabs and the filters beside the search box now name the rail and the filter bar.
+- **Verification.** New `Session27View` (5), `Session27Grid` (4) and `Session27Filters` (6). The window, display, search, cadence and speed classes listed in the session brief pass unchanged. The full suite is run once at release.
+
 ## 3.11.1 (25 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.11.1 is a one-fix release: a snapshot roll back no longer leaves a saved file flagged as a pending restore. Session 26 closes 3.11.1.

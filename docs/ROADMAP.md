@@ -18,8 +18,9 @@ changes.
 
 ## Next
 
-- 3.12 is being planned: a calmer grid and less chrome. It waits on
-  Mark's choices, so no scope is agreed yet.
+- **3.12**, a calmer grid and less chrome: a slim view rail in place of
+  the tab bar, 30-pixel rows with pill badges, and one filter bar with
+  counts. Done locally in Session 27; it waits for its release.
 
 ## Later
 

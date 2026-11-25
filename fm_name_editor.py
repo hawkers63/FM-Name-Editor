@@ -328,7 +328,43 @@ QWidget#illustrative_card { background: $panel; border: 1px solid $rule; border-
 QWidget#illustrative_header { background: transparent; }
 QLabel#scoreboard_name { background: transparent; color: $text; }
 QLabel#ticker_label { background: transparent; color: $muted; }
+QFrame#rail { background: $panel; border: 0; border-right: 1px solid $rule; }
+QToolButton#rail_button {
+    background: transparent; color: $muted; border: 0; border-left: 2px solid transparent;
+    border-radius: 0; padding: 7px 0 6px 0; font-size: 11px; font-weight: bold;
+}
+QToolButton#rail_button:hover { background: $hover; color: $text; }
+QToolButton#rail_button:checked {
+    background: $hover; color: $text; border-left: 2px solid $accent;
+}
+QToolButton#rail_button:focus { border-left: 2px solid $focus; }
+QToolButton#rail_button:disabled { color: $disabled; }
+QTableView#grid::item { border: 0; border-bottom: 1px solid $rule; }
+QTableView#grid::item:selected { background: $accent; color: $on_accent; }
+QPushButton#filter { padding: 3px 9px; }
 """
+
+# Session 27: every grid's row height in logical pixels (Mark's choice, 25 November 2026).
+GRID_ROW_HEIGHT = 30
+# What the entity grid shows in an empty short-name or code cell. Only the grid's
+# delegate paints it: the model, sorting, filters, name health, the changes and
+# every write still see the empty value, so it never reaches a file.
+EMPTY_CELL_MARK = "—"
+# The view rail's icons (Session 27), one per view in the window's order: single-colour
+# SVG, drawn in a theme colour wherever the text says currentColor. No image files.
+_ICON_HEAD = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+              'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+              'stroke-linejoin="round">')
+VIEW_ICONS = (
+    # Entities: a grid of names, one row per club, competition and so on.
+    _ICON_HEAD + '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/>'
+    '<path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/></svg>',
+    # All lines: a list, one line per name line.
+    _ICON_HEAD + '<path d="M9.5 6.5h10M9.5 12h10M9.5 17.5h10"/>'
+    '<path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01" stroke-width="2.8"/></svg>',
+    # Changes: plus and minus, the differences from the files on disk.
+    _ICON_HEAD + '<path d="M7.5 4v7M4 7.5h7M13 16.5h7M18.5 4.5L5.5 19.5"/></svg>',
+)
 
 
 def theme_style_sheet(theme=None) -> str:
@@ -364,9 +400,13 @@ USER_GUIDE = (
      "lists. Import older edits and the name packs start in the same folder. Opening "
      "runs in the background; the window stays usable."),
     ("Find and edit names",
-     "The Entities tab shows one row per club, competition, stadium, city, nation, or "
-     "award, with its long name, short name, and code side by side. Choose a family with "
-     "the buttons above the grid, narrow it with the search box (Ctrl+F), a file "
+     "The rail down the window's left edge switches between the three views: Entities "
+     "(Ctrl+1), All lines (Ctrl+2) and Changes (Ctrl+3), whose button carries the "
+     "number of changes. Entities shows one row per club, competition, stadium, city, "
+     "nation, or award, with its long name, short name, and code side by side; an empty "
+     "short name or code shows a muted dash, which is never written. Choose a family in "
+     "the filter bar above the grid, where each button carries its count from the open "
+     "files, narrow it with the search box (Ctrl+F), a file "
      "section, or a collection, and edit a cell with F2 or a double-click. The "
      "inspector on the right (F4 shows or hides it) shows the text on disk above the "
      "proposed text for the selected row, the line as it stands in the file, and an "
@@ -423,7 +463,7 @@ USER_GUIDE = (
      "quotes, a backtick or an accent used as an apostrophe, an em dash), a 3-letter code "
      "in lower case, and a 3-letter code another club uses in the same file section. The "
      "file section stands in for a division, which the files do not record. Click the "
-     "count, or choose Name health beside the search box, to list them: their Status "
+     "count, or choose Name health in the filter bar, to list them: their Status "
      "reads Check, and the inspector names each finding. Fix formatting (on the Edit "
      "menu, and in the inspector) tidies the names of the selected rows as one Undo "
      "step: ends trimmed, plain single spaces, straight quotes, a plain dash, and codes "
@@ -1958,6 +1998,45 @@ def no_override_text(family: str, slot: str) -> str:
 
 # ----- Session 20: search scope, club aliases, length guides -----
 
+def status_shown(entity: NameEntity, mode: str = "all", health=None) -> bool:
+    """Whether the status filter ``mode`` (a key of STATUS_FILTERS) shows an entity.
+
+    The one test the grid's filter and the filter bar's counts share
+    (Session 27). The "health" mode shows the entities in ``health``, a
+    name_health result (Session 21).
+    """
+    if mode == "edited":
+        return entity.changed()
+    if mode == "missing_short":
+        return entity.missing("short")
+    if mode == "missing_code":
+        return entity.missing("code")
+    if mode == "health":
+        return bool(health) and entity_key(entity) in health
+    return True
+
+
+def filter_counts(entities, family: str, mode: str = "all", health=None) -> tuple:
+    """The filter bar's counts (Session 27), from the open files: ``(families, statuses)``.
+
+    ``families`` counts, for each key of FAMILY_LABELS, the entities the
+    status filter ``mode`` shows; ``statuses`` counts, for each key of
+    STATUS_FILTERS, the entities of ``family`` that the filter shows. The
+    search words, the file section and the collection are left out, so a
+    count says what the open files hold, not what the grid shows now.
+    """
+    families = dict.fromkeys(FAMILY_LABELS, 0)
+    statuses = dict.fromkeys(STATUS_FILTERS, 0)
+    for entity in entities:
+        if entity.family == family:
+            for key in statuses:
+                if status_shown(entity, key, health):
+                    statuses[key] += 1
+        if entity.family in families and status_shown(entity, mode, health):
+            families[entity.family] += 1
+    return families, statuses
+
+
 def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all",
                  keys=None, alias: str = "", health=None) -> bool:
     """Whether the entity grid shows an entity: the one test the grid's filter
@@ -1975,13 +2054,7 @@ def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all"
         return False
     if section and entity.section != section:
         return False
-    if mode == "edited" and not entity.changed():
-        return False
-    if mode == "missing_short" and not entity.missing("short"):
-        return False
-    if mode == "missing_code" and not entity.missing("code"):
-        return False
-    if mode == "health" and not (health and entity_key(entity) in health):
+    if not status_shown(entity, mode, health):
         return False
     names = [entity.name_in(slot) for slot, _label, _cmd in FAMILY_FIELDS[entity.family]]
     if alias:
@@ -6901,17 +6974,18 @@ def run_gui(paths):
                                 QRegularExpression, QSize, QSortFilterProxyModel, Qt, QTimer, Signal,
                                 QPropertyAnimation, QEasingCurve, QParallelAnimationGroup)
     from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence,
-                               QPainter, QPen, QRegularExpressionValidator, QUndoCommand,
-                               QUndoStack)
+                               QPainter, QPalette, QPen, QPixmap, QRegularExpressionValidator,
+                               QUndoCommand, QUndoStack)
+    from PySide6.QtSvg import QSvgRenderer
     from PySide6.QtWidgets import (
-        QAbstractItemDelegate, QAbstractItemView, QApplication, QButtonGroup, QCheckBox,
-        QComboBox, QDialog,
+        QAbstractItemDelegate, QAbstractItemView, QApplication, QBoxLayout, QButtonGroup,
+        QCheckBox, QComboBox, QDialog,
         QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
         QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
         QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
-        QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableView,
-        QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
-        QToolButton)
+        QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+        QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolTip,
+        QVBoxLayout, QWidget, QToolButton)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
@@ -7082,6 +7156,300 @@ def run_gui(paths):
             if index.data(BADGE_ROLE):
                 size.setWidth(size.width() + BADGE_SPACE)
             return size
+
+    PILL_PAD = 7            # the room either side of a pill's word (Session 27)
+    PILL_GAP = 4            # between two pills in one cell
+    PILL_INSET = 6          # from the cell's edge to its first pill, and after its last
+
+    def pill_font(font: QFont) -> QFont:
+        """The words in a pill: a little smaller than the grid's text, and semi-bold."""
+        small = QFont(font)
+        if small.pixelSize() > 0:
+            small.setPixelSize(max(9, small.pixelSize() - 2))
+        elif small.pointSizeF() > 0:
+            small.setPointSizeF(max(7.0, small.pointSizeF() - 1.5))
+        small.setWeight(QFont.DemiBold)
+        return small
+
+    def pill_words(text: str, kind: str) -> list:
+        """A cell's pills: one per word of a status ("Added, Edited"), or the code itself."""
+        if kind == "status":
+            return [word for word in text.split(", ") if word]
+        return [text] if text else []
+
+    def pills_width(font: QFont, texts, kind: str = "status") -> int:
+        """The width the widest of some cells' pills needs, with the inset either side."""
+        metrics = QFontMetrics(pill_font(font))
+        widest = 0
+        for text in texts:
+            words = pill_words(text, kind)
+            if words:
+                widest = max(widest, sum(metrics.horizontalAdvance(word) + 2 * PILL_PAD
+                                         for word in words) + PILL_GAP * (len(words) - 1))
+        return widest + 2 * PILL_INSET if widest else 0
+
+    def widen_for_pills(view: QTableView, column: int, texts, kind: str = "status",
+                        cap: int | None = None) -> None:
+        """Widen a column sized by fit_columns until its widest pills fit (up to ``cap``)."""
+        width = pills_width(view.font(), texts, kind)
+        if cap is not None:
+            width = min(width, cap)
+        if width > view.columnWidth(column):
+            view.setColumnWidth(column, width)
+
+    class PillDelegate(QStyledItemDelegate):
+        """A status or a code drawn as rounded pills fitted to the row (Session 27).
+
+        A status ("Added, Edited") becomes one tinted pill per word, in the
+        colour that word has everywhere (STATE_COLOUR_NAMES), so a colour never
+        stands without its word; a code becomes one neutral pill; an empty
+        short name or code in the entity grid shows a muted dash
+        (EMPTY_CELL_MARK). Painted only, never a widget per row: the model's
+        text is not touched, so sorting, filters, name health, the changes and
+        every write see what they saw before. ``kind(index)`` says how a cell
+        is drawn: "status", "code", "empty", or "" for the usual way. ``tip``
+        gives an empty cell's tooltip, such as "No short-name override".
+        """
+
+        INSET = PILL_INSET
+
+        def __init__(self, parent, kind=None, tip=None):
+            super().__init__(parent)
+            self.kind = kind or (lambda _index: "status")
+            self.tip = tip
+
+        def pills(self, index) -> list:
+            """(word, THEME colour name) for each pill the cell draws."""
+            kind = self.kind(index)
+            if kind not in ("status", "code"):
+                return []
+            words = pill_words(str(index.data(DISPLAY) or ""), kind)
+            if kind == "code":
+                return [(word, "text") for word in words]
+            quiet = index.data(FOREGROUND) == COLOURS["muted"]      # a change left out
+            return [(word, "muted" if quiet else state_colour_name(word) or "text")
+                    for word in words]
+
+        def paint(self, painter, option, index):
+            kind = self.kind(index)
+            if not kind:
+                super().paint(painter, option, index)
+                return
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            widget = opt.widget
+            style = widget.style() if widget is not None else QApplication.style()
+            selected = bool(opt.state & QStyle.State_Selected)
+            if kind == "empty":
+                opt.text = EMPTY_CELL_MARK
+                font = QFont(opt.font)
+                font.setItalic(True)
+                opt.font = font
+                if not selected:
+                    palette = QPalette(opt.palette)
+                    palette.setColor(QPalette.Text, COLOURS["muted"])
+                    opt.palette = palette
+                style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+                return
+            pills = self.pills(index)
+            opt.text = ""
+            style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)  # row and selection
+            if not pills:
+                return
+            font = pill_font(opt.font)
+            metrics = QFontMetrics(font)
+            rect = opt.rect
+            height = float(max(10, min(rect.height() - 8, metrics.height() + 6)))
+            x = float(rect.x() + PILL_INSET)
+            top = rect.y() + (rect.height() - height) / 2
+            painter.save()
+            painter.setClipRect(rect)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setFont(font)
+            for word, name in pills:
+                width = metrics.horizontalAdvance(word) + 2 * PILL_PAD
+                ink = COLOURS["on_accent" if selected else name]
+                fill = QColor(ink)
+                fill.setAlphaF(0.24 if selected else 0.12 if name in ("text", "muted") else 0.18)
+                pill = QRectF(x, top, width, height)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(fill)
+                painter.drawRoundedRect(pill, height / 2, height / 2)
+                painter.setPen(ink)
+                painter.drawText(pill, Qt.AlignCenter, word)
+                x += width + PILL_GAP
+            painter.restore()
+
+        def sizeHint(self, option, index):
+            size = super().sizeHint(option, index)
+            kind = self.kind(index)
+            if kind in ("status", "code"):
+                width = pills_width(option.font, [str(index.data(DISPLAY) or "")], kind)
+                size.setWidth(max(size.width(), width))
+            return size
+
+        def helpEvent(self, event, view, option, index):
+            if (event.type() == QEvent.ToolTip and self.tip is not None
+                    and self.kind(index) == "empty"):
+                QToolTip.showText(event.globalPos(), self.tip(index), view)
+                return True
+            return super().helpEvent(event, view, option, index)
+
+    RAIL_WIDTH = 44         # the view rail down the window's left edge (Session 27)
+    RAIL_ICON = 20
+
+    def rail_icon(svg: str) -> QIcon:
+        """A rail icon from single-colour SVG: muted until hovered or chosen, dim while the
+        window is busy. Drawn at three sizes, for 100% to 200% scaling."""
+        icon = QIcon()
+        for mode, state, name in ((QIcon.Normal, QIcon.Off, "muted"),
+                                  (QIcon.Active, QIcon.Off, "text"),
+                                  (QIcon.Normal, QIcon.On, "text"),
+                                  (QIcon.Active, QIcon.On, "text"),
+                                  (QIcon.Disabled, QIcon.Off, "disabled"),
+                                  (QIcon.Disabled, QIcon.On, "disabled")):
+            renderer = QSvgRenderer(QByteArray(
+                svg.replace("currentColor", THEME[name]).encode("ascii")))
+            for side in (RAIL_ICON, RAIL_ICON * 3 // 2, RAIL_ICON * 2):
+                pixmap = QPixmap(side, side)
+                pixmap.fill(Qt.transparent)
+                painter = QPainter(pixmap)
+                renderer.render(painter)
+                painter.end()
+                icon.addPixmap(pixmap, mode, state)
+        return icon
+
+    class ViewStack(QStackedWidget):
+        """The window's three views (Session 27): their pages on a stack, chosen from a slim
+        rail of icon buttons down the window's left edge instead of a full-width tab bar.
+
+        It keeps a tab widget's names (addTab, tabText, currentIndex), so the
+        window reads as before; addTab also takes the view's icon and action.
+        ``rail`` is the strip of buttons; the window puts it beside the stack.
+        A button triggers its view's action, as the View menu, its keys and
+        the command palette do, and gives its view's name to a screen reader
+        and in its tooltip. ``set_count`` puts a count under a button's icon,
+        as the Changes button carries the number of changes; nought hides it.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.rail = QFrame()
+            self.rail.setObjectName("rail")
+            self.rail.setMinimumWidth(RAIL_WIDTH)
+            self.rail.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            lay = QVBoxLayout(self.rail)
+            lay.setContentsMargins(0, 6, 1, 6)      # 1: the frame's own rule on the right
+            lay.setSpacing(2)
+            lay.addStretch(1)
+            self.buttons: list = []
+            self.titles: list[str] = []
+            self.counts: list[int] = []
+            self.keys: list[str] = []
+            self.group = QButtonGroup(self)
+            self.group.setExclusive(True)
+            self.currentChanged.connect(self._show_current)
+
+        def addTab(self, page, title: str, icon: str, action) -> int:
+            index = self.addWidget(page)
+            button = QToolButton()
+            button.setObjectName("rail_button")
+            button.setCheckable(True)
+            button.setIcon(rail_icon(icon))
+            button.setIconSize(QSize(RAIL_ICON, RAIL_ICON))
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.clicked.connect(lambda _checked=False: action.trigger())
+            self.group.addButton(button, index)
+            lay = self.rail.layout()
+            lay.insertWidget(lay.count() - 1, button)       # above the stretch
+            self.buttons.append(button)
+            self.titles.append(title)
+            self.counts.append(0)
+            self.keys.append(" or ".join(key.toString(QKeySequence.NativeText)
+                                         for key in action.shortcuts()))
+            self._label(index)
+            self._show_current(self.currentIndex())
+            return index
+
+        def tabText(self, index: int) -> str:
+            """A view's name as its button gives it to a screen reader: "Changes (3)"."""
+            count = self.counts[index]
+            return f"{self.titles[index]} ({count:,})" if count else self.titles[index]
+
+        def set_count(self, index: int, count: int) -> None:
+            if self.counts[index] != count:
+                self.counts[index] = count
+                self._label(index)
+
+        def _label(self, index: int) -> None:
+            button, count, text = self.buttons[index], self.counts[index], self.tabText(index)
+            button.setText(f"{count:,}" if count else "")
+            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if count
+                                      else Qt.ToolButtonIconOnly)
+            button.setAccessibleName(text)
+            button.setToolTip(f"{text}\n{self.keys[index]}" if self.keys[index] else text)
+
+        def _show_current(self, index: int) -> None:
+            if 0 <= index < len(self.buttons):
+                self.buttons[index].setChecked(True)
+
+    def calm_grid(view: QTableView) -> None:
+        """A main-window grid's look (Session 27): rows GRID_ROW_HEIGHT tall and striped,
+        a 1 px rule under each row (the style sheet's QTableView#grid::item), no
+        vertical lines."""
+        view.setObjectName("grid")
+        view.setAlternatingRowColors(True)
+        view.setWordWrap(False)
+        view.setShowGrid(False)
+        view.verticalHeader().setVisible(False)
+        view.verticalHeader().setDefaultSectionSize(GRID_ROW_HEIGHT)
+
+    FILTER_GAP = 16         # between the family buttons and the status filters
+    FILTER_COUNT_HINT = (
+        "Counts are of the open files. A family's count is of its names the status "
+        "filter shows; a filter's count is of the family chosen. The search words, a "
+        "file section and a collection do not change them.")
+
+    class FilterBar(QWidget):
+        """The family buttons and the status filters in one bar (Session 27).
+
+        The two groups sit side by side, or one above the other when the
+        window is too narrow for both, so the bar never makes the window
+        wider than the screen, at 150% scaling included. ``settle`` runs on
+        every resize, and after the counts change the buttons' widths.
+        """
+
+        def __init__(self, groups):
+            super().__init__()
+            self.setObjectName("filter_bar")
+            self.groups = list(groups)
+            lay = QBoxLayout(QBoxLayout.LeftToRight, self)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(FILTER_GAP)
+            for group in self.groups:
+                lay.addWidget(group)
+            lay.addStretch(1)
+            self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+        def needed(self) -> int:
+            """The width the groups take side by side."""
+            return (sum(group.sizeHint().width() for group in self.groups)
+                    + FILTER_GAP * (len(self.groups) - 1))
+
+        def settle(self, width: int | None = None) -> None:
+            """Side by side when the groups fit ``width`` (the bar's own by default),
+            else one above the other."""
+            lay = self.layout()
+            wide = (self.width() if width is None else width) >= self.needed()
+            direction = QBoxLayout.LeftToRight if wide else QBoxLayout.TopToBottom
+            if lay.direction() != direction:
+                lay.setDirection(direction)
+                lay.setSpacing(FILTER_GAP if wide else 4)
+                self.updateGeometry()
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self.settle(event.size().width())
 
     class IllustrativePreviewCard(QWidget):
         """A collapsible card showing the selected entity's spellings in three illustrative formats.
@@ -7903,6 +8271,10 @@ def run_gui(paths):
 
         def columns(self) -> list[str]:
             return list(self._keys)
+
+        def key_at(self, column: int) -> str:
+            """A column's key without copying the list: the grid's delegate asks per cell."""
+            return self._keys[column] if 0 <= column < len(self._keys) else ""
 
         def set_family_rows(self, family: str, rows: list[NameEntity]) -> None:
             self.beginResetModel()
@@ -10650,8 +11022,12 @@ def run_gui(paths):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
-    class CadenceDelegate(QStyledItemDelegate):
+    class CadenceDelegate(PillDelegate):
         """The entity grid's cell editor (Session 20): Tab and Enter move on.
+
+        Session 27: it draws the grid's cells too, through PillDelegate, as
+        ``kind`` says: the status and the code as pills, an empty short name
+        or code as a muted dash.
 
         Tab keeps the cell and edits the next name column on the same row
         (Shift+Tab the one before); Enter keeps it and edits the same column
@@ -10663,8 +11039,8 @@ def run_gui(paths):
         one once the event loop is free, after any reload the edit queued.
         """
 
-        def __init__(self, view, where, move):
-            super().__init__(view)
+        def __init__(self, view, where, move, kind=None, tip=None):
+            super().__init__(view, kind or (lambda _index: ""), tip)
             self.where = where
             self.move = move
 
@@ -10858,9 +11234,13 @@ def run_gui(paths):
             self.build_menus()
             self.build_toolbar()
             central = QWidget()
-            outer = QVBoxLayout(central)
-            outer.setContentsMargins(8, 6, 8, 2)
-            self.tabs = QTabWidget()
+            # Session 27: the views on a stack, chosen from a slim rail down the left edge,
+            # so the grids get the height a full-width tab bar took.
+            outer = QHBoxLayout(central)
+            outer.setContentsMargins(0, 0, 8, 2)
+            outer.setSpacing(8)
+            self.tabs = ViewStack()
+            outer.addWidget(self.tabs.rail)
             outer.addWidget(self.tabs, 1)
             self.setCentralWidget(central)
             self.build_entity_page()
@@ -11283,19 +11663,35 @@ def run_gui(paths):
             entity_page = QWidget()
             entity_lay = QVBoxLayout(entity_page)
             entity_lay.setContentsMargins(0, 8, 0, 0)
-            family_row = QHBoxLayout()
+            # Session 27: one filter bar, the families and then the status filters, each
+            # button with its count from the open files (refresh_filter_counts).
             self.family_group = QButtonGroup(self)
             self.family_group.setExclusive(True)
             self.family_buttons = []
-            for key, label in FAMILY_LABELS.items():
-                button = QPushButton(label)
-                button.setCheckable(True)
-                button.setProperty("family", key)
-                self.family_group.addButton(button)
-                self.family_buttons.append(button)
-                family_row.addWidget(button)
-            family_row.addStretch(1)
-            entity_lay.addLayout(family_row)
+            self.status_group = QButtonGroup(self)
+            self.status_group.setExclusive(True)
+            self.status_buttons = []
+            boxes = []
+            for group, buttons, labels, name in (
+                    (self.family_group, self.family_buttons, FAMILY_LABELS, "family"),
+                    (self.status_group, self.status_buttons, STATUS_FILTERS, "mode")):
+                box = QWidget()
+                box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                row = QHBoxLayout(box)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(4)
+                for key, label in labels.items():
+                    button = QPushButton(label)
+                    button.setObjectName("filter")
+                    button.setCheckable(True)
+                    button.setProperty(name, key)
+                    button.setToolTip(FILTER_COUNT_HINT)
+                    group.addButton(button)
+                    buttons.append(button)
+                    row.addWidget(button)
+                boxes.append(box)
+            self.filter_bar = FilterBar(boxes)
+            entity_lay.addWidget(self.filter_bar)
 
             status_row = QHBoxLayout()
             # Session 20: what the search box searches, while a file section or a
@@ -11325,16 +11721,6 @@ def run_gui(paths):
             self.searches_menu.aboutToShow.connect(self.fill_searches_menu)
             self.searches_btn.setMenu(self.searches_menu)
             status_row.addWidget(self.searches_btn)
-            self.status_group = QButtonGroup(self)
-            self.status_group.setExclusive(True)
-            self.status_buttons = []
-            for mode, label in STATUS_FILTERS.items():
-                button = QPushButton(label)
-                button.setCheckable(True)
-                button.setProperty("mode", mode)
-                self.status_group.addButton(button)
-                self.status_buttons.append(button)
-                status_row.addWidget(button)
             entity_lay.addLayout(status_row)
             # "Matched via alias ...", or "No matches in ... Found N in other sections"
             # as a link that shows every section. Hidden when there is nothing to say.
@@ -11387,14 +11773,12 @@ def run_gui(paths):
             self.entity_view.setModel(self.entity_proxy)
             self.entity_view.setSelectionBehavior(QTableView.SelectRows)
             self.entity_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-            self.entity_view.setAlternatingRowColors(True)
-            self.entity_view.setWordWrap(False)
-            self.entity_view.verticalHeader().setVisible(False)
-            self.entity_view.verticalHeader().setDefaultSectionSize(24)
+            calm_grid(self.entity_view)
             self.entity_view.setEditTriggers(
                 QTableView.DoubleClicked | QTableView.EditKeyPressed)
             self.entity_view.setItemDelegate(
-                CadenceDelegate(self.entity_view, self.grid_edit_origin, self.move_grid_editor))
+                CadenceDelegate(self.entity_view, self.grid_edit_origin, self.move_grid_editor,
+                                self.entity_cell_kind, self.entity_empty_tip))
             sortable(self.entity_view, self.on_entity_sort)
             splitter.addWidget(self.entity_view)
 
@@ -11412,7 +11796,24 @@ def run_gui(paths):
             splitter.setStretchFactor(1, 1)
             splitter.setSizes([190, 770, 300])
             entity_lay.addWidget(splitter, 1)
-            self.tabs.addTab(entity_page, "Entities")
+            self.tabs.addTab(entity_page, "Entities", VIEW_ICONS[0], self.entities_act)
+
+        def entity_cell_kind(self, index) -> str:
+            """How the entity grid draws a cell (Session 27): its status and its code as pills,
+            an empty short name or code as a muted dash, and any other cell as usual."""
+            key = self.entity_model.key_at(index.column())
+            if key == "status":
+                return "status"
+            if key in ("short", "code"):
+                if not index.data(Qt.DisplayRole):
+                    return "empty"
+                return "code" if key == "code" else ""
+            return ""
+
+        def entity_empty_tip(self, index) -> str:
+            """The tooltip on the dash in an empty cell: "No short-name override"."""
+            return no_override_text(self.entity_model.family,
+                                    self.entity_model.key_at(index.column()))
 
         def build_line_page(self) -> None:
             line_page = QWidget()
@@ -11434,18 +11835,17 @@ def run_gui(paths):
             self.view = self.line_view
             self.line_view.setModel(self.line_proxy)
             self.line_view.setSelectionBehavior(QTableView.SelectRows)
-            self.line_view.setAlternatingRowColors(True)
-            self.line_view.setWordWrap(False)
-            self.line_view.verticalHeader().setVisible(False)
-            self.line_view.verticalHeader().setDefaultSectionSize(24)
+            calm_grid(self.line_view)
             self.line_view.horizontalHeader().setSectionResizeMode(
                 EntryModel.NAME_COL, QHeaderView.Stretch)
             self.line_view.setItemDelegateForColumn(EntryModel.TYPE_COL,
                                                     BadgeDelegate(self.line_view))
+            self.line_view.setItemDelegateForColumn(EntryModel.STATUS_COL,
+                                                    PillDelegate(self.line_view))
             sortable(self.line_view, self.on_line_sort)
             self.line_view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
             line_lay.addWidget(self.line_view, 1)
-            self.tabs.addTab(line_page, "All lines")
+            self.tabs.addTab(line_page, "All lines", VIEW_ICONS[1], self.lines_act)
 
         def build_change_page(self) -> None:
             change_page = QWidget()
@@ -11473,8 +11873,11 @@ def run_gui(paths):
             self.change_proxy.setSourceModel(self.change_model)
             self.change_view = change_table(self.change_proxy)
             self.change_view.setToolTip("Double-click a row to go to its line on All lines.")
+            calm_grid(self.change_view)
+            self.change_view.setItemDelegateForColumn(ChangeModel.STATE,
+                                                      PillDelegate(self.change_view))
             change_lay.addWidget(self.change_view, 1)
-            self.tabs.addTab(change_page, "Changes")
+            self.tabs.addTab(change_page, "Changes", VIEW_ICONS[2], self.changes_act)
             self.change_search.textChanged.connect(self.change_proxy.set_filter)
             self.change_model.ticks_changed.connect(
                 lambda: self.change_summary.setText(describe_ticks(self.change_model.rows)))
@@ -12325,8 +12728,8 @@ def run_gui(paths):
             self.metrics.setText(f"{clubs:,} clubs    {comps:,} competitions    {unsaved}")
             self.show_health_count()
             changes = collect_changes(self.docs)
-            self.tabs.setTabText(
-                self.CHANGES_TAB, f"Changes ({len(changes):,})" if changes else "Changes")
+            self.tabs.set_count(self.CHANGES_TAB, len(changes))     # on the rail's button
+            self.refresh_filter_counts()
             self.review_act.setText(
                 f"Review changes ({len(changes):,})" if changes else "Review changes")
             self.review_act.setEnabled(dirty)
@@ -12346,6 +12749,22 @@ def run_gui(paths):
                     f"{self.line_proxy.rowCount():,} shown of {total:,} names    |    "
                     f"{unsaved_long}    |    double-click a name to edit")
 
+        def refresh_filter_counts(self) -> None:
+            """The filter bar's counts (Session 27), from the open files on the GUI thread:
+            each family's names that the status filter shows, and each filter's names in
+            the family chosen. One pass over the entities; no proxy work. With no file
+            open the buttons carry their names alone."""
+            families, statuses = filter_counts(self.all_entities, self.family,
+                                               self.status_mode, self.health)
+            for buttons, labels, name, counts in (
+                    (self.family_buttons, FAMILY_LABELS, "family", families),
+                    (self.status_buttons, STATUS_FILTERS, "mode", statuses)):
+                for button in buttons:
+                    key = button.property(name)
+                    button.setText(f"{labels[key]} {counts[key]:,}" if self.docs
+                                   else labels[key])
+            self.filter_bar.settle()
+
         def show_changes(self, rows=None) -> None:
             """Fill the Changes tab from the open files."""
             if rows is None:
@@ -12353,6 +12772,8 @@ def run_gui(paths):
             self.change_model.set_rows(rows)
             self.change_proxy.set_filter(self.change_search.text())
             fit_change_columns(self.change_view, self.change_model)
+            widen_for_pills(self.change_view, ChangeModel.STATE,
+                            {CHANGE_STATES[row.state] for row in rows})
             self.change_summary.setText(describe_ticks(rows))
 
         def focus_find(self):
@@ -12516,6 +12937,8 @@ def run_gui(paths):
             self._sizing = True                 # these widths are the program's, not the user's
             try:
                 fit_columns(self.line_view, texts, {0: 240}, {EntryModel.TYPE_COL: BADGE_SPACE})
+                widen_for_pills(self.line_view, EntryModel.STATUS_COL,
+                                texts[EntryModel.STATUS_COL])
                 for column, key in enumerate(EntryModel.KEYS):
                     if key in self.line_widths and column != EntryModel.NAME_COL:
                         self.line_view.setColumnWidth(column, self.line_widths[key])
@@ -12563,6 +12986,9 @@ def run_gui(paths):
                 caps[column] = (200 if key in ("section", "lang")
                                 else 140 if key == "id" else 280)
             fit_columns(self.entity_view, texts, caps)
+            for column, key in enumerate(columns):      # pills are a little wider than text
+                if key in ("status", "code") and column in texts:
+                    widen_for_pills(self.entity_view, column, texts[column], key, caps[column])
             for column, key in enumerate(columns):      # widths the user set win
                 width = self.entity_widths.get(self.family, {}).get(key)
                 if width and key != stretch:

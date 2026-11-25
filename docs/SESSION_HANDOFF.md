@@ -10,6 +10,40 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 25 November 2026 (Europe/London) — Claude Code (Session 27)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** Eve's Session 27 brief for release 3.12, a calmer grid and less chrome (private `notes/session_3.12_brief.md`, building on note 10 section 2). Mark's fixed choices: 30 px rows, and the view switcher in a left-hand icon rail.
+- **Branch / commit:** main, this local commit `feat: a slimmer view rail, a calmer grid and one filter bar`; not pushed, not tagged
+
+### Done this session
+
+- Stage 0, checked first: a `QTabWidget` held the three pages under the toolbar (`CHANGES_TAB = 2`; `refresh_status` wrote "Changes (N)"; the remembered view kept `tabs.currentIndex()`). The entity page had a row of family buttons, then the search, Saved searches and the status buttons in one row. All three grids had 24 px rows with gridlines.
+- Stage 1: `ViewStack`, a `QStackedWidget` that keeps `addTab`, `tabText` and `currentIndex`, with a 44 px rail of three checkable icon buttons down the left edge. The icons are single-colour SVG string constants (`VIEW_ICONS`), drawn with `QSvgRenderer` in the theme's colours; no image files, no new package. Each button triggers its view's action and carries a tooltip with its keys and an accessible name; the Changes button shows the count under its icon (hidden at nought), and `tabText` still reads "Changes (N)". `CHANGES_TAB` stays 2. Keys, the View menu, the palette and the remembered view are unchanged.
+- Stage 2: `calm_grid` gives the entity, All lines and Changes grids 30 px rows (`GRID_ROW_HEIGHT`), stripes, no grid, and a 1 px rule under each row (`QTableView#grid::item`, with an explicit `:selected` rule so the selection colours stay). `PillDelegate` paints statuses (a tinted pill per word in its `STATE_COLOUR_NAMES` colour, muted for a change left out) and codes. `CadenceDelegate` inherits it and paints a muted italic dash (`EMPTY_CELL_MARK`) in an empty short-name or code cell, with "No short-name override" or "No code override" as its tooltip. The model is untouched. Columns are widened for pills (`widen_for_pills`); the review dialog's table is left as it was.
+- Stage 3: engine `status_shown` (the status test, now shared with `entity_shown`) and `filter_counts`. `FilterBar` holds the family buttons and the status filters, each with its count, and stacks the two groups when the window is too narrow (as with Segoe UI at 150%). `refresh_filter_counts` runs from `refresh_status`: one pass over the entities, 26 ms on both FM27 files. The search row works as before.
+- Stage 4: CHANGELOG (Unreleased), the user guide sentences that named the tabs and the filters beside the search box, the public roadmap's 3.12 bullet, this entry, and the oldest live entry moved to the archive.
+- Tests: new `Session27View` (5), `Session27Grid` (4), `Session27Filters` (6), all passing. Targeted runs, offscreen, all passing: `Session27*` with `Session20Engine` and `Session8Engine` (23); `WindowSmoke`, `Session2Window`, `Session6Window`, `Session7Window`, `Session8Window`, `Session9Window`, `Session14Visual`, `Session14Display`, `Session15BatchRename`, `Session19AddName`, `Session20Search`, `Session20Cadence`, `Session21Health` (95); `Session20Speed` and `Session7Speed` (2) at their limits, slowest keystroke 0.111 s, slowest Session 7 step 0.823 s (save). Full suite not run (Eve runs it).
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Eve: review, run the full suite once, and prepare release 3.12 with Mark's approval. README still says "Changes tab" in a few places, and its screenshots (`docs/images/main-window.png`, `changes-tab.png`) show the old tab bar.
+
+### Known issues / blockers
+
+- None found. A few status-bar messages and tooltips still say "tab" (for example "Select rows on the Entities tab first."); the brief limited wording changes to the user guide.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+
+---
+
 ## 25 November 2026 (Europe/London) — Claude Code (Session 26)
 
 - **Tool:** claude (Claude Code)
@@ -176,52 +210,5 @@ and Codex CLI. Update it at the end of every session.
 ### Files touched
 
 - `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
-
----
-
-## 24 November 2026 (Europe/London) — Session 22 and local v3.8 finalisation
-
-### Neal — local release preparation
-
-- Mark authorised local version alignment, dated changelog, checks, release commit and annotated v3.8 tag; no push, build or publication.
-- Independently reviewed implementation commit `a7de817`; full offscreen regression passed: 376 tests in 67.832s, no failures or skips. This result predates version finalisation.
-- Release source VERSION, apex version, launcher banner and README/CHANGELOG headers aligned to 3.8. Status explicitly says locally finalised; publication pending. Changelog dated 24 November 2026 with Unreleased retained; public roadmap synchronised. No executable built or launched.
-- Fresh `git fetch origin main` found the implementation one commit ahead with no divergence before finalisation. Remote v3.7 was checked; v3.8 was absent at that check. Exact outgoing hashes/counts and final test results are supplied in Neal's close-out, not inferred here.
-- Carry forward as proposed Stage 0 for Mark's selection: intermittent Save timing (not diagnosed). No unselected feature or performance fix included.
-- Private roadmap and proposed next-session prompt remain local and untracked.
-- Later on 24 November 2026, with Mark's approval, v3.8 was pushed, tagged and published on GitHub as the latest release.
-- Testing policy confirmed by Mark on 24 November 2026: coding sessions run targeted tests only; Neal runs the full suite once per release, and not for documentation-only changes. The per-commit full-run rule is withdrawn.
-
-### Claude Code implementation record (before local finalisation)
-
-- **Tool:** claude (Claude Code)
-- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
-- **Branch / commit:** main, local `fix: confirm snapshot rollback and refresh agent guidance`, not pushed, not tagged
-
-### Done this session
-
-- Stage 0 (selected option 1): Edit > Roll back to snapshot now asks first (`MainWindow.rollback_box`, `confirm_rollback`). The question names the snapshot, its time and the open files, says the roll back replaces the working copy in memory only and that Undo takes it away. Cancel is the default and the escape button; Esc, Enter and the title-bar close cancel; only Roll back proceeds. Inspector field signals are held while it is up, so a draft is kept, not used. An expired snapshot still asks nothing and changes nothing. A confirmed roll back that changes nothing visible (including a repeat after a Save) leaves no empty Undo step. Submenu, Ctrl+Alt+K, RAM-only lifecycle and the limit of ten unchanged; engine unchanged.
-- Stage 1 (selected option 4): `AGENTS.md` release field points to `VERSION`; the one-second rule has no fixed data counts; Neal replaces the old manager names in the workflow text; `CLAUDE.md` makes the selected brief authoritative; both say the private plan and memory files are updated locally and never staged.
-- Stage 2: help text, CHANGELOG Unreleased, README "in development" note (not released). Oldest handoff entry moved to the archive.
-- Tests: new `Session22RollbackConfirm` (4); `Session21Snapshots` and `Session21Speed` answer the question explicitly. Targeted runs green; full offscreen suite with the scratch temp root: 376 tests, OK, no failures or skips.
-
-### In progress
-
-- Nothing. v3.8 is unreleased; release preparation is Neal's, under Mark's authority.
-
-### Next steps
-
-- Neal: independent review of the outgoing delta and release preparation; Mark alone approves any push.
-- Mark selects any further scope.
-
-### Known issues / blockers
-
-- Testing policy: resolved by Mark on 24 November 2026 (see the Neal entry above).
-- Save timing in `Session7Speed`: an earlier full run measured Save just over the 1 s cap; it passed in this session's run. Not diagnosed; proposed as Stage 0 of the following session for Mark's decision.
-
-### Files touched
-
-- `fm_name_editor.py`, `tests/test_engine.py`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, `README.md`,
-  `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`; private `roadmap.md` (local only, not staged)
 
 ---

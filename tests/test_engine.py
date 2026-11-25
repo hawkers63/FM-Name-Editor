@@ -11049,3 +11049,459 @@ class Session26Engine(unittest.TestCase):
             self.assertFalse(doc.dirty)
             self.assertEqual(self._flags(doc), (False, None, False))
             self.assertFalse(operation.changed)
+
+
+class Session27Filters(unittest.TestCase):
+    """Session 27: the family buttons and the status filters share one bar, each button
+    with a count from the open files."""
+
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha United"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t1\t"ALP"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Beta Rovers"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t2\t"Beta"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Gamma Town"\t""\n'
+        '"COMP_LONG_NAME_CHANGE"\t7\t"Example League"\t""\n'
+        '"STADIUM_NAME_CHANGE"\t9\t"Example Park"\t""\n'
+    )
+
+    def _entities(self, tmp):
+        path = Path(tmp) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.CLUBS)
+        doc = editor.LncDoc(path)
+        return doc, editor.build_entities([doc])
+
+    def test_the_status_test_is_the_grids_status_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, entities = self._entities(tmp)
+            editor.try_set_name(doc.names()[0], "Alpha Utd")
+            health = {editor.entity_key(entities[-1]): ["something to check"]}
+            for entity in entities:
+                for mode in editor.STATUS_FILTERS:
+                    with self.subTest(entity=entity.id, mode=mode):
+                        self.assertEqual(
+                            editor.status_shown(entity, mode, health),
+                            editor.entity_shown(entity, [], "", mode, None, "", health))
+
+    def test_the_counts_come_from_the_open_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, entities = self._entities(tmp)
+            families, statuses = editor.filter_counts(entities, "club")
+            self.assertEqual(families, {"club": 3, "comp": 1, "stadium": 1, "city": 0,
+                                        "nation": 0, "award": 0})
+            self.assertEqual(statuses, {"all": 3, "edited": 0, "missing_short": 1,
+                                        "missing_code": 2, "health": 0})
+            # A family's count follows the status filter; a filter's count, the family.
+            editor.try_set_name(doc.names()[0], "Alpha Utd")
+            families, statuses = editor.filter_counts(entities, "club", "edited")
+            self.assertEqual((families["club"], families["comp"], statuses["edited"]), (1, 0, 1))
+            families, statuses = editor.filter_counts(entities, "comp", "missing_short")
+            self.assertEqual((families["club"], families["comp"]), (1, 1))
+            self.assertEqual((statuses["all"], statuses["missing_short"], statuses["edited"]),
+                             (1, 1, 0))
+            gamma = next(entity for entity in entities if entity.id == "3")
+            _families, statuses = editor.filter_counts(
+                entities, "club", "all", {editor.entity_key(gamma): ["to check"]})
+            self.assertEqual(statuses["health"], 1)
+
+    def _window(self, tmp):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.resize(1280, 800)
+        win.show()
+        QApplication.processEvents()
+        path = Path(tmp) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.CLUBS)
+        return win, path
+
+    @staticmethod
+    def _texts(buttons) -> list[str]:
+        return [button.text() for button in buttons]
+
+    @staticmethod
+    def _click(buttons, name: str, value: str) -> None:
+        next(button for button in buttons if button.property(name) == value).click()
+
+    def test_one_bar_holds_the_families_and_the_filters_with_their_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path = self._window(tmp)
+            self.assertEqual(self._texts(win.family_buttons), list(editor.FAMILY_LABELS.values()))
+            self.assertEqual(self._texts(win.status_buttons), list(editor.STATUS_FILTERS.values()))
+            self.assertTrue(win.load([str(path)]))
+            self.assertEqual(self._texts(win.family_buttons),
+                             ["Clubs 3", "Competitions 1", "Stadiums 1", "Cities 0", "Nations 0",
+                              "Awards 0"])
+            self.assertEqual(self._texts(win.status_buttons),
+                             ["All 3", "Edited 0", "No short-name override 1",
+                              "No code override 2", "Name health 0"])
+            for button in win.family_buttons + win.status_buttons:
+                self.assertTrue(win.filter_bar.isAncestorOf(button), button.text())
+            for widget in (win.entity_search, win.searches_btn, win.scope_label,
+                           win.search_all_btn):
+                self.assertFalse(win.filter_bar.isAncestorOf(widget))
+            self.assertLess(win.filter_bar.geometry().bottom(),
+                            win.entity_search.geometry().top())     # the search row is below
+            from PySide6.QtWidgets import QBoxLayout
+
+            self.assertEqual(win.filter_bar.layout().direction(),
+                             QBoxLayout.LeftToRight)                 # one row at 1280 wide
+
+    def test_the_counts_follow_the_files_the_family_and_the_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path = self._window(tmp)
+            self.assertTrue(win.load([str(path)]))
+            model = win.entity_model
+            row = next(n for n, entity in enumerate(model.rows) if entity.id == "2")
+            self.assertTrue(model.setData(model.index(row, model.columns().index("long")),
+                                          "Beta United"))
+            self.assertEqual(win.status_buttons[1].text(), "Edited 1")
+            self._click(win.status_buttons, "mode", "edited")
+            self.assertEqual(self._texts(win.family_buttons)[:3],
+                             ["Clubs 1", "Competitions 0", "Stadiums 0"])
+            self._click(win.family_buttons, "family", "comp")
+            self.assertEqual(self._texts(win.status_buttons),
+                             ["All 1", "Edited 0", "No short-name override 1",
+                              "No code override 1", "Name health 0"])
+            win.undo_act.trigger()
+            self.assertEqual(win.family_buttons[0].text(), "Clubs 0")
+            other = Path(tmp) / "more.lnc"
+            write_lnc(other, '"CLUB_NAME_CHANGE"\t8\t"Delta Athletic"\t""\n')
+            self.assertTrue(win.load([str(path), str(other)]))
+            self._click(win.status_buttons, "mode", "all")
+            self.assertEqual(win.family_buttons[0].text(), "Clubs 4")
+
+    def test_a_family_still_switches_the_grid_and_the_filters_combine_with_the_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path = self._window(tmp)
+            self.assertTrue(win.load([str(path)]))
+            self._click(win.family_buttons, "family", "comp")
+            self.assertEqual((win.family, win.entity_model.family), ("comp", "comp"))
+            self.assertEqual([entity.id for entity in win.entity_model.rows], ["7"])
+            self._click(win.family_buttons, "family", "club")
+            self._click(win.status_buttons, "mode", "missing_code")
+            self.assertEqual(_Session20Window.shown(win), ["2", "3"])
+            _Session20Window.search(win, "gamma")
+            self.assertEqual(_Session20Window.shown(win), ["3"])
+            self._click(win.status_buttons, "mode", "all")
+            self.assertEqual(_Session20Window.shown(win), ["3"])
+            _Session20Window.search(win, "")
+            self.assertEqual(len(_Session20Window.shown(win)), 3)
+
+    def test_a_narrow_window_stacks_the_two_groups_instead_of_growing(self):
+        from PySide6.QtWidgets import QApplication, QBoxLayout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path = self._window(tmp)
+            self.assertTrue(win.load([str(path)]))
+            bar = win.filter_bar
+            width = bar.needed() - 40                       # too narrow for both side by side
+            win.resize(width, 760)
+            QApplication.processEvents()
+            self.assertEqual(win.width(), width)            # the bar did not widen the window
+            self.assertLess(bar.width(), bar.needed())
+            self.assertEqual(bar.layout().direction(), QBoxLayout.TopToBottom)
+            for group in bar.groups:
+                self.assertLessEqual(group.geometry().right(), bar.width())
+            win.resize(1280, 800)
+            QApplication.processEvents()
+            self.assertEqual(bar.layout().direction(), QBoxLayout.LeftToRight)
+
+
+class Session27View(unittest.TestCase):
+    """Session 27: Entities, All lines and Changes are chosen from a slim rail of icon
+    buttons down the window's left edge, not a full-width tab bar. The keys, the View
+    menu, the command palette and the remembered view work as before."""
+
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha United"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Beta Rovers"\t""\n'
+    )
+    NAMES = ["Entities", "All lines", "Changes"]
+
+    def _window(self, tmp, load: bool = True):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.show()
+        win.activateWindow()
+        QApplication.processEvents()
+        if load:
+            path = Path(tmp) / "FM27_Club_Names.lnc"
+            write_lnc(path, self.CLUBS)
+            self.assertTrue(win.load([str(path)]))
+        return win
+
+    def _at(self, win, index: int) -> None:
+        self.assertEqual(win.tabs.currentIndex(), index)
+        self.assertEqual([button.isChecked() for button in win.tabs.buttons],
+                         [number == index for number in range(3)])
+
+    def test_a_slim_rail_takes_the_place_of_the_tab_bar(self):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QAccessible
+        from PySide6.QtWidgets import QTabBar, QTabWidget
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self._window(tmp)
+            self.assertEqual(win.centralWidget().findChildren(QTabBar), [])
+            self.assertEqual(win.centralWidget().findChildren(QTabWidget), [])
+            rail = win.tabs.rail
+            self.assertTrue(rail.isVisible())
+            self.assertTrue(36 <= rail.width() <= 48, rail.width())
+            self.assertEqual(rail.mapTo(win, QPoint(0, 0)).x(), 0)      # the left edge
+            self.assertLessEqual(rail.geometry().right(), win.tabs.geometry().left())
+            self.assertEqual(len(win.tabs.buttons), 3)
+            for button, name in zip(win.tabs.buttons, self.NAMES):
+                with self.subTest(view=name):
+                    self.assertFalse(button.icon().isNull())
+                    self.assertEqual(button.text(), "")              # an icon, no words
+                    self.assertTrue(button.toolTip().startswith(name))
+                    self.assertEqual(button.accessibleName(), name)  # what a screen reader says
+                    face = QAccessible.queryAccessibleInterface(button)
+                    if face is not None:
+                        self.assertEqual(face.text(QAccessible.Name), name)
+            for button, keys in zip(win.tabs.buttons, ("Ctrl+1", "Ctrl+2", "Ctrl+3")):
+                self.assertIn(keys, button.toolTip())
+            self.assertEqual([win.tabs.tabText(n) for n in range(3)], self.NAMES)
+            self._at(win, 0)
+
+    def test_each_key_switches_view(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self._window(tmp)
+            for key, modifiers, index in ((Qt.Key_2, Qt.ControlModifier, 1),
+                                          (Qt.Key_3, Qt.ControlModifier, 2),
+                                          (Qt.Key_1, Qt.ControlModifier, 0),
+                                          (Qt.Key_C, Qt.ControlModifier | Qt.ShiftModifier, 2),
+                                          (Qt.Key_1, Qt.ControlModifier, 0)):
+                with self.subTest(key=key, modifiers=modifiers):
+                    QTest.keyClick(win.tabs, key, modifiers)
+                    self._at(win, index)
+
+    def test_the_view_menu_the_palette_and_the_rail_switch_view(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self._window(tmp)
+            self.assertEqual(win.view_menu.actions()[:3],
+                             [win.entities_act, win.lines_act, win.changes_act])
+            for action, index in ((win.lines_act, 1), (win.changes_act, 2),
+                                  (win.entities_act, 0)):
+                action.trigger()
+                self._at(win, index)
+            commands = {row[0]: row for row in win.palette_commands()}
+            for label, keys, index in (("View > All lines", "Ctrl+2", 1),
+                                       ("View > Changes", "Ctrl+Shift+C / Ctrl+3", 2),
+                                       ("View > Entities", "Ctrl+1", 0)):
+                with self.subTest(command=label):
+                    self.assertEqual(commands[label][1], keys)
+                    commands[label][2]()
+                    self._at(win, index)
+            for index in (2, 1, 0, 2):
+                win.tabs.buttons[index].click()
+                self._at(win, index)
+            self.assertIs(win.focusWidget(), win.change_view)   # as View > Changes does
+
+    def test_the_view_shown_comes_back_on_the_next_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            self.enterContext(mock.patch.multiple(
+                editor, STATE_ROOT=state, PROFILE_ROOT=Path(tmp) / "profiles"))
+            first = self._window(tmp)
+            first.tabs.buttons[1].click()
+            first.remember_on_close = True
+            first.close()
+            self.assertEqual(editor.load_state(state)["view"]["tab"], 1)
+            second = self._window(tmp, load=False)
+            self._at(second, 1)
+            second.tabs.buttons[2].click()
+            second.remember_on_close = True
+            second.close()
+            self._at(self._window(tmp, load=False), 2)
+
+    def test_the_changes_count_follows_the_changes(self):
+        from PySide6.QtCore import Qt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win = self._window(tmp)
+            button = win.tabs.buttons[win.CHANGES_TAB]
+            self.assertEqual((button.text(), button.accessibleName()), ("", "Changes"))
+            self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonIconOnly)
+            model = win.entity_model
+            long = model.columns().index("long")
+            self.assertTrue(model.setData(model.index(0, long), "Alpha Utd"))
+            self.assertEqual((button.text(), button.accessibleName()), ("1", "Changes (1)"))
+            self.assertEqual(win.tabs.tabText(win.CHANGES_TAB), "Changes (1)")
+            self.assertTrue(button.toolTip().startswith("Changes (1)"))
+            self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonTextUnderIcon)
+            self.assertTrue(model.setData(model.index(1, long), "Beta Utd"))
+            self.assertEqual(button.text(), "2")
+            win.undo_act.trigger()
+            win.undo_act.trigger()
+            self.assertEqual((button.text(), button.accessibleName()), ("", "Changes"))
+            self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonIconOnly)
+
+
+class Session27Grid(unittest.TestCase):
+    """Session 27: 30 px rows and no vertical lines in the three grids; in the entity grid
+    a muted dash in an empty short name or code, and the status and code as pills, all
+    painted without touching the model."""
+
+    CLUBS = (
+        "#England\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Alpha United"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t1\t"Alpha"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t1\t"ALP"\t""\n'
+        '"CLUB_NAME_CHANGE"\t2\t"Beta Rovers"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"Gamma Town"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t3\t"Gamma"\t""\n'
+    )
+
+    def _window(self, tmp):
+        from PySide6.QtWidgets import QApplication
+
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.resize(1280, 800)
+        win.show()
+        QApplication.processEvents()
+        path = Path(tmp) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.CLUBS)
+        self.assertTrue(win.load([str(path)]))
+        return win, path
+
+    @staticmethod
+    def _cell(win, ident: str, key: str):
+        """The entity grid's index for one club and column, through the filter."""
+        model = win.entity_model
+        row = next(n for n, entity in enumerate(model.rows) if entity.id == ident)
+        return win.entity_proxy.mapFromSource(model.index(row, model.columns().index(key)))
+
+    def test_the_three_grids_have_30_pixel_rows_and_no_vertical_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path = self._window(tmp)
+            self.assertEqual(editor.GRID_ROW_HEIGHT, 30)
+            model = win.entity_model
+            self.assertTrue(model.setData(self._cell(win, "2", "long"), "Beta United"))
+            win.show_changes_tab()
+            for view in (win.entity_view, win.line_view, win.change_view):
+                with self.subTest(view=view.objectName()):
+                    self.assertEqual(view.verticalHeader().defaultSectionSize(), 30)
+                    self.assertGreater(view.model().rowCount(), 0)
+                    self.assertEqual(view.rowHeight(0), 30)
+                    self.assertFalse(view.showGrid())
+                    self.assertTrue(view.alternatingRowColors())
+                    self.assertEqual(view.objectName(), "grid")
+            # The rule under each row and the selection come from the style sheet.
+            sheet = editor.theme_style_sheet()
+            self.assertIn("QTableView#grid::item { border: 0; border-bottom: 1px solid", sheet)
+            self.assertIn("QTableView#grid::item:selected", sheet)
+
+    def test_the_dash_is_painted_and_never_stored_or_written(self):
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path = self._window(tmp)
+            view = win.entity_view
+            view.clearSelection()
+            dash = editor.EMPTY_CELL_MARK
+            # The dash is painted muted: no point of it is as light as the names.
+            image = view.viewport().grab(view.visualRect(self._cell(win, "2", "short"))).toImage()
+            lightest = max(image.pixelColor(x, y).lightness()
+                           for x in range(image.width()) for y in range(image.height()))
+            self.assertGreater(lightest, QColor(editor.THEME["panel"]).lightness() + 20)
+            self.assertLessEqual(lightest, QColor(editor.THEME["muted"]).lightness() + 8)
+            for key, tip in (("short", "No short-name override"), ("code", "No code override")):
+                index = self._cell(win, "2", key)
+                self.assertEqual(index.data(), "")
+                self.assertEqual(win.entity_cell_kind(index), "empty")
+                self.assertEqual(win.entity_empty_tip(index), tip)
+            beta = next(entity for entity in win.all_entities if entity.id == "2")
+            self.assertEqual((beta.name_in("short"), beta.name_in("code")), ("", ""))
+            self.assertNotIn(editor.entity_key(beta), win.health)
+            self.assertTrue(win.entity_model.setData(self._cell(win, "2", "long"), "Beta United"))
+            rows = editor.collect_changes(win.docs)
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn(dash, rows[0].on_disk + rows[0].proposed)
+            self.assertFalse(any(dash in entry.name for entry in win.docs[0].names()))
+            seen = []
+            with mock.patch.object(editor, "football_manager_running", return_value=[]), \
+                    mock.patch.object(QDialog, "exec", press_write(seen)):
+                win.save()
+            self.assertEqual(len(seen), 1)
+            data = path.read_bytes()
+            self.assertIn(b'"Beta United"', data)
+            self.assertNotIn(dash.encode("utf-8"), data)
+
+    def test_a_missing_short_name_still_sorts_and_filters_as_missing(self):
+        from PySide6.QtCore import Qt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path = self._window(tmp)
+            header = win.entity_view.horizontalHeader()
+            short = win.entity_model.columns().index("short")
+            for order in (Qt.AscendingOrder, Qt.DescendingOrder):
+                header.setSortIndicator(short, order)
+                self.assertEqual(_Session20Window.shown(win)[-1], "2")  # an empty cell goes last
+            next(button for button in win.status_buttons
+                 if button.property("mode") == "missing_short").click()
+            self.assertEqual(_Session20Window.shown(win), ["2"])
+            self.assertEqual(win.status_buttons[2].text(), "No short-name override 1")
+            next(button for button in win.status_buttons
+                 if button.property("mode") == "all").click()
+            _Session20Window.search(win, editor.EMPTY_CELL_MARK)
+            self.assertEqual(_Session20Window.shown(win), [])   # the dash is not in the data
+
+    def test_the_pills_are_painted_from_the_data_without_changing_it(self):
+        from PySide6.QtWidgets import QApplication
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path = self._window(tmp)
+            model = win.entity_model
+            self.assertTrue(model.setData(self._cell(win, "1", "long"), "Alpha Utd"))
+            self.assertTrue(model.setData(self._cell(win, "3", "code"), "GAM"))      # added
+            self.assertTrue(model.setData(self._cell(win, "3", "long"), "Gamma City"))
+            QApplication.processEvents()
+            view, delegate = win.entity_view, win.entity_view.itemDelegate()
+            cells = {name: self._cell(win, ident, key) for name, ident, key in (
+                ("status", "1", "status"), ("code", "1", "code"), ("both", "3", "status"))}
+            before = {name: index.data() for name, index in cells.items()}
+            self.assertEqual(before, {"status": "Edited", "code": "ALP", "both": "Added, Edited"})
+            self.assertEqual([win.entity_cell_kind(cells[name]) for name in cells],
+                             ["status", "code", "status"])
+            self.assertEqual(delegate.pills(cells["status"]), [("Edited", "edited")])
+            self.assertEqual(delegate.pills(cells["code"]), [("ALP", "text")])
+            self.assertEqual(delegate.pills(cells["both"]), [("Added", "added"),
+                                                             ("Edited", "edited")])
+            self.assertEqual(delegate.pills(self._cell(win, "1", "long")), [])
+            view.clearSelection()
+            for name in ("status", "code"):
+                rect = view.visualRect(cells[name])
+                image = view.viewport().grab(rect).toImage()
+                middle = image.height() // 2
+                plain = image.pixelColor(1, middle)                       # before the pill
+                pill = image.pixelColor(delegate.INSET + 3, middle)  # inside its rounded end
+                with self.subTest(cell=name):
+                    self.assertNotEqual(plain.name(), pill.name())
+            self.assertEqual({name: index.data() for name, index in cells.items()}, before)
+            # All lines and Changes draw their status the same way.
+            line_pills = win.line_view.itemDelegateForColumn(win.line_model.STATUS_COL)
+            row = next(n for n, entry in enumerate(win.line_model.rows)
+                       if entry.name == "Alpha Utd")
+            self.assertEqual(line_pills.pills(win.line_proxy.mapFromSource(
+                win.line_model.index(row, win.line_model.STATUS_COL))), [("Edited", "edited")])
+            win.show_changes_tab()
+            state = win.change_view.itemDelegateForColumn(win.change_model.STATE)
+            first = win.change_proxy.index(0, win.change_model.STATE)
+            self.assertTrue(state.pills(first))
+            win.change_model.set_included([win.change_model.rows[0]], False)
+            unticked = win.change_proxy.mapFromSource(win.change_model.index(0,
+                                                                              win.change_model.STATE))
+            self.assertEqual({name for _word, name in state.pills(unticked)}, {"muted"})

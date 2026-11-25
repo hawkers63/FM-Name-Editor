@@ -10,6 +10,53 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 24 November 2026 (Europe/London) — Session 22 and local v3.8 finalisation
+
+### Neal — local release preparation
+
+- Mark authorised local version alignment, dated changelog, checks, release commit and annotated v3.8 tag; no push, build or publication.
+- Independently reviewed implementation commit `a7de817`; full offscreen regression passed: 376 tests in 67.832s, no failures or skips. This result predates version finalisation.
+- Release source VERSION, apex version, launcher banner and README/CHANGELOG headers aligned to 3.8. Status explicitly says locally finalised; publication pending. Changelog dated 24 November 2026 with Unreleased retained; public roadmap synchronised. No executable built or launched.
+- Fresh `git fetch origin main` found the implementation one commit ahead with no divergence before finalisation. Remote v3.7 was checked; v3.8 was absent at that check. Exact outgoing hashes/counts and final test results are supplied in Neal's close-out, not inferred here.
+- Carry forward as proposed Stage 0 for Mark's selection: intermittent Save timing (not diagnosed). No unselected feature or performance fix included.
+- Private roadmap and proposed next-session prompt remain local and untracked.
+- Later on 24 November 2026, with Mark's approval, v3.8 was pushed, tagged and published on GitHub as the latest release.
+- Testing policy confirmed by Mark on 24 November 2026: coding sessions run targeted tests only; Neal runs the full suite once per release, and not for documentation-only changes. The per-commit full-run rule is withdrawn.
+
+### Claude Code implementation record (before local finalisation)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Branch / commit:** main, local `fix: confirm snapshot rollback and refresh agent guidance`, not pushed, not tagged
+
+### Done this session
+
+- Stage 0 (selected option 1): Edit > Roll back to snapshot now asks first (`MainWindow.rollback_box`, `confirm_rollback`). The question names the snapshot, its time and the open files, says the roll back replaces the working copy in memory only and that Undo takes it away. Cancel is the default and the escape button; Esc, Enter and the title-bar close cancel; only Roll back proceeds. Inspector field signals are held while it is up, so a draft is kept, not used. An expired snapshot still asks nothing and changes nothing. A confirmed roll back that changes nothing visible (including a repeat after a Save) leaves no empty Undo step. Submenu, Ctrl+Alt+K, RAM-only lifecycle and the limit of ten unchanged; engine unchanged.
+- Stage 1 (selected option 4): `AGENTS.md` release field points to `VERSION`; the one-second rule has no fixed data counts; Neal replaces the old manager names in the workflow text; `CLAUDE.md` makes the selected brief authoritative; both say the private plan and memory files are updated locally and never staged.
+- Stage 2: help text, CHANGELOG Unreleased, README "in development" note (not released). Oldest handoff entry moved to the archive.
+- Tests: new `Session22RollbackConfirm` (4); `Session21Snapshots` and `Session21Speed` answer the question explicitly. Targeted runs green; full offscreen suite with the scratch temp root: 376 tests, OK, no failures or skips.
+
+### In progress
+
+- Nothing. v3.8 is unreleased; release preparation is Neal's, under Mark's authority.
+
+### Next steps
+
+- Neal: independent review of the outgoing delta and release preparation; Mark alone approves any push.
+- Mark selects any further scope.
+
+### Known issues / blockers
+
+- Testing policy: resolved by Mark on 24 November 2026 (see the Neal entry above).
+- Save timing in `Session7Speed`: an earlier full run measured Save just over the 1 s cap; it passed in this session's run. Not diagnosed; proposed as Stage 0 of the following session for Mark's decision.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, `README.md`,
+  `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`; private `roadmap.md` (local only, not staged)
+
+---
+
 ## 24 November 2026 (Europe/London) — Grok Bot (Neal)
 
 - **Tool:** Grok Bot (Neal)
