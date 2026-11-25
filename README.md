@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.11.1](https://img.shields.io/badge/Release-v3.11.1-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.12](https://img.shields.io/badge/Release-v3.12-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/tree/v3.12)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-416-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-431-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.11.1
-Status: released
-Application on disk: 3.11.1
+Release: 3.12
+Status: source tagged for release
+Application on disk: 3.12
 </sub>
 
 </div>
@@ -44,11 +44,13 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 | **Safe by design** | A review before every write, a backup with a `manifest.json` (sizes, SHA-256, encoding), files replaced one at a time with a way back if one fails |
 | **Built for real files** | Both FM27 name files open in under a second; an edit or an undo takes under a tenth of a second |
 | **Your spellings, kept** | Spelling profiles and name packs carry your edits across matched on command, database ID, and language |
-| **Nothing hidden** | The Changes tab lists every difference from the files on disk, each with its own tick |
+| **Nothing hidden** | The Changes view lists every difference from the files on disk, each with its own tick |
 
 ---
 
 ## ✨ Key features
+
+**New in 3.12:** A left-hand view rail, 30-pixel grid rows and a single filter bar with counts.
 
 **New in 3.11.1:** A one-fix release. **Edit > Roll back to snapshot** no longer leaves a saved file flagged as a pending restore when the snapshot was taken while a restore was pending.
 
@@ -77,7 +79,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 | 🧩 **Entities grid** | A club or competition is one row: long name, short name, and code. Tabs for clubs, competitions, stadiums, cities, nations, and awards; **All lines** keeps the full table |
 | 🔎 **Search that forgives accents** | Search and filter by file section, type, edited rows, **No short-name override**, or **No code override**. Keep searches under a name |
 | 🗂️ **Inspector panel** | For each field: the text on disk above the text to write, whether it is unchanged, edited, or added, and the file and line |
-| ✅ **Changes tab and review** | Every pending change with a tick. Untick one to leave it out of the next write; it stays pending in memory |
+| ✅ **Changes view and review** | Every pending change with a tick. Untick one to leave it out of the next write; it stays pending in memory |
 | ↩️ **Undo and Redo** | Whole operations, one step each: a bulk tool, a name pack, a profile, a restore, or a Revert. Undo goes back past a Save |
 | 📝 **Spelling profiles** | Record your preferred spellings, then **Apply...** them again when the game's files change. Only names the game has not changed are ticked for you |
 | 📦 **Name packs** | Export and import spellings as JSON or CSV, with a preview first |
@@ -197,6 +199,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.12**](https://github.com/hawkers63/FM-Name-Editor/tree/v3.12) | 25&nbsp;Nov&nbsp;2026 | A left-hand view rail, 30-pixel grid rows and a single filter bar with counts. |
 | [**3.11.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11.1) | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fix: a snapshot roll back no longer leaves a saved file flagged as a pending restore |
 | [**3.11**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11) | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fixes: unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state |
 | [**3.10**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.10) | 25&nbsp;Nov&nbsp;2026 | 🗄️ Restore selected names in the background, with names changed since the list was shown refused |
@@ -220,6 +223,14 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.12 adds</b> &nbsp;·&nbsp; 25&nbsp;Nov&nbsp;2026</summary>
+
+- A left-hand view rail, 30-pixel grid rows and a single filter bar with counts.
+- Empty short names and codes show a muted dash while staying empty in the data.
+
+</details>
 
 <details>
 <summary><b>What 3.11.1 adds</b> &nbsp;·&nbsp; 25&nbsp;Nov&nbsp;2026</summary>
@@ -435,7 +446,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 <summary><b>What 2.3 adds</b> &nbsp;·&nbsp; 11&nbsp;Nov&nbsp;2026</summary>
 
 - **Spelling profiles.** A profile keeps your preferred spellings in the local `profiles` folder, each with the name the game file had when you recorded it. Save and Deploy never change a profile. When the game's files change, **Apply...** offers your spellings again and ticks only those whose name the game has not changed since. Since 2.4 the profile selector, **Record edits**, and **Apply...** sit in the top row, and New, Rename, and Delete are in the **Profiles** menu.
-- **The Changes tab** lists every difference between the open files and the files on disk: the text on disk, the text to write, whether the line is edited, added, restored, or removed, which tool changed it, and the file and line. Each change has a tick.
+- **The Changes view** lists every difference between the open files and the files on disk: the text on disk, the text to write, whether the line is edited, added, restored, or removed, which tool changed it, and the file and line. Each change has a tick.
 - **Review changes before every write.** Save and Deploy both show the changes, where each file goes, the backup folder, whether the game is running, and any file that changed on disk since the editor read it. An unticked change is left out of the write and stays pending. A file whose bytes would not change is not written. Save into the game folder is the same operation as Deploy, and the review says so.
 - **Undo and Redo** for whole operations: Ctrl+Z and Ctrl+Y, or the **Edit** menu, which names the step. A bulk tool, a name pack, a profile, a restore, or a Revert undoes as one step, and undo goes back past a Save or Deploy. Undo changes memory only; the next Save or Deploy writes the result.
 

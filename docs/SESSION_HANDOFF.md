@@ -44,6 +44,11 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+### Eve — release 3.12
+
+- Session 27 commit reviewed. All 431 tests passed offscreen on Windows in 68.629 seconds, none skipped. Mark confirmed the interface was working well.
+- Version synchronised across the source, launcher and release documents for the annotated source tag.
+
 ## 25 November 2026 (Europe/London) — Claude Code (Session 26)
 
 - **Tool:** claude (Claude Code)

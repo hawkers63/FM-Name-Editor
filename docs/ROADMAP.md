@@ -12,15 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.11.1** is current (25 November 2026), a one-fix
-  release: a snapshot roll back no longer leaves a saved file flagged
-  as a pending restore.
+- **Release 3.12** (25 November 2026), tagged source. A left-hand view rail, 30-pixel grid rows and a single filter bar with counts.
 
 ## Next
-
-- **3.12**, a calmer grid and less chrome: a slim view rail in place of
-  the tab bar, 30-pixel rows with pill badges, and one filter bar with
-  counts. Done locally in Session 27; it waits for its release.
 
 ## Later
 
@@ -28,6 +22,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.11.1 — clear stale restore flags after a snapshot roll back
 - 3.11 — unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state
 - 3.10 — Restore selected names in the background, refusing names changed since the list was shown
 - 3.9 — a quicker Save, pack import and backups in the background, and why a backup's bytes differ
