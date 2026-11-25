@@ -12,9 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.9** is current (24 November 2026): a quicker Save, pack
-  import and the Backups window read in the background, and a read-only
-  explanation of why a backup's bytes differ when its names match.
+- **Release 3.10** is ready for release (25 November 2026), not yet
+  published: Restore selected names reads the backup in the background,
+  and refuses a ticked name changed since the list was shown.
 
 ## Next
 
@@ -27,6 +27,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.9 — a quicker Save, pack import and backups in the background, and why a backup's bytes differ
 - 3.8 — snapshot rollback asks first, with Cancel by default
 - 3.7 — suggested short names and codes, name health, and in-memory snapshots
 - 3.6 — search scope and aliases, name-length counters, and faster keyboard moves

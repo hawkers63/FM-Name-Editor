@@ -1,12 +1,16 @@
 # Changelog
 
-Release: 3.9
-Status: released
-Application on disk: 3.9
+Release: 3.10
+Status: ready for release
+Application on disk: 3.10
 
-The source on disk reports `VERSION = "3.9"`. The launcher banner says v3.9.
+The source on disk reports `VERSION = "3.10"`. The launcher banner says v3.10.
 
 ## Unreleased
+
+## 3.10 (25 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.10 makes Restore selected names in the Backups window read the backup in the background, like everything else that reads a backup, and check the restore properly against what was shown. Session 24 closes 3.10.
 
 Session 24 — Restore selected names reads the backup in the background and refuses stale rows:
 

@@ -15,7 +15,7 @@ and Codex CLI. Update it at the end of every session.
 - **Tool:** claude (Claude Code)
 - **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
 - **Brief:** Eve's Session 24 brief for release 3.10 (private, in `notes/`), with Mark's kick-off: four stages, targeted tests only, two local commits, no tag, build or push.
-- **Branch / commit:** main, local `fix: restore selected names in the background and refuse stale rows`, not pushed, not tagged
+- **Branch / commit:** main, local `01f0c38` `fix: restore selected names in the background and refuse stale rows`, then `chore: release 3.10`; not pushed, not tagged
 
 ### Done this session
 
@@ -25,6 +25,7 @@ and Codex CLI. Update it at the end of every session.
 - Reasoned deviations, both in the part being rewritten. (1) The lookup key is the comparison key (`_diff_key`), so a person rule's ending is part of it. Person rules share their number and language, so with (command, ID, language) alone another rule would be changed. The ending rides in the ID column's UserRole. (2) A row that a name alone cannot restore (only in one file, or a different number of lines) has no tick box, and its tooltip points to Restore into open file. Before, ticking one did nothing, or wrote every backup name into one line, and still said it had restored it. The plan treats such a row as stale if one is passed in.
 - Stage 3: the help sentence; CHANGELOG under Unreleased; "Neal" to "Eve" where it names the current release manager in `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md` and the build comment in `.gitignore`; four root-anchored private files added to `.gitignore` (`git check-ignore` lists all four and not the tracked archive); the oldest live entry moved to the archive.
 - Tests: new `Session24Engine` (6) and `Session24Window` (5, real worker threads).
+- Stage 4 (release prep, approved by Mark): 3.10 set in the module header and `VERSION`, a "Release 3.10" paragraph added to the module docstring (after 3.9's, as each release has done), the launcher banner (CRLF kept), the README badge, header lines, a "New in 3.10" paragraph above 3.9's, a history row and a "What 3.10 adds" block, the CHANGELOG header (ready for release) with `## 3.10 (25 November 2026)` and an empty Unreleased, and the public roadmap (3.10 now, 3.9 done). Nothing compares the version as text or a float: the `.spec` reads 3.10 as (3, 10, 0, 0).
 
 ### In progress
 
@@ -32,8 +33,8 @@ and Codex CLI. Update it at the end of every session.
 
 ### Next steps
 
-- Stage 4, same session: set everything to 3.10 and commit `chore: release 3.10`.
 - Eve: run the full suite once, tag `v3.10`, build, and ask Mark before pushing.
+- Eve, when publishing: set the README and CHANGELOG status to released, drop "(ready for release; not yet published)" from "New in 3.10", and add the download bullet and SHA-256. The history row already links to the `v3.10` tag page. The README Tests badge still says 376 (out of date since 3.9); set it from the full run.
 
 ### Known issues / blockers
 
@@ -42,7 +43,8 @@ and Codex CLI. Update it at the end of every session.
 
 ### Files touched
 
-- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md`, `.gitignore`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+- `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md`, `.gitignore`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+- `chore` commit: `fm_name_editor.py`, `FM Name Editor.bat`, `README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`
 
 ---
 

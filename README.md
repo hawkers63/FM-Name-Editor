@@ -8,7 +8,7 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.9](https://img.shields.io/badge/Release-v3.9-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
+[![Release v3.10](https://img.shields.io/badge/Release-v3.10-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
@@ -18,9 +18,9 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club,
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.9
-Status: released
-Application on disk: 3.9
+Release: 3.10
+Status: ready for release; not yet published
+Application on disk: 3.10
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.10 (ready for release; not yet published):** **Restore selected names** in the **Backups** window reads the backup in the background while the window waits, and closing it part-way restores nothing. A ticked name that changed after the list was shown, in the open file or in the backup, now refuses the restore instead of overwriting the newer spelling, and the names restored come from the backup as it is now. A row that needs a line added or taken out has no tick box: **Restore into open file** handles it.
 
 **New in 3.9:** Save is quicker, because the word index behind right-click no longer splits every name again after a write. **Import pack** and the **Backups** window read and compare files in the background, so the window keeps responding, and closing the Backups window part-way leaves nothing half done. When a backup's names all match but the files are not byte-identical, the Backups window now says why: the encoding or BOM, line endings, comments, blank lines, unsupported lines, or name lines written differently, read only.
 
@@ -191,6 +193,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.10**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.10) | 25&nbsp;Nov&nbsp;2026 | 🗄️ Restore selected names in the background, with names changed since the list was shown refused |
 | [**3.9**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.9) | 24&nbsp;Nov&nbsp;2026 | ⚡ Quicker Save, pack import and backups in the background, and why a backup's bytes differ |
 | [**3.8**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.8) | 24&nbsp;Nov&nbsp;2026 | 🛡️ Snapshot rollback confirmation, Cancel by default, and no empty Undo step for an unchanged rollback |
 | [**3.7**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.7) | 24&nbsp;Nov&nbsp;2026 | 🩺 Suggested short names and codes, name health, and in-memory snapshots |
@@ -211,6 +214,15 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.10 adds</b> &nbsp;·&nbsp; 25&nbsp;Nov&nbsp;2026</summary>
+
+- **Restore selected names in the background.** The backup is read once and compared again on the worker while the Backups window waits, with its lists and buttons off. Closing the window part-way restores nothing, and a backup that cannot be read is named, with nothing restored.
+- **Names changed since the list was shown are refused.** A ticked row is restored only when the fresh comparison still shows the same open name and backup name, so a newer edit is kept, not overwritten. The names come from that fresh read, and one Undo takes the whole restore back. Nothing is written until Save or Deploy.
+- **Tick boxes only where a name can be restored.** A row only in one file, or with a different number of lines in each, has no tick box, because only Restore into open file adds or takes out a line.
+
+</details>
 
 <details>
 <summary><b>What 3.9 adds</b> &nbsp;·&nbsp; 24&nbsp;Nov&nbsp;2026</summary>
