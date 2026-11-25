@@ -12,9 +12,9 @@ changes.
 
 ## Now
 
-- **Release 3.10** is ready for release (25 November 2026), not yet
-  published: Restore selected names reads the backup in the background,
-  and refuses a ticked name changed since the list was shown.
+- **Release 3.10** is current (25 November 2026): Restore selected
+  names reads the backup in the background, and refuses a ticked name
+  changed since the list was shown.
 
 ## Next
 

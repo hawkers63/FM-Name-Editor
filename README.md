@@ -12,14 +12,14 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club,
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-376%20passing-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-395-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
 Release: 3.10
-Status: ready for release; not yet published
+Status: released
 Application on disk: 3.10
 </sub>
 
@@ -50,7 +50,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 ## ✨ Key features
 
-**New in 3.10 (ready for release; not yet published):** **Restore selected names** in the **Backups** window reads the backup in the background while the window waits, and closing it part-way restores nothing. A ticked name that changed after the list was shown, in the open file or in the backup, now refuses the restore instead of overwriting the newer spelling, and the names restored come from the backup as it is now. A row that needs a line added or taken out has no tick box: **Restore into open file** handles it.
+**New in 3.10:** **Restore selected names** in the **Backups** window reads the backup in the background while the window waits, and closing it part-way restores nothing. A ticked name that changed after the list was shown, in the open file or in the backup, now refuses the restore instead of overwriting the newer spelling, and the names restored come from the backup as it is now. A row that needs a line added or taken out has no tick box: **Restore into open file** handles it.
 
 **New in 3.9:** Save is quicker, because the word index behind right-click no longer splits every name again after a write. **Import pack** and the **Backups** window read and compare files in the background, so the window keeps responding, and closing the Backups window part-way leaves nothing half done. When a backup's names all match but the files are not byte-identical, the Backups window now says why: the encoding or BOM, line endings, comments, blank lines, unsupported lines, or name lines written differently, read only.
 
@@ -221,6 +221,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 - **Restore selected names in the background.** The backup is read once and compared again on the worker while the Backups window waits, with its lists and buttons off. Closing the window part-way restores nothing, and a backup that cannot be read is named, with nothing restored.
 - **Names changed since the list was shown are refused.** A ticked row is restored only when the fresh comparison still shows the same open name and backup name, so a newer edit is kept, not overwritten. The names come from that fresh read, and one Undo takes the whole restore back. Nothing is written until Save or Deploy.
 - **Tick boxes only where a name can be restored.** A row only in one file, or with a different number of lines in each, has no tick box, because only Restore into open file adds or takes out a line.
+- **Windows download.** A fresh v3.10 executable is attached to the [v3.10 release](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.10), with its SHA-256 in the release notes.
 
 </details>
 

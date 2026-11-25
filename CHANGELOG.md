@@ -1,7 +1,7 @@
 # Changelog
 
 Release: 3.10
-Status: ready for release
+Status: released
 Application on disk: 3.10
 
 The source on disk reports `VERSION = "3.10"`. The launcher banner says v3.10.
@@ -19,7 +19,7 @@ Session 24 — Restore selected names reads the backup in the background and ref
 - **Names from the fresh read.** The restored names come from the read just made, not from the table's text, and each line is found through one lookup instead of a pass over every line for each tick. A person rule is matched by its ending too, so another rule with the same number and language is left alone. Undo still takes the whole restore back in one step, and nothing is written until Save or Deploy.
 - **No tick box where a name alone cannot restore the row.** A row only in one file, or with a different number of lines in each, needs a line added or taken out, which only Restore into open file does; its tooltip says so. Before, ticking one restored nothing, or put every backup name into one line, and still reported it as restored.
 - **Agent guides and private files.** The guides name Eve as release manager, and four private working files on this PC are ignored by git.
-- **Verification.** New `Session24Engine` (6) and `Session24Window` (5); `Session18BackupRestore`, `Session23Window` and `Session8Workers` pass unchanged.
+- **Verification.** New `Session24Engine` (6) and `Session24Window` (5); `Session18BackupRestore`, `Session23Window` and `Session8Workers` pass unchanged. Tests: 395 in the full suite, up from 384, run offscreen on Linux: 388 passed, 5 that need the game's own name files were skipped, and 2 older tests that use Windows drive-letter and backslash paths fail only on Linux.
 
 ## 3.9 (24 November 2026)
 

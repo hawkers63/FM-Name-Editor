@@ -41,6 +41,12 @@ and Codex CLI. Update it at the end of every session.
 - Found, not fixed: undoing a selected restore leaves `restore_pending` set (since Session 18), because the operation records only the lines. The file then counts as a restored, whole-file write until it is saved or opened again. The brief keeps `restore_pending` as it was.
 - Found, not fixed: with real worker threads, the comparison that `show_diff` starts after either restore replaces the "Restored ..." summary a moment later (since Session 23). Whole-file restore is out of scope, so both stay alike.
 
+### Eve — release 3.10
+
+- Reviewed `01f0c38` and `f3a9688` against the brief: all four stages done, Conventional Commits, no private files tracked, the four new `.gitignore` lines ignore their files, Eve named in the guides, licence and copyright headers intact, no playthrough details. Version 3.10 agrees in the module header, `VERSION`, the launcher banner, the README, the CHANGELOG and the public roadmap.
+- Ran the full suite once, offscreen on Linux (Mark's choice, to spare this PC): 395 tests in about 17 s; 388 passed, 5 skipped because the game's own name files are not there, and 2 failed only because they use Windows paths (`Session19Engine.test_favourites_keep_up_to_three_real_folders` and `test_the_view_keeps_the_id_column_and_packs_stay_out_of_the_game`; code unchanged since 3.5).
+- Set both statuses to released, dropped "ready for release" from "New in 3.10", added the download bullet and set the Tests badge to 395. Built the Windows executable from the release source without launching it. Push and publication wait for Mark's confirmation.
+
 ### Files touched
 
 - `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md`, `.gitignore`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
