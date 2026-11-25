@@ -15,7 +15,7 @@ Dates are Europe/London. Follow the confidentiality rule in `AGENTS.md`.
 Read AGENTS.md (via this CLAUDE.md import) and docs/SESSION_HANDOFF.md
 (newest entry at the top). Follow the Claude session protocol in CLAUDE.md
 and the shared rules in AGENTS.md. If I opened with "Let's get started"
-and a Neal brief, the brief binds. Continue from In progress and Next
+and an Eve brief, the brief binds. Continue from In progress and Next
 steps; do not redo finished work; stay inside the brief's Out of scope
 list. Use British English. Do not run the test suite at the start. You
 may use /memory to check Claude auto memory, but do not treat it as the
@@ -72,7 +72,7 @@ memory.md only if a fact changed. Then make one combined Conventional
 Commit that includes the work and the handoff. Do not push, tag, or
 force-push unless I asked, or unless you are carrying out a confirmed
 release or sync. Do not bump VERSION or convert Unreleased into a dated
-release section; that is Neal's release work.
+release section; that is Eve's release work.
 ```
 
 ---
@@ -105,5 +105,5 @@ memory.md only if a fact changed. Then make one combined Conventional
 Commit that includes the work and the handoff. Do not push, tag, or
 force-push unless I asked, or unless you are carrying out a confirmed
 release or sync. Do not bump VERSION or convert Unreleased into a dated
-release section; that is Neal's release work.
+release section; that is Eve's release work.
 ```

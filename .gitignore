@@ -8,6 +8,10 @@ backups/
 /notes/
 /memory.md
 /roadmap.md
+/AGENTS.backup-*.md
+/roadmap.backup-*.md
+/*_ARCHIVE.md
+/GROK_ACCESS.txt
 
 # Personal Claude Code overrides (not published).
 CLAUDE.local.md
@@ -16,7 +20,7 @@ CLAUDE.local.md
 /profiles/
 /state/
 
-# Output of build_exe.bat. The exe itself is never committed; Neal
+# Output of build_exe.bat. The exe itself is never committed; Eve
 # builds it after tagging and attaches it to the GitHub Release.
 /build/
 /dist/

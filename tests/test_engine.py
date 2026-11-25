@@ -10215,5 +10215,319 @@ class Session23Window(unittest.TestCase):
             self.assertFalse(shown["after"])
 
 
+class Session24Engine(unittest.TestCase):
+    """Session 24: a selected restore is planned from one fresh read of the backup, and a
+    ticked row that changed since the list was shown is stale."""
+
+    TEXT = Session18BackupRestore.TEXT
+    OLD = Session18BackupRestore.OLD
+
+    def _pair(self, tmp, old: str = OLD):
+        """An open file, a differing backup, and the rows the Backups window would show."""
+        path, copy = Path(tmp) / "mine.lnc", Path(tmp) / "backup.lnc"
+        write_lnc(path, self.TEXT)
+        write_lnc(copy, old)
+        doc = editor.LncDoc(path)
+        return doc, copy, editor.diff_documents(doc, editor.LncDoc(copy))
+
+    @staticmethod
+    def _ticked(rows, ids):
+        return [row for row in rows if row["id"] in ids]
+
+    def _stale_ids(self, doc, copy, ticked):
+        changes, stale = editor.plan_selected_restore(doc, copy, ticked)
+        self.assertEqual(changes, [])               # nothing is restored when one row is stale
+        return [row["id"] for row in stale]
+
+    def test_two_unchanged_rows_are_planned_with_the_backup_names_from_one_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            before = doc.to_bytes()
+            reads = []
+            real = editor.LncDoc.load
+
+            def counted(self_doc):
+                reads.append(self_doc.path)
+                return real(self_doc)
+
+            with mock.patch.object(editor.LncDoc, "load", counted):
+                changes, stale = editor.plan_selected_restore(
+                    doc, copy, self._ticked(rows, {"1", "2"}))
+            self.assertEqual(reads, [copy])             # the backup, read once
+            self.assertEqual(stale, [])
+            self.assertEqual(changes, [(("name", "CLUB_NAME_CHANGE", "1", ""), ["Uno"]),
+                                       (("name", "CLUB_SHORT_NAME_CHANGE", "2", ""), ["Dos"])])
+            self.assertEqual(doc.to_bytes(), before)    # the plan only reads
+            self.assertFalse(doc.dirty)
+            operation = editor.Operation("restore")
+            with operation:
+                editor.apply_selected_restore(doc, copy, changes)
+            self.assertEqual([e.name for e in doc.editable()], ["Uno", "Dos", "Three"])
+            self.assertEqual({e.reason for e in operation.touched_entries}, {"restore"})
+            self.assertTrue(doc.restore_pending)
+            self.assertEqual(doc.restored_from, copy)
+            operation.undo()
+            self.assertEqual([e.name for e in doc.editable()], ["One", "Two", "Three"])
+
+    def test_an_open_name_edited_to_a_third_value_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            editor.try_set_name(doc.editable()[0], "Ein")     # after the list was shown
+            self.assertEqual(self._stale_ids(doc, copy, self._ticked(rows, {"1", "2"})), ["1"])
+            self.assertEqual(doc.editable()[0].name, "Ein")
+
+    def test_an_open_name_edited_to_match_the_backup_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            editor.try_set_name(doc.editable()[0], "Uno")
+            self.assertEqual(self._stale_ids(doc, copy, self._ticked(rows, {"1", "2"})), ["1"])
+
+    def test_a_backup_changed_on_disk_after_the_list_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            write_lnc(copy, self.OLD.replace("Uno", "Eins"))
+            self.assertEqual(self._stale_ids(doc, copy, self._ticked(rows, {"1", "2"})), ["1"])
+            self.assertFalse(doc.dirty)
+
+    def test_an_unreadable_backup_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            copy.unlink()
+            with self.assertRaises(OSError):
+                editor.plan_selected_restore(doc, copy, self._ticked(rows, {"1"}))
+            self.assertFalse(doc.dirty)
+
+    def test_rules_match_by_their_ending_and_line_counts_must_agree(self):
+        rule = '"PERSON_FIRST_NAME_END_CHANGE"\t"GREEK"\t"{}"\t2\t"{}"\n'
+        text = (rule.format("os", "is") + rule.format("as", "es")
+                + '"CLUB_NAME_CHANGE"\t7\t"Seven"\t""\n')
+        old = (rule.format("os", "is") + rule.format("as", "us")
+               + '"CLUB_NAME_CHANGE"\t7\t"Seven"\t""\n' + '"CLUB_NAME_CHANGE"\t7\t"Siete"\t""\n'
+               + '"CLUB_NAME_CHANGE"\t8\t"Eight"\t""\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            path, copy = Path(tmp) / "mine.lnc", Path(tmp) / "backup.lnc"
+            write_lnc(path, text)
+            write_lnc(copy, old)
+            doc = editor.LncDoc(path)
+            rows = editor.diff_documents(doc, editor.LncDoc(copy))
+            by_id = {row["id"]: row for row in rows}
+            self.assertEqual(set(by_id), {"2", "7", "8"})
+            self.assertTrue(editor.restorable_by_name(by_id["2"]))
+            self.assertFalse(editor.restorable_by_name(by_id["7"]))      # a different count
+            self.assertFalse(editor.restorable_by_name(by_id["8"]))      # only in the backup
+            self.assertEqual(self._stale_ids(doc, copy, [by_id["8"]]), ["8"])
+            changes, stale = editor.plan_selected_restore(doc, copy, [by_id["2"]])
+            self.assertEqual(changes, [(("person", "PERSON_FIRST_NAME_END_CHANGE", "as", "2",
+                                         "greek"), ["us"])])
+            with editor.Operation("restore"):
+                editor.apply_selected_restore(doc, copy, changes)
+            self.assertEqual([(e.source, e.name) for e in doc.editable()[:2]],
+                             [("os", "is"), ("as", "us")])       # the "os" rule is left alone
+
+
+class Session24Window(unittest.TestCase):
+    """Session 24: Restore selected names reads the backup on the worker while the Backups
+    window waits; closing part-way restores nothing; a row changed since it was shown is
+    refused."""
+
+    TEXT = Session18BackupRestore.TEXT
+    OLD = Session18BackupRestore.OLD
+    NAMES = {"1": "One", "2": "Two", "3": "Three"}
+
+    def _window(self, tmp):
+        """A shown window with real worker threads (JOBS_INLINE off for this test only)."""
+        from PySide6.QtWidgets import QApplication
+
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", False))
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.show()
+        QApplication.processEvents()
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, self.TEXT)
+        copy = Path(tmp) / "backups" / "20261111-120000" / "mine.lnc"
+        copy.parent.mkdir(parents=True)
+        write_lnc(copy, self.OLD)
+        self.enterContext(mock.patch.object(editor, "BACKUP_ROOT", copy.parent.parent))
+        self.assertTrue(win.load([str(path)]))
+        self.assertTrue(win.jobs.wait(10))
+        return win, path, copy
+
+    def _backups(self, win, body) -> None:
+        """Open the Backups window, wait for its listing and comparison, and run ``body``."""
+        from PySide6.QtWidgets import QDialog
+
+        seen = []
+
+        def run(dialog):
+            self.assertTrue(win.jobs.wait(10))
+            self.assertEqual(dialog.table.rowCount(), 3)
+            seen.append(body(dialog))
+            return 0
+
+        with mock.patch.object(QDialog, "exec", run):
+            win.open_backups()
+        self.assertEqual(len(seen), 1)
+
+    @staticmethod
+    def _tick(dialog, ids) -> None:
+        from PySide6.QtCore import Qt
+
+        for row in range(dialog.table.rowCount()):
+            if dialog.table.item(row, 2).text() in ids:
+                dialog.table.item(row, 0).setCheckState(Qt.Checked)
+
+    @staticmethod
+    def _yes():
+        from PySide6.QtWidgets import QMessageBox
+
+        return mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes)
+
+    @staticmethod
+    def _controls(dialog) -> list:
+        return [widget.isEnabled() for widget in (
+            dialog.restore_btn, dialog.restore_selected_btn, dialog.close_btn,
+            dialog.archive_list, dialog.file_list)]
+
+    def _gated(self):
+        """A plan_selected_restore that waits for ``gate``, and the event it sets on starting."""
+        import threading
+
+        started, gate = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)       # a failed test must not leave the worker waiting
+        real = editor.plan_selected_restore
+
+        def slow(doc, archive, ticked):
+            started.set()
+            gate.wait(10)
+            return real(doc, archive, ticked)
+
+        return mock.patch.object(editor, "plan_selected_restore", slow), started, gate
+
+    def _names(self, win) -> dict:
+        return {entry.id: entry.name for entry in win.docs[0].editable()}
+
+    def test_two_of_three_are_restored_from_the_worker_as_one_step(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+            disk, backup = path.read_bytes(), copy.read_bytes()
+            reads = []
+            real = editor.LncDoc.load
+
+            def recorded(doc):
+                reads.append(threading.current_thread())
+                return real(doc)
+
+            def body(dialog):
+                self._tick(dialog, {"1", "2"})
+                with mock.patch.object(editor.LncDoc, "load", recorded), \
+                        mock.patch.object(editor, "compare_with_backup",
+                                          side_effect=AssertionError("compared on the GUI thread")), \
+                        self._yes():
+                    dialog.restore_selected_names()
+                    self.assertTrue(win.jobs.wait(10))
+
+            self._backups(win, body)
+            self.assertTrue(reads)
+            self.assertTrue(all(thread is not threading.main_thread() for thread in reads))
+            self.assertEqual(self._names(win), {"1": "Uno", "2": "Dos", "3": "Three"})
+            self.assertTrue(win.docs[0].restore_pending)
+            self.assertEqual((path.read_bytes(), copy.read_bytes()), (disk, backup))
+            self.assertEqual(win.undo_act.text(), "Undo restore 2 name(s) from 20261111-120000")
+            win.undo_act.trigger()                          # one step takes back both
+            self.assertEqual(self._names(win), self.NAMES)
+            self.assertFalse(win.docs[0].dirty)
+
+    def test_an_open_name_edited_after_the_list_was_shown_is_refused_and_kept(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+
+            def body(dialog):
+                self._tick(dialog, {"1", "2"})
+                next(e for e in win.docs[0].editable() if e.id == "1").set_name("Ein", "manual")
+                with mock.patch.object(QMessageBox, "warning") as warned, self._yes():
+                    dialog.restore_selected_names()
+                    self.assertTrue(win.jobs.wait(10))
+                warned.assert_called_once()
+                self.assertEqual(self._controls(dialog), [True] * 5)
+
+            self._backups(win, body)
+            self.assertEqual(self._names(win), {"1": "Ein", "2": "Two", "3": "Three"})
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertFalse(win.undo_stack.canUndo())
+
+    def test_closing_while_the_backup_is_read_restores_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+            gated, started, gate = self._gated()
+
+            def body(dialog):
+                self._tick(dialog, {"1", "2"})
+                with self._yes():
+                    dialog.restore_selected_names()
+                self.assertTrue(Session23Window._until(started))
+                dialog.reject()
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+                self.assertEqual(dialog.summary.text(), "Reading mine.lnc...")   # dropped
+
+            with gated:
+                self._backups(win, body)
+            self.assertEqual(self._names(win), self.NAMES)
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertFalse(win.docs[0].dirty)
+            self.assertFalse(win.undo_stack.canUndo())
+            self.assertTrue(win.open_act.isEnabled())       # the window is not left busy
+
+    def test_the_buttons_wait_while_the_backup_is_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+            gated, started, gate = self._gated()
+
+            def body(dialog):
+                self._tick(dialog, {"1"})
+                with self._yes():
+                    dialog.restore_selected_names()
+                self.assertTrue(Session23Window._until(started))
+                self.assertEqual(self._controls(dialog), [False] * 5)
+                self.assertTrue(win.jobs.pending)
+                self.assertFalse(win.open_act.isEnabled())
+                gate.set()
+                self.assertTrue(win.jobs.wait(10))
+                self.assertEqual(self._controls(dialog), [True] * 5)
+
+            with gated:
+                self._backups(win, body)
+            self.assertEqual(self._names(win), {"1": "Uno", "2": "Two", "3": "Three"})
+
+    def test_a_backup_that_cannot_be_read_restores_nothing(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, path, copy = self._window(tmp)
+
+            def body(dialog):
+                self._tick(dialog, {"1"})
+                copy.unlink()                               # gone after the list was shown
+                with mock.patch.object(QMessageBox, "critical") as told, self._yes():
+                    dialog.restore_selected_names()
+                    self.assertTrue(win.jobs.wait(10))
+                told.assert_called_once()
+                self.assertIn("Could not restore", told.call_args.args[2])
+                self.assertEqual(dialog.summary.text(),
+                                 "Nothing was restored. The open file is unchanged.")
+                self.assertEqual(self._controls(dialog), [True] * 5)
+
+            self._backups(win, body)
+            self.assertEqual(self._names(win), self.NAMES)
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertFalse(win.docs[0].dirty)
+            self.assertFalse(win.undo_stack.canUndo())
+
+
 if __name__ == "__main__":
     unittest.main()

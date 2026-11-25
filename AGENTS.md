@@ -113,11 +113,11 @@ Coding sessions (Claude Code, Codex CLI, Grok Build CLI):
    class that asserts menu contents (search `tests/test_engine.py` for
    `edit_menu`, `menus` and `shortcut_rows`).
 5. Report targeted commands and actual results, and say "Full suite not
-   run (Neal runs it)."
+   run (Eve runs it)."
 
-Neal:
+Eve:
 
-6. Neal runs the full offscreen suite once per release, with the output
+6. Eve runs the full offscreen suite once per release, with the output
    captured, before the release commit and tag. There is no full run for
    documentation-only changes. A failure blocks the release; do not re-run
    solely to obtain a pass, or alter thresholds, skips or retries to obtain
@@ -131,21 +131,21 @@ Everyone:
 ### Releasing
 
 A release closes when the last session in it is done. At that point you
-stop and hand over to Neal, Mark's repository and release specialist. In that
+stop and hand over to Eve, Mark's repository and release specialist. In that
 session:
 
 1. Finish the session as usual: targeted tests green, the session's
    entries under **Unreleased** in `CHANGELOG.md`, the handoff, the private
    `roadmap.md` and `memory.md` updated locally (not staged), and one commit.
    Do not push it.
-2. Leave the release itself to Neal. Do not bump `VERSION`, the launcher
+2. Leave the release itself to Eve. Do not bump `VERSION`, the launcher
    banner, or the three `Release / Status / Application on disk` headers;
    do not move **Unreleased** to a dated release section; do not create or
    push a `vX.Y` tag; do not push the branch.
-3. Close by telling Mark that the release's sessions are done and Neal can
+3. Close by telling Mark that the release's sessions are done and Eve can
    take over.
 
-Neal then checks the files against the repository (including the ahead
+Eve then checks the files against the repository (including the ahead
 count, with `git log origin/main..main`), finalises the version headers,
 the dated release section in `CHANGELOG.md`, and `README.md`, runs the
 full test suite (see Test suite), makes the release commit and the annotated `vX.Y`
@@ -178,7 +178,7 @@ is never committed. The next session starts only when Mark says
 
 ```
 python -m unittest discover -s tests -k <ClassOrMethod>   # targeted run while working
-python -m unittest discover -s tests -v                  # full suite: Neal (see Test suite)
+python -m unittest discover -s tests -v                  # full suite: Eve (see Test suite)
 python fm_name_editor.py
 python fm_name_editor.py "FM27_Club_Names.lnc" "FM27_Fix.lnc"
 ```
@@ -189,6 +189,6 @@ Set `QT_QPA_PLATFORM=offscreen` when running tests without a desktop. `python` o
 
 Remote: `https://github.com/hawkers63/FM-Name-Editor` (`origin`, branch `main`, public). Work on `main`. Branch before experiments; `main` holds released or session-complete work only.
 
-Session commits stay local on `main` until Neal pushes them, and only when Mark has confirmed a sync or a release (see **Releasing**). Claude Code never pushes, tags, or force-pushes. Do not force-push. Commits use Conventional Commits and, when the session brief gives an attribution line, end with that line.
+Session commits stay local on `main` until Eve pushes them, and only when Mark has confirmed a sync or a release (see **Releasing**). Claude Code never pushes, tags, or force-pushes. Do not force-push. Commits use Conventional Commits and, when the session brief gives an attribution line, end with that line.
 
 The global Grok file `~/.grok/AGENTS.md` is personal and must be left alone; do not copy it into this repository or move rules out of it.

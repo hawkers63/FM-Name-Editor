@@ -10,6 +10,42 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 25 November 2026 (Europe/London) — Claude Code (Session 24)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** Eve's Session 24 brief for release 3.10 (private, in `notes/`), with Mark's kick-off: four stages, targeted tests only, two local commits, no tag, build or push.
+- **Branch / commit:** main, local `fix: restore selected names in the background and refuse stale rows`, not pushed, not tagged
+
+### Done this session
+
+- Stage 0: the five problems in the brief all still held. `restore_selected_names` compared on the GUI thread, read the backup a second time in `_apply_selected_restore`, walked every line for each tick, checked staleness by key only, and wrote the table's text as the name.
+- Stage 1 (engine): `plan_selected_restore(doc, archive_file, ticked)` reads the backup once, groups both files (`_diff_groups`) and compares them again (`_diff_rows`, which `diff_documents` now runs too, with the same output). It returns `(changes, stale)`: a ticked row is stale unless the fresh comparison still has it with the same open name and backup name, and it can be restored by name (`restorable_by_name`). When anything is stale, `changes` is empty. `apply_selected_restore` gives the open lines the planned backup names through one dict of the open lines. It keeps `set_name(..., "restore")`, `restore_pending`, `restored_from`, `whole_excluded = False` and `touch()`. `diff_row_key` gives a shown row's comparison key.
+- Stage 2 (GUI): `BackupDialog.restore_selected_names` collects the ticks (`ticked_rows`) and asks the same question. It then calls `restoring(True)` and `run(plan_selected_restore ...)`. `finish_selected_restore` either applies the plan in one `Operation` (`push_operation`, `reload_views`, `show_diff`, the same summary), or warns, applies nothing and compares again. A read error goes to `restore_failed`. The GUI-thread `compare_with_backup` call and the second `LncDoc` read are gone.
+- Reasoned deviations, both in the part being rewritten. (1) The lookup key is the comparison key (`_diff_key`), so a person rule's ending is part of it. Person rules share their number and language, so with (command, ID, language) alone another rule would be changed. The ending rides in the ID column's UserRole. (2) A row that a name alone cannot restore (only in one file, or a different number of lines) has no tick box, and its tooltip points to Restore into open file. Before, ticking one did nothing, or wrote every backup name into one line, and still said it had restored it. The plan treats such a row as stale if one is passed in.
+- Stage 3: the help sentence; CHANGELOG under Unreleased; "Neal" to "Eve" where it names the current release manager in `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md` and the build comment in `.gitignore`; four root-anchored private files added to `.gitignore` (`git check-ignore` lists all four and not the tracked archive); the oldest live entry moved to the archive.
+- Tests: new `Session24Engine` (6) and `Session24Window` (5, real worker threads).
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Stage 4, same session: set everything to 3.10 and commit `chore: release 3.10`.
+- Eve: run the full suite once, tag `v3.10`, build, and ask Mark before pushing.
+
+### Known issues / blockers
+
+- Found, not fixed: undoing a selected restore leaves `restore_pending` set (since Session 18), because the operation records only the lines. The file then counts as a restored, whole-file write until it is saved or opened again. The brief keeps `restore_pending` as it was.
+- Found, not fixed: with real worker threads, the comparison that `show_diff` starts after either restore replaces the "Restored ..." summary a moment later (since Session 23). Whole-file restore is out of scope, so both stay alike.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md`, `.gitignore`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+
+---
+
 ## 24 November 2026 (Europe/London) — Claude Code (Session 23)
 
 - **Tool:** claude (Claude Code)
@@ -161,36 +197,3 @@ and Codex CLI. Update it at the end of every session.
 - `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`,
   `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`; private
   `roadmap.md` (not tracked)
-
----
-
-## 22 November 2026 (Europe/London) — Grok Bot (Neal)
-
-- **Tool:** Grok Bot (Neal)
-- **Model:** Grok Bot
-- **Branch / commit:** main, local `docs: finalise Release 3.6 version, headers, changelog and README`, annotated tag `v3.6`, not pushed
-
-### Done this session
-
-- Reviewed Session 20 (`516633f`): the commit changes only `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md` and `docs/SESSION_HANDOFF.md`. No private files, no playthrough details, no tag. Ctrl+Shift+D is still Deploy. The length gauges are warnings only and never block or trim a name. Save, Deploy and the write pipeline were not changed.
-- Ran the full suite once: 356 tests in 58.258s, all passing offscreen.
-- Finalised Release 3.6: `VERSION`, the launcher banner, the README and CHANGELOG headers, a dated CHANGELOG section with an empty Unreleased section above it, the public roadmap, and this handoff. Private `roadmap.md` was updated and not staged. The executable was built and not launched. Release notes were written. Nothing was pushed.
-
-### In progress
-
-- Nothing. Waiting for Mark to confirm the push and the GitHub Release.
-
-### Next steps
-
-- After Mark confirms: push `main` then tag `v3.6`, and create the GitHub Release with the exe.
-- Session 21 (Release 3.7, note 09 proposals 3 to 5).
-
-### Known issues / blockers
-
-- None for the release.
-
-### Files touched
-
-- `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
-  `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`; private `roadmap.md` (not
-  tracked)

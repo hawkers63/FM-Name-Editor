@@ -487,7 +487,10 @@ USER_GUIDE = (
      "Backups > Browse and restore compares a backup with the open files and restores "
      "it into memory. The diff table has a Restore checkbox for each name; tick the "
      "names you want and press Restore selected names to restore only those spellings "
-     "as one undo step. Whole-file restore is still available. When every name matches "
+     "as one undo step. It reads the backup again in the background and refuses a name "
+     "changed in the open file or the backup since the list was shown; a row that needs "
+     "a line added or taken out has no checkbox. Whole-file restore is still available. "
+     "When every name matches "
      "but the files are not byte-identical, Why the bytes differ lists the reasons: the "
      "encoding or BOM, line endings, comments, blank lines, unsupported lines, and name "
      "lines written differently, with the first 20 lines. It only reads. Right-click a row and "
@@ -6449,20 +6452,25 @@ def _diff_key(entry: Entry):
     return ("name", entry.cmd, entry.id, entry.lang.casefold())
 
 
+def _diff_groups(doc: LncDoc) -> dict:
+    """Each supported line of ``doc`` under its comparison key (``_diff_key``), in file order."""
+    found: dict = {}
+    for entry in doc.editable():
+        found.setdefault(_diff_key(entry), []).append(entry)
+    return found
+
+
 def diff_documents(working: LncDoc, archived: LncDoc) -> list[dict]:
     """Name and person-rule differences between two loaded files.
 
     Each row has command, id, language, source, working, archived, and note.
     Matching rows are omitted.
     """
-    def grouped(doc: LncDoc) -> dict:
-        found: dict = {}
-        for entry in doc.editable():
-            found.setdefault(_diff_key(entry), []).append(entry)
-        return found
+    return _diff_rows(_diff_groups(working), _diff_groups(archived))
 
-    current = grouped(working)
-    previous = grouped(archived)
+
+def _diff_rows(current: dict, previous: dict) -> list[dict]:
+    """diff_documents' rows from both files' ``_diff_groups``."""
     rows = []
     for key in sorted(set(current) | set(previous)):
         now = current.get(key, [])
@@ -6549,6 +6557,81 @@ def compare_backup_in_full(doc: LncDoc, archive_file: Path):
     explanation = (explain_byte_differences(doc, archived)
                    if not rows and identical is False else None)
     return rows, identical, explanation
+
+
+def diff_row_key(row: dict) -> tuple:
+    """The comparison key (``_diff_key``) of a diff_documents row.
+
+    A person rule's ending is part of it: rules with the same number and
+    language differ only there.
+    """
+    if is_person_command(row["command"]):
+        return ("person", row["command"], row["source"], row["id"], row["language"].casefold())
+    return ("name", row["command"], row["id"], row["language"].casefold())
+
+
+def restorable_by_name(row: dict) -> bool:
+    """True when a diff row can be restored by changing names alone.
+
+    That is when the line is in both files, the same number of times. A row
+    only in one file, or with a different number of lines, needs a line
+    added or taken out, which only a whole-file restore does.
+    """
+    return row["note"] == "Different"
+
+
+def plan_selected_restore(doc: LncDoc, archive_file: Path, ticked: list[dict]):
+    """Check the ticked rows of the Backups window against a fresh read (Session 24).
+
+    The slow half of "Restore selected names", which a worker thread may
+    run: the backup is read once and compared with ``doc`` again
+    (diff_documents). A ticked row (command, source, id, language, and the
+    open and backup names it showed) is stale unless the fresh comparison
+    still has that row, with the same open name and the same backup name,
+    and it can be restored by name. So an open name changed after the list
+    was shown, to any value, or a backup changed on disk, is stale. Reads
+    only: nothing in ``doc`` changes.
+
+    Returns ``(changes, stale)``. ``changes`` lists ``(key, names)`` for
+    each ticked row: its comparison key and the backup's names for its
+    lines, in file order, from this read. When any row is stale,
+    ``changes`` is empty and ``stale`` lists those rows.
+
+    Raises:
+        OSError, UnicodeError: the backup could not be read.
+    """
+    archived = LncDoc(archive_file)
+    current, previous = _diff_groups(doc), _diff_groups(archived)
+    fresh = {diff_row_key(row): row for row in _diff_rows(current, previous)}
+    changes, stale = [], []
+    for row in ticked:
+        key = diff_row_key(row)
+        now = fresh.get(key)
+        if (now is None or not restorable_by_name(now)
+                or (now["working"], now["archived"]) != (row["working"], row["archived"])):
+            stale.append(row)
+        else:
+            changes.append((key, [entry.name for entry in previous[key]]))
+    return ([], stale) if stale else (changes, [])
+
+
+def apply_selected_restore(doc: LncDoc, backup_path: Path, changes: list) -> None:
+    """Give the open lines the backup names a plan_selected_restore found.
+
+    The quick half of "Restore selected names", on the GUI thread. Each line
+    is found through one dictionary of the open lines, keyed as the
+    comparison keys them, and is marked as a pending restore. Run it inside
+    an Operation, so one Undo takes the whole restore back. Nothing is written.
+    """
+    lines = _diff_groups(doc)
+    for key, names in changes:
+        for entry, name in zip(lines.get(key, []), names):
+            if entry.name != name:
+                entry.set_name(name, "restore")
+    doc.restore_pending = True
+    doc.restored_from = backup_path
+    doc.whole_excluded = False
+    doc.touch()
 
 
 # Session 23: "Why the bytes differ" lists at most this many example lines, and
@@ -9784,10 +9867,18 @@ def run_gui(paths):
         def fill_diff(self, doc, how: str, path: Path, rows, identical, explanation) -> None:
             self.table.setRowCount(len(rows))
             for index, row in enumerate(rows):
-                # Column 0: checkbox for per-name restore
+                # Column 0: checkbox for per-name restore. A row that needs a line
+                # added or taken out has none (Session 24): only Restore into open
+                # file does that.
                 checkbox = QTableWidgetItem()
-                checkbox.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-                checkbox.setCheckState(Qt.Unchecked)
+                if restorable_by_name(row):
+                    checkbox.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                    checkbox.setCheckState(Qt.Unchecked)
+                else:
+                    checkbox.setFlags(Qt.ItemIsEnabled)
+                    checkbox.setToolTip(
+                        "Restore selected names changes names only. This row needs a line "
+                        "added or taken out: use Restore into open file.")
                 checkbox.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(index, 0, checkbox)
                 # Columns 1-6: diff data
@@ -9801,8 +9892,10 @@ def run_gui(paths):
                 ]
                 for column, value in enumerate(values):
                     self.table.setItem(index, column + 1, QTableWidgetItem(value))
-                # The Type column shows the friendly label; the raw command rides along.
+                # The Type column shows the friendly label; the raw command rides along,
+                # and a person rule's ending rides with the ID (part of its key).
                 self.table.item(index, 1).setData(Qt.UserRole, row["command"])
+                self.table.item(index, 2).setData(Qt.UserRole, row["source"])
             self.table.resizeColumnsToContents()
             text = describe_backup_match(len(rows), identical)
             if doc.dirty:
@@ -9843,88 +9936,69 @@ def run_gui(paths):
                      lambda prepared: self.finish_restore(doc, path, prepared),
                      self.restore_failed, f"Reading {path.name} from {path.parent.name}...")
 
+        def ticked_rows(self) -> list[dict]:
+            """The ticked rows of the table, as they were shown."""
+            ticked = []
+            for row in range(self.table.rowCount()):
+                checkbox = self.table.item(row, 0)
+                if checkbox and checkbox.checkState() == Qt.Checked:
+                    ticked.append({
+                        "command": self.table.item(row, 1).data(Qt.UserRole),
+                        "source": self.table.item(row, 2).data(Qt.UserRole) or "",
+                        "id": self.table.item(row, 2).text(),
+                        "language": self.table.item(row, 3).text(),
+                        "working": self.table.item(row, 4).text(),
+                        "archived": self.table.item(row, 5).text(),
+                        "note": self.table.item(row, 6).text(),
+                    })
+            return ticked
+
         def restore_selected_names(self):
             """Restore only the ticked names from the backup into the open file.
 
-            Each restored name is marked as a pending restore until Save or Deploy.
-            This is one Operation/undo step. The original backup is never modified.
-            A stale diff (open file changed since diff was shown) is refused.
+            Each restored name is marked as a pending restore until Save or
+            Deploy, as one Undo step. The backup is never changed. Session 24:
+            the backup is read and compared again on the worker while the
+            dialog waits, and a ticked row that changed since the list was
+            shown (in the open file or the backup) refuses the whole restore.
             """
             path = self.selected_file()
             doc = None if path is None else self.matching_doc(path)[0]
             if path is None or doc is None:
                 return
-
-            # Collect ticked rows
-            ticked_rows = []
-            for row in range(self.table.rowCount()):
-                checkbox = self.table.item(row, 0)
-                if checkbox and checkbox.checkState() == Qt.Checked:
-                    # Get the diff data for this row
-                    cmd = self.table.item(row, 1).data(Qt.UserRole)
-                    id_ = self.table.item(row, 2).text()
-                    lang = self.table.item(row, 3).text()
-                    working = self.table.item(row, 4).text()
-                    archived = self.table.item(row, 5).text()
-                    note = self.table.item(row, 6).text()
-                    ticked_rows.append({
-                        "command": cmd,
-                        "id": id_,
-                        "language": lang,
-                        "working": working,
-                        "archived": archived,
-                        "note": note,
-                    })
-
-            if not ticked_rows:
+            ticked = self.ticked_rows()
+            if not ticked:
                 QMessageBox.information(self, APP_NAME, "No names selected for restore.")
                 return
-
-            # Check for stale diff: compare the current open file with the backup again
-            # If the diff has changed, refuse the restore
-            try:
-                current_rows, _ = compare_with_backup(doc, path)
-            except (OSError, UnicodeError) as exc:
-                QMessageBox.critical(self, APP_NAME, f"Could not re-read the backup:\n{exc}")
+            answer = QMessageBox.question(
+                self, APP_NAME,
+                f"Restore {len(ticked)} selected name(s) from {path.name} into the open file?\n\n"
+                "Each restored name is marked as a pending restore. "
+                "Nothing is written until you Save or Deploy.",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
                 return
+            self.restoring(True)
+            self.summary.setText(f"Reading {path.name}...")
+            self.run(lambda: plan_selected_restore(doc, path, ticked),
+                     lambda plan: self.finish_selected_restore(doc, path, plan),
+                     self.restore_failed, f"Reading {path.name} from {path.parent.name}...")
 
-            # Build a set of keys from the current diff
-            current_keys = set()
-            for r in current_rows:
-                key = (r["command"], r["id"], r["language"])
-                current_keys.add(key)
-
-            # Build a set of keys from the ticked rows
-            ticked_keys = set()
-            for r in ticked_rows:
-                key = (r["command"], r["id"], r["language"])
-                ticked_keys.add(key)
-
-            # If any ticked key is not in the current diff, the diff is stale
-            if not ticked_keys.issubset(current_keys):
+        def finish_selected_restore(self, doc, path: Path, plan) -> None:
+            """Take a planned selected restore on the GUI thread, as one Undo step."""
+            self.restoring(False)
+            changes, stale = plan
+            if stale:
                 QMessageBox.warning(
                     self, APP_NAME,
                     "The comparison has changed since it was shown. "
                     "Please refresh the diff before restoring.")
                 self.show_diff()
                 return
-
-            # Confirm the restore
-            count = len(ticked_rows)
-            answer = QMessageBox.question(
-                self, APP_NAME,
-                f"Restore {count} selected name(s) from {path.name} into the open file?\n\n"
-                "Each restored name is marked as a pending restore. "
-                "Nothing is written until you Save or Deploy.",
-                QMessageBox.Yes | QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
-
-            # Perform the restore as one Operation
+            count = len(changes)
             operation = Operation(f"restore {count} name(s) from {path.parent.name}")
             with operation:
-                self._apply_selected_restore(doc, path, ticked_rows)
-
+                apply_selected_restore(doc, path, changes)
             parent = self.parent()
             if parent is not None:
                 parent.push_operation(operation)
@@ -9933,46 +10007,6 @@ def run_gui(paths):
             self.show_diff()
             self.summary.setText(
                 f"Restored {count} name(s) from {path.name}. Save or Deploy to write them.")
-
-        def _apply_selected_restore(self, doc: LncDoc, backup_path: Path, ticked_rows: list[dict]) -> None:
-            """Apply the selected restore by updating the open document with archived values.
-
-            This marks the changed lines with reason "restore" and sets restore_pending.
-            """
-            # Read the backup file to get the archived entries
-            backup_doc = LncDoc(backup_path)
-
-            # Build a lookup: (command, id, language) -> list of archived entries
-            archived_lookup: dict[tuple, list[Entry]] = {}
-            for entry in backup_doc.editable():
-                key = (entry.cmd, entry.id, entry.lang.casefold())
-                archived_lookup.setdefault(key, []).append(entry)
-
-            # For each ticked row, find the matching entry in the open document and update it
-            for row in ticked_rows:
-                cmd = row["command"]
-                id_ = row["id"]
-                lang = row["language"]
-                archived_name = row["archived"]
-
-                # Find the matching entry in the open document
-                key = (cmd, id_, lang.casefold())
-                archived_entries = archived_lookup.get(key, [])
-                if not archived_entries:
-                    continue
-
-                # Find the corresponding entry in the open document
-                for entry in doc.editable():
-                    if entry.cmd == cmd and entry.id == id_ and entry.lang.casefold() == lang.casefold():
-                        # Update the entry with the archived name
-                        entry.set_name(archived_name, "restore")
-                        break
-
-            # Mark the document as having pending restores
-            doc.restore_pending = True
-            doc.restored_from = backup_path
-            doc.whole_excluded = False
-            doc.touch()
 
         def finish_restore(self, doc, path: Path, prepared) -> None:
             self.restoring(False)
