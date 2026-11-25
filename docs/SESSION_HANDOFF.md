@@ -15,7 +15,7 @@ and Codex CLI. Update it at the end of every session.
 - **Tool:** claude (Claude Code)
 - **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
 - **Brief:** Eve's Session 25 brief for release 3.11 (private, in `notes/`), built on note 11 (a static bug hunt at `fd576c6`) and the two known issues in the Session 24 entry, with Mark's kick-off: targeted tests only, two local commits, no tag, build or push.
-- **Branch / commit:** main, two local commits: `fix: keep unticked files out of Deploy, compare restore names exactly, undo restore flags`, then `chore: release 3.11`; not pushed, not tagged
+- **Branch / commit:** main, local `8732239` `fix: keep unticked files out of Deploy, compare restore names exactly, undo restore flags`, then `chore: release 3.11`; not pushed, not tagged
 
 ### Done this session
 
@@ -26,6 +26,7 @@ and Codex CLI. Update it at the end of every session.
 - Stage 4 (B4): `show_diff(note)` puts the restore message ahead of "Comparing ...", of the comparison's sentence (`fill_diff(..., lead=...)`) and of a read error. Both restores pass it; choosing a copy passes none.
 - Stage 5 (T1): the two `Session19Engine` tests pick their paths per system. Every Windows assertion still runs on Windows; the letter-case check is Windows only. The POSIX values were checked here against `posixpath` versions of the same rules; Eve checks Linux in the full run.
 - Stage 6: user guide (Save and Deploy; Backups and overrides), CHANGELOG under Unreleased, public roadmap (3.11 under Next), and the oldest live handoff entry moved to the archive.
+- Stage 7 (release prep, approved by Mark): 3.11 in the module header and `VERSION`, a "Release 3.11" paragraph after 3.10's in the module docstring, the launcher banner (CRLF kept), the README badge, header lines (ready for release; not yet published), a "New in 3.11" paragraph above 3.10's, a history row and a "What 3.11 adds" block (no download link or SHA-256), the CHANGELOG header (ready for release) with `## 3.11 (25 November 2026)` and an empty Unreleased, and the public roadmap (3.11 now, 3.10 done).
 - Tests: new `Session25Review` (4), `Session25Engine` (8) and `Session25Window` (4, real worker threads). 15 failed before any fix; the Save, Undo, Redo test passed at first and failed once the document was recorded, as Stage 3 describes.
 
 ### In progress
@@ -34,7 +35,8 @@ and Codex CLI. Update it at the end of every session.
 
 ### Next steps
 
-- Stage 7 (release prep, approved by Mark) follows in the `chore` commit.
+- Eve: run the full suite once (on Linux too, for the two `Session19Engine` tests), tag `v3.11`, build, and ask Mark before pushing.
+- Eve, when publishing: set the README and CHANGELOG status to released, drop "(ready for release; not yet published)" from "New in 3.11", add the download bullet and SHA-256, and set the Tests badge from the full run (395 at 3.10; this session adds 16).
 
 ### Known issues / blockers
 
@@ -43,6 +45,7 @@ and Codex CLI. Update it at the end of every session.
 ### Files touched
 
 - `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+- `chore` commit: `fm_name_editor.py`, `FM Name Editor.bat`, `README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`
 
 ---
 

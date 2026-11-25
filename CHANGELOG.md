@@ -1,12 +1,16 @@
 # Changelog
 
-Release: 3.10
-Status: released
-Application on disk: 3.10
+Release: 3.11
+Status: ready for release
+Application on disk: 3.11
 
-The source on disk reports `VERSION = "3.10"`. The launcher banner says v3.10.
+The source on disk reports `VERSION = "3.11"`. The launcher banner says v3.11.
 
 ## Unreleased
+
+## 3.11 (25 November 2026)
+
+Shipped in `fm_name_editor.py`. Release 3.11 is a bug-fix release: Review changes, the Backups window and Undo now keep every promise they make on screen, and the test suite runs clean on Linux. Session 25 closes 3.11.
 
 Session 25 — Review changes, the Backups window and Undo keep their word, and the suite runs clean on Linux:
 
