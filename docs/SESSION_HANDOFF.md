@@ -42,6 +42,13 @@ and Codex CLI. Update it at the end of every session.
 
 - Found, not fixed (outside the brief): `roll_back_to` puts back a snapshot's restore flags. A roll back to a snapshot taken while a restore was pending, made after that restore was saved, leaves a clean file flagged as a pending restore, so later edits in it are grouped as a restore. That code is unchanged since Session 21.
 
+### Eve — release 3.11
+
+- Reviewed `8732239` and `1392eb5` against the brief: B1 to B4 and T1 done as briefed, Conventional Commits, no private files tracked, licence and copyright headers intact, no playthrough details. Version 3.11 agrees in the module header, `VERSION`, the launcher banner, the README, the CHANGELOG and the public roadmap.
+- Ran the full suite once, offscreen on Linux (Mark's choice, to spare this PC): 411 tests in about 16 s, all passing, 5 skipped because the game's own name files are not there. The two `Session19Engine` tests now pass on Linux.
+- Set both statuses to released, dropped "ready for release" from "New in 3.11", added the download bullet and set the Tests badge to 411. Built the Windows executable from the release source without launching it. Push and publication wait for Mark's confirmation.
+- The snapshot roll-back restore-flag bug above is in the private roadmap as a proposal for the next release.
+
 ### Files touched
 
 - `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`

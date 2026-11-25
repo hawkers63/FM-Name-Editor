@@ -1,7 +1,7 @@
 # Changelog
 
 Release: 3.11
-Status: ready for release
+Status: released
 Application on disk: 3.11
 
 The source on disk reports `VERSION = "3.11"`. The launcher banner says v3.11.
@@ -19,7 +19,7 @@ Session 25 — Review changes, the Backups window and Undo keep their word, and 
 - **Undo and Redo take a selected restore's file state with them.** Undo clears the pending restore, where it came from and its whole-file tick, so earlier edits in that file can be ticked one by one again; Redo brings all three back; an earlier pending restore comes back exactly. A file that an Undo or Redo leaves with nothing pending is no longer flagged as a restore, so Save, Undo, Redo no longer marks the saved file as a pending restore. Undo is still one step.
 - **"Restored …" stays.** After either kind of restore, the Backups window's summary keeps the restore message ahead of the fresh comparison, which used to replace it a moment later. Choosing another copy shows only that copy's comparison.
 - **Clean on Linux.** Two older `Session19Engine` tests used Windows paths. They now check the same rules with each system's own paths; the letter-case check runs on Windows only.
-- **Verification.** New `Session25Review` (4), `Session25Engine` (8) and `Session25Window` (4); each failed before its fix. The targeted classes for these changes pass; the full suite is run at release.
+- **Verification.** New `Session25Review` (4), `Session25Engine` (8) and `Session25Window` (4); each failed before its fix. Tests: 411 in the full suite, up from 395, run offscreen on Linux: all passed, with 5 that need the game's own name files skipped.
 
 ## 3.10 (25 November 2026)
 

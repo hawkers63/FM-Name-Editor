@@ -12,14 +12,14 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club,
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-395-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-411-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
 Release: 3.11
-Status: ready for release; not yet published
+Status: released
 Application on disk: 3.11
 </sub>
 
@@ -50,7 +50,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 ## ✨ Key features
 
-**New in 3.11 (ready for release; not yet published):** A bug-fix release. In **Review changes**, a file whose changes are all unticked is no longer written by **Deploy**, wherever it would go. **Restore selected names** compares the exact names before it restores, so names that contain " | " can no longer slip past its check, and duplicate names are shown in quotes. **Undo** and **Redo** of a selected restore now take the file's restore state with them, and the **Backups** window keeps its "Restored …" message ahead of the fresh comparison.
+**New in 3.11:** A bug-fix release. In **Review changes**, a file whose changes are all unticked is no longer written by **Deploy**, wherever it would go. **Restore selected names** compares the exact names before it restores, so names that contain " | " can no longer slip past its check, and duplicate names are shown in quotes. **Undo** and **Redo** of a selected restore now take the file's restore state with them, and the **Backups** window keeps its "Restored …" message ahead of the fresh comparison.
 
 **New in 3.10:** **Restore selected names** in the **Backups** window reads the backup in the background while the window waits, and closing it part-way restores nothing. A ticked name that changed after the list was shown, in the open file or in the backup, now refuses the restore instead of overwriting the newer spelling, and the names restored come from the backup as it is now. A row that needs a line added or taken out has no tick box: **Restore into open file** handles it.
 
@@ -226,6 +226,7 @@ Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for
 - **Undo and Redo keep a restore's file state.** Undoing a selected restore clears its pending restore, so earlier edits in the file can be ticked one by one again. Redo brings the restore back, and Save, Undo, Redo no longer marks the saved file as a pending restore.
 - **"Restored …" stays.** After either kind of restore, the Backups window keeps the restore message ahead of the fresh comparison.
 - **Tests run clean on Linux.** Two older tests now use each system's own paths.
+- **Windows download.** A fresh v3.11 executable is attached to the [v3.11 release](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11), with its SHA-256 in the release notes.
 
 </details>
 
