@@ -2567,6 +2567,12 @@ def roll_back_to(snapshot: Snapshot) -> list:
             elif entry.reason in (None, "undo") and entry in mine:
                 entry.reason = "snapshot"
         doc.touch()
+        if doc.restore_pending and not doc.dirty:
+            # A clean file has nothing pending, so the snapshot's restore flags are stale
+            # (Session 26), as after an Undo (Operation._settle).
+            doc.restore_pending = False
+            doc.restored_from = None
+            doc.whole_excluded = False
     return list(dict.fromkeys(touched))
 
 

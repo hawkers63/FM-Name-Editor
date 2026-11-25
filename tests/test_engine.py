@@ -10947,3 +10947,105 @@ class Session25Window(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Session26Engine(unittest.TestCase):
+    """Session 26: a snapshot roll back leaves no clean file flagged as a pending restore."""
+
+    TEXT = Session18BackupRestore.TEXT
+    OLD = Session18BackupRestore.OLD
+
+    def _setup(self, tmp):
+        path, copy = Path(tmp) / "mine.lnc", Path(tmp) / "backup.lnc"
+        write_lnc(path, self.TEXT)
+        write_lnc(copy, self.OLD)
+        return editor.LncDoc(path), copy
+
+    @staticmethod
+    def _flags(doc) -> tuple:
+        return doc.restore_pending, doc.restored_from, doc.whole_excluded
+
+    @staticmethod
+    def _names(doc) -> list:
+        return [e.name for e in doc.editable()]
+
+    def _restore(self, doc, copy, ids):
+        rows = editor.diff_documents(doc, editor.LncDoc(copy))
+        changes, stale = editor.plan_selected_restore(
+            doc, copy, [row for row in rows if row["id"] in ids])
+        self.assertEqual(stale, [])
+        with editor.Operation("restore"):
+            editor.apply_selected_restore(doc, copy, changes)
+
+    @staticmethod
+    def _roll_back(snapshot) -> "editor.Operation":
+        operation = editor.Operation("roll back")
+        with operation:
+            editor.roll_back_to(snapshot)
+        return operation
+
+    def test_a_roll_back_after_the_restore_was_saved_leaves_no_pending_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._setup(tmp)
+            self._restore(doc, copy, {"1", "2"})
+            snapshot = editor.take_snapshot([doc], "pending")
+            doc.save(backup=False)
+            self.assertEqual(self._flags(doc), (False, None, False))
+            self._roll_back(snapshot)
+            self.assertFalse(doc.dirty)
+            self.assertEqual(self._flags(doc), (False, None, False))
+            editor.try_set_name(doc.editable()[2], "Third")
+            self.assertFalse(doc.grouped)
+            [row] = editor.collect_changes([doc])
+            self.assertEqual(row.reason, editor.CHANGE_REASONS["manual"])
+
+    def test_a_roll_back_to_a_pending_restore_brings_it_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._setup(tmp)
+            self._restore(doc, copy, {"1"})
+            snapshot = editor.take_snapshot([doc], "pending")
+            before = self._flags(doc)
+            editor.try_set_name(doc.editable()[2], "Third")
+            doc.restore_pending, doc.restored_from = False, None
+            self._roll_back(snapshot)
+            self.assertTrue(doc.dirty)
+            self.assertEqual(self._flags(doc), before)
+            self.assertEqual(self._flags(doc)[:2], (True, copy))
+            self.assertEqual(self._names(doc), ["Uno", "Two", "Three"])
+
+    def test_undo_of_a_roll_back_returns_to_the_exact_flags_and_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._setup(tmp)
+            self._restore(doc, copy, {"1", "2"})
+            snapshot = editor.take_snapshot([doc], "pending")
+            doc.save(backup=False)
+            editor.try_set_name(doc.editable()[2], "Third")
+            flags, names = self._flags(doc), self._names(doc)
+            operation = self._roll_back(snapshot)
+            self.assertEqual(self._names(doc), ["Uno", "Dos", "Three"])
+            self.assertEqual(self._flags(doc), (False, None, False))
+            operation.undo()
+            self.assertEqual((self._flags(doc), self._names(doc)), (flags, names))
+
+    def test_a_roll_back_across_a_save_still_matches_the_lines_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _copy = self._setup(tmp)
+            editor.try_set_name(doc.editable()[0], "Alpha")
+            snapshot = editor.take_snapshot([doc], "early")
+            editor.try_set_name(doc.editable()[1], "Beta")
+            doc.save(backup=False)
+            self._roll_back(snapshot)
+            self.assertEqual(self._names(doc), ["Alpha", "Two", "Three"])
+            self.assertTrue(doc.dirty)                  # "Beta" is on disk, the working line is not
+            self.assertEqual(self._flags(doc), (False, None, False))
+            [row] = editor.collect_changes([doc])
+            self.assertEqual(row.entry.name, "Two")
+
+    def test_a_roll_back_to_the_same_lines_leaves_a_clean_file_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, _copy = self._setup(tmp)
+            snapshot = editor.take_snapshot([doc], "same")
+            operation = self._roll_back(snapshot)
+            self.assertFalse(doc.dirty)
+            self.assertEqual(self._flags(doc), (False, None, False))
+            self.assertFalse(operation.changed)
