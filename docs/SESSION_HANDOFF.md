@@ -42,6 +42,13 @@ and Codex CLI. Update it at the end of every session.
 - `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`
 - `chore` commit: `fm_name_editor.py`, `FM Name Editor.bat`, `README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
 
+### Eve — release 3.11.1
+
+- Reviewed `48116e9` and `a9980a5`: the fix is the one condition at the end of each document's pass in `roll_back_to`, cleared only when the document is clean; the five `Session26Engine` tests cover the stale case, a genuine pending restore, Undo, a roll back across a Save and identical lines. Conventional Commits, licence and copyright headers intact, no private files tracked, no playthrough details. Version 3.11.1 agrees in the module header, `VERSION`, the launcher banner, the README, the CHANGELOG and the public roadmap.
+- Ran the full suite once, offscreen on this PC: 416 tests in 78 s, all passing, none skipped (the game's name files are here, so the live-file tests ran).
+- Set both statuses to released, dropped "ready for release" from "New in 3.11.1", added a "What 3.11.1 adds" block with the download bullet and SHA-256, and set the Tests badge to 416. Public roadmap: 3.11.1 now, 3.11 done.
+- Built the Windows executable from this tree without launching it: 49,061,343 bytes, version resources 3.11.1, SHA-256 `e441accb3dba14bd69776a6460b46a258531e48426f9f48df82438f9b05e65db`. Tagged `v3.11.1`. Push and publication wait for Mark's confirmation.
+
 ---
 
 ## 25 November 2026 (Europe/London) — Claude Code (Session 25)

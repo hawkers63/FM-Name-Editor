@@ -12,16 +12,16 @@ changes.
 
 ## Now
 
-- **Release 3.11.1** is ready for release (25 November 2026), a
-  one-fix release: a snapshot roll back no longer leaves a saved file
-  flagged as a pending restore.
+- **Release 3.11.1** is current (25 November 2026), a one-fix
+  release: a snapshot roll back no longer leaves a saved file flagged
+  as a pending restore.
 
 ## Next
 
-- Further work is to be planned.
+- 3.12 is being planned: a calmer grid and less chrome. It waits on
+  Mark's choices, so no scope is agreed yet.
 
 ## Later
-
 
 ## Done
 

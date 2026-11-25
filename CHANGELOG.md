@@ -1,7 +1,7 @@
 # Changelog
 
 Release: 3.11.1
-Status: ready for release
+Status: released
 Application on disk: 3.11.1
 
 The source on disk reports `VERSION = "3.11.1"`. The launcher banner says v3.11.1.
@@ -15,7 +15,7 @@ Shipped in `fm_name_editor.py`. Release 3.11.1 is a one-fix release: a snapshot 
 Session 26 — a snapshot roll back leaves no clean file flagged as a restore:
 
 - **Roll back no longer brings back a stale restore.** A snapshot taken while a restore was pending keeps that restore's flags. Rolling back to it after the restore had been saved put the flags back on a file that matched the disk, so it was shown as a pending restore and its later edits were grouped as one. A file that the roll back leaves clean now has its restore flags cleared, as Undo and Redo already do. A snapshot that really has a pending restore still brings it back, Undo of a roll back returns to the exact flags and lines, and a roll back across a Save works as before.
-- **Verification.** New `Session26Engine` (5); two of them failed before the fix. `Session21Snapshots`, `Session21Engine`, `Session21Speed`, `Session6Undo` and `Session25Engine` pass unchanged. The full suite is run by Eve.
+- **Verification.** New `Session26Engine` (5); two of them failed before the fix. `Session21Snapshots`, `Session21Engine`, `Session21Speed`, `Session6Undo` and `Session25Engine` pass unchanged. Tests: 416 in the full suite, up from 411, run offscreen on Windows: all passed, none skipped.
 
 ## 3.11 (25 November 2026)
 
