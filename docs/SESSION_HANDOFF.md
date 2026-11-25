@@ -10,6 +10,42 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 25 November 2026 (Europe/London) — Claude Code (Session 25)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** Eve's Session 25 brief for release 3.11 (private, in `notes/`), built on note 11 (a static bug hunt at `fd576c6`) and the two known issues in the Session 24 entry, with Mark's kick-off: targeted tests only, two local commits, no tag, build or push.
+- **Branch / commit:** main, two local commits: `fix: keep unticked files out of Deploy, compare restore names exactly, undo restore flags`, then `chore: release 3.11`; not pushed, not tagged
+
+### Done this session
+
+- Stage 0: all four bugs (B1 to B4) and both Linux-only test failures (T1) still held at `fd576c6`; nothing was dropped.
+- Stage 1 (B1): `ReviewFile.writes` is False when a file's payload leaves every change out (`left_out` above 0, `included` 0), wherever it goes, so Deploy neither replaces nor creates its destination and the document is not rebound to it. A file with no changes at all is compared as before, so Deploy still copies it. `build_payload` and the writer are unchanged.
+- Stage 2 (B2): `_diff_rows` keeps `working_names` and `archived_names` on each row and shows two or more names each in quotes (`_shown_names`; a name never holds a quote). `fill_diff` puts the row on the tick box (`Qt.UserRole`; PySide6 hands back an equal dict, lists included), `ticked_rows` returns those rows, and `plan_selected_restore` compares the lists. A row without them is stale.
+- Stage 3 (B3): `apply_selected_restore` returns at once for an empty plan, and otherwise records the document first (`_note_lines_of`), so Undo and Redo carry `restore_pending`, `restored_from` and `whole_excluded`. With the document recorded, Save, Undo, Redo left a clean document flagged as a pending restore (the new test failed at that point), so `Operation._settle` now clears the three flags of a recorded document that an undo or redo leaves clean. Undo and Redo of a selected restore are now structural, so they reload the views, as the restore itself already did.
+- Stage 4 (B4): `show_diff(note)` puts the restore message ahead of "Comparing ...", of the comparison's sentence (`fill_diff(..., lead=...)`) and of a read error. Both restores pass it; choosing a copy passes none.
+- Stage 5 (T1): the two `Session19Engine` tests pick their paths per system. Every Windows assertion still runs on Windows; the letter-case check is Windows only. The POSIX values were checked here against `posixpath` versions of the same rules; Eve checks Linux in the full run.
+- Stage 6: user guide (Save and Deploy; Backups and overrides), CHANGELOG under Unreleased, public roadmap (3.11 under Next), and the oldest live handoff entry moved to the archive.
+- Tests: new `Session25Review` (4), `Session25Engine` (8) and `Session25Window` (4, real worker threads). 15 failed before any fix; the Save, Undo, Redo test passed at first and failed once the document was recorded, as Stage 3 describes.
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Stage 7 (release prep, approved by Mark) follows in the `chore` commit.
+
+### Known issues / blockers
+
+- Found, not fixed (outside the brief): `roll_back_to` puts back a snapshot's restore flags. A roll back to a snapshot taken while a restore was pending, made after that restore was saved, leaves a clean file flagged as a pending restore, so later edits in it are grouped as a restore. That code is unchanged since Session 21.
+
+### Files touched
+
+- `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+
+---
+
 ## 25 November 2026 (Europe/London) — Claude Code (Session 24)
 
 - **Tool:** claude (Claude Code)
@@ -168,40 +204,3 @@ and Codex CLI. Update it at the end of every session.
 - `fm_name_editor.py`, `FM Name Editor.bat`, `CHANGELOG.md`, `README.md`,
   `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`;
   private `roadmap.md` (not tracked)
-
----
-
-## 24 November 2026 (Europe/London) — Claude Code (Session 21)
-
-- **Tool:** claude (Claude Code)
-- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
-- **Branch / commit:** main, local `feat: short names and codes, name health and snapshots`, not pushed
-
-### Done this session
-
-- No brief was pasted and none was at the top of this file, so the scope came from Neal's last entry and the private roadmap: note 09 proposals 3 to 5, Release 3.7. Where the note left room, the decisions are listed under Known issues.
-- Stage 0: Ctrl+Alt+D and Ctrl+Alt+K were free (Ctrl+Alt+S is Select same file section). A read-only baseline on a large real-world set of files found names to check (shared 3-letter codes in a file section, lower-case codes, a double space, and curly quotes). A health pass takes about 42 ms after a fast path for tidy names (68 ms without it).
-- Stage 1 (proposal 3): `short_name_from`, `code_candidates`, `synthesise_siblings`, `sibling_suggestion` and `fill_siblings`. The inspector shows the suggestion first, with Use suggestion; Edit > Fill short name and code (Ctrl+Alt+D, in the palette and the busy actions) does the same. Clubs only, empty fields only, one Undo step, reason `suggest` ("Suggested").
-- Stage 2 (proposal 4): `LintIssue`, `name_findings`, `lint_entity`, `name_health`, `health_summary`, `tidy_name` and `fix_formatting`. The status bar reads "Name health: N to check" (a link to a new `health` status filter, the "Name health" button) or "Name health: clean"; the grid's Status reads Check in amber, with the findings in its tooltip; the inspector shows a notice with Fix formatting. Edit > Fix formatting tidies the selected rows as one Undo step, reason `tidy`.
-- Stage 3 (proposal 5): `Snapshot`, `take_snapshot`, `roll_back_to` and `SNAPSHOT_LIMIT` (10). Edit > Create snapshot... (Ctrl+Alt+K) and the Roll back to snapshot submenu, one Undo step; cleared in `adopt_documents`. `Operation` gained `note_rebase` (`_note_rebase`), so undoing or redoing a roll back that crossed a write matches the lines to the disk file again.
-- User guide (three sections), CHANGELOG Unreleased, README "Planned for 3.7" line. The oldest handoff entry moved to the archive.
-
-### In progress
-
-- Nothing.
-
-### Next steps
-
-- Session 21 closes Release 3.7. Neal: verify, run the full suite once, finalise the version headers and the dated CHANGELOG section, then tag and push after Mark confirms.
-
-### Known issues / blockers
-
-- Decisions where the note left room: suggestions for clubs only, and only for empty fields; the note's AVL (Aston Villa) is an official league code no simple rule derives, so the rule gives AST, while ARS, BOU, NEW and CRY match; an en dash is not flagged; curly double quotes become ' because a straight double quote cannot sit inside a name; the grid's "pip" is the Status word Check, with colour and tooltip; the count's link applies a new Name health filter; Fix formatting acts on the selected rows, like Revert selected; the roll back is a submenu, not a dialog; snapshots are capped at ten.
-- Opening a large real-world set of files may show a Name health count in amber if there is something to check; a shared code in a file section is the usual reason.
-- Fill short name and code, and a roll back that adds or takes out lines, reload the views (about 0.6 s on a large data set), the same path as typing into an empty field.
-
-### Files touched
-
-- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`,
-  `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`; private
-  `roadmap.md` (not tracked)

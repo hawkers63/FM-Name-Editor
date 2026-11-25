@@ -18,7 +18,11 @@ changes.
 
 ## Next
 
-- Further work is to be planned.
+- **Release 3.11** (bug fixes): a file whose changes are all unticked
+  stays out of Deploy, Restore selected names compares the names
+  themselves, Undo and Redo take a restore's file state with them, the
+  "Restored" message stays in the Backups window, and the test suite
+  runs clean on Linux.
 
 ## Later
 

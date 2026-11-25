@@ -8,6 +8,15 @@ The source on disk reports `VERSION = "3.10"`. The launcher banner says v3.10.
 
 ## Unreleased
 
+Session 25 — Review changes, the Backups window and Undo keep their word, and the suite runs clean on Linux:
+
+- **An unticked file stays out of Deploy.** A file whose changes are all unticked is not written at all, wherever it would go. Before, Deploy could still replace the game's copy with the working copy's file as it is on disk when the two differed, or create a missing one, although Review changes said "not written"; the open file then pointed at the game's copy. That happened to a restored backup with its one tick cleared, and to a file with every change unticked. A file with no changes at all is still copied by Deploy, as before.
+- **Restore selected names compares the names themselves.** Each comparison row keeps the open file's and the backup's names as lists, the tick box carries the row as it was compared, and the check before a restore compares those lists. A name may contain " | ", so two different sets of duplicate names could read the same in the table, pass the check, and restore names that were never shown. When one command, ID and language has more than one line, each name is now shown in quotes.
+- **Undo and Redo take a selected restore's file state with them.** Undo clears the pending restore, where it came from and its whole-file tick, so earlier edits in that file can be ticked one by one again; Redo brings all three back; an earlier pending restore comes back exactly. A file that an Undo or Redo leaves with nothing pending is no longer flagged as a restore, so Save, Undo, Redo no longer marks the saved file as a pending restore. Undo is still one step.
+- **"Restored …" stays.** After either kind of restore, the Backups window's summary keeps the restore message ahead of the fresh comparison, which used to replace it a moment later. Choosing another copy shows only that copy's comparison.
+- **Clean on Linux.** Two older `Session19Engine` tests used Windows paths. They now check the same rules with each system's own paths; the letter-case check runs on Windows only.
+- **Verification.** New `Session25Review` (4), `Session25Engine` (8) and `Session25Window` (4); each failed before its fix. The targeted classes for these changes pass; the full suite is run at release.
+
 ## 3.10 (25 November 2026)
 
 Shipped in `fm_name_editor.py`. Release 3.10 makes Restore selected names in the Backups window read the backup in the background, like everything else that reads a backup, and check the restore properly against what was shown. Session 24 closes 3.10.

@@ -10,6 +10,43 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 24 November 2026 (Europe/London) — Claude Code (Session 21)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Branch / commit:** main, local `feat: short names and codes, name health and snapshots`, not pushed
+
+### Done this session
+
+- No brief was pasted and none was at the top of this file, so the scope came from Neal's last entry and the private roadmap: note 09 proposals 3 to 5, Release 3.7. Where the note left room, the decisions are listed under Known issues.
+- Stage 0: Ctrl+Alt+D and Ctrl+Alt+K were free (Ctrl+Alt+S is Select same file section). A read-only baseline on a large real-world set of files found names to check (shared 3-letter codes in a file section, lower-case codes, a double space, and curly quotes). A health pass takes about 42 ms after a fast path for tidy names (68 ms without it).
+- Stage 1 (proposal 3): `short_name_from`, `code_candidates`, `synthesise_siblings`, `sibling_suggestion` and `fill_siblings`. The inspector shows the suggestion first, with Use suggestion; Edit > Fill short name and code (Ctrl+Alt+D, in the palette and the busy actions) does the same. Clubs only, empty fields only, one Undo step, reason `suggest` ("Suggested").
+- Stage 2 (proposal 4): `LintIssue`, `name_findings`, `lint_entity`, `name_health`, `health_summary`, `tidy_name` and `fix_formatting`. The status bar reads "Name health: N to check" (a link to a new `health` status filter, the "Name health" button) or "Name health: clean"; the grid's Status reads Check in amber, with the findings in its tooltip; the inspector shows a notice with Fix formatting. Edit > Fix formatting tidies the selected rows as one Undo step, reason `tidy`.
+- Stage 3 (proposal 5): `Snapshot`, `take_snapshot`, `roll_back_to` and `SNAPSHOT_LIMIT` (10). Edit > Create snapshot... (Ctrl+Alt+K) and the Roll back to snapshot submenu, one Undo step; cleared in `adopt_documents`. `Operation` gained `note_rebase` (`_note_rebase`), so undoing or redoing a roll back that crossed a write matches the lines to the disk file again.
+- User guide (three sections), CHANGELOG Unreleased, README "Planned for 3.7" line. The oldest handoff entry moved to the archive.
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Session 21 closes Release 3.7. Neal: verify, run the full suite once, finalise the version headers and the dated CHANGELOG section, then tag and push after Mark confirms.
+
+### Known issues / blockers
+
+- Decisions where the note left room: suggestions for clubs only, and only for empty fields; the note's AVL (Aston Villa) is an official league code no simple rule derives, so the rule gives AST, while ARS, BOU, NEW and CRY match; an en dash is not flagged; curly double quotes become ' because a straight double quote cannot sit inside a name; the grid's "pip" is the Status word Check, with colour and tooltip; the count's link applies a new Name health filter; Fix formatting acts on the selected rows, like Revert selected; the roll back is a submenu, not a dialog; snapshots are capped at ten.
+- Opening a large real-world set of files may show a Name health count in amber if there is something to check; a shared code in a file section is the usual reason.
+- Fill short name and code, and a roll back that adds or takes out lines, reload the views (about 0.6 s on a large data set), the same path as typing into an empty field.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `README.md`,
+  `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`; private
+  `roadmap.md` (not tracked)
+
+---
+
 ## 22 November 2026 (Europe/London) — Grok Bot (Neal)
 
 - **Tool:** Grok Bot (Neal)

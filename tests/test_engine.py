@@ -8133,8 +8133,12 @@ class Session19Engine(unittest.TestCase):
             for folder in (a, b, c, d):
                 folder.mkdir()
             (root / "file.txt").write_text("x", encoding="utf-8")
+            if os.name == "nt":     # Windows paths ignore letter case and a trailing backslash
+                again = [str(a).upper(), str(b) + "\\"]
+            else:                   # other systems keep letter case: only an exact repeat is
+                again = [str(a), str(b) + os.sep]       # the same folder there
             raw = ["", "   ", 7, None, ["x"], "relative\\folder", str(root / "missing"),
-                   str(root / "file.txt"), str(a), str(a).upper(), str(b) + "\\", str(c), str(d)]
+                   str(root / "file.txt"), str(a), *again, str(c), str(d)]
             self.assertEqual(editor.clean_folders(raw), [str(a), str(b), str(c)])
             for value in ("not a list", {"a": 1}, None, 5):
                 self.assertEqual(editor.clean_folders(value), [])
@@ -8221,12 +8225,23 @@ class Session19Engine(unittest.TestCase):
         self.assertEqual(editor.clean_view({"id_column": False}), {"id_column": False})
         self.assertEqual(editor.clean_view({"id_column": True}), {"id_column": True})
         self.assertEqual(editor.clean_view({"id_column": "no"}), {})
-        with mock.patch.object(editor, "GAME_DB_ROOT", Path(r"D:\Games\db")):
-            self.assertTrue(editor.in_game_tree(r"D:\Games\db\2700\lnc\all\fm-name-pack.json"))
-            self.assertTrue(editor.in_game_tree(r"d:\games\DB\pack.json"))
-            self.assertTrue(editor.in_game_tree(r"E:\SteamLibrary\steamapps\common\x\pack.json"))
-            self.assertFalse(editor.in_game_tree(r"D:\Games\dbx\pack.json"))
-            self.assertFalse(editor.in_game_tree(r"C:\Users\someone\Documents\pack.json"))
+        if os.name == "nt":
+            root = r"D:\Games\db"
+            inside = {r"D:\Games\db\2700\lnc\all\fm-name-pack.json": True,
+                      r"d:\games\DB\pack.json": True,       # Windows paths ignore letter case
+                      r"E:\SteamLibrary\steamapps\common\x\pack.json": True,
+                      r"D:\Games\dbx\pack.json": False,
+                      r"C:\Users\someone\Documents\pack.json": False}
+        else:   # the same rules in this system's paths; they keep letter case, so no case check
+            root = "/games/db"
+            inside = {"/games/db/2700/lnc/all/fm-name-pack.json": True,
+                      "/mnt/SteamLibrary/steamapps/common/x/pack.json": True,
+                      "/games/dbx/pack.json": False,
+                      "/home/someone/Documents/pack.json": False}
+        with mock.patch.object(editor, "GAME_DB_ROOT", Path(root)):
+            for path, expected in inside.items():
+                with self.subTest(path=path):
+                    self.assertEqual(editor.in_game_tree(path), expected)
 
 
 class _Session19Window:
@@ -10527,6 +10542,407 @@ class Session24Window(unittest.TestCase):
             self.assertFalse(win.docs[0].restore_pending)
             self.assertFalse(win.docs[0].dirty)
             self.assertFalse(win.undo_stack.canUndo())
+
+
+class Session25Review(unittest.TestCase):
+    """Session 25 (B1): a file whose changes are all unticked is not written, wherever it goes."""
+
+    ROWS = Session5Changes.ROWS
+
+    @staticmethod
+    def _file(path: Path, text: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_lnc(path, text)
+        return path
+
+    def _restored(self, root: Path):
+        """A working copy outside the game folder, restored from a backup, its group unticked."""
+        path = self._file(root / "work" / "FM27_Club_Names.lnc", self.ROWS)
+        stored = self._file(root / "backups" / "20261111-120000" / path.name,
+                            self.ROWS.replace('"Alpha"', '"Alpha Old"'))
+        doc = editor.LncDoc(path)
+        editor.restore_into(doc, stored)
+        rows = editor.collect_changes([doc])
+        rows[0].set_included(False)             # one tick stands for the whole restored file
+        self.assertTrue(doc.grouped)
+        self.assertEqual([row.included for row in rows], [False])
+        return doc, path, rows
+
+    def _fix(self, root: Path):
+        """Another file in the same Deploy, with one ticked change."""
+        path = self._file(root / "work" / "FM27_Fix.lnc", '"COMP_LONG_NAME_CHANGE"\t5\t"Cup"\t""\n')
+        doc = editor.LncDoc(path)
+        editor.try_set_name(doc.names()[0], "Cup Final")
+        return doc, root / "game" / "FM27_Fix.lnc"
+
+    def _other_bytes(self, root: Path, name: str = "FM27_Club_Names.lnc") -> Path:
+        """A game file that differs from the working copy's file on disk."""
+        return self._file(root / "game" / name, self.ROWS.replace("Gamma", "Gamma G"))
+
+    def test_an_unticked_restore_is_not_deployed_over_different_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc, path, _rows = self._restored(root)
+            dest = self._other_bytes(root)
+            there = dest.read_bytes()
+            fix, fix_dest = self._fix(root)
+            review = editor.WriteReview("Deploy", [(doc, dest), (fix, fix_dest)],
+                                        check=lambda: [])
+            self.assertEqual([item.doc for item in review.to_write], [fix])
+            self.assertEqual([step[0] for step in review.plan()], [fix])
+            self.assertEqual(review.files[0].write_state(),
+                             "not written: all 1 change(s) left out")
+            review.write(root / "archive")
+            self.assertEqual(dest.read_bytes(), there)
+            self.assertEqual(fix_dest.read_bytes(), fix.baseline_bytes)    # the other one is
+            self.assertEqual(doc.path, path)
+            self.assertTrue(doc.restore_pending)
+            self.assertTrue(doc.dirty)
+
+    def test_an_unticked_restore_does_not_create_a_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc, path, _rows = self._restored(root)
+            dest = root / "game" / "FM27_Club_Names.lnc"
+            fix, fix_dest = self._fix(root)
+            review = editor.WriteReview("Deploy", [(doc, dest), (fix, fix_dest)],
+                                        check=lambda: [])
+            self.assertEqual([item.doc for item in review.to_write], [fix])
+            review.write(root / "archive")
+            self.assertFalse(dest.exists())
+            self.assertTrue(fix_dest.is_file())
+            self.assertEqual(doc.path, path)
+            self.assertTrue(doc.restore_pending)
+
+    def test_a_file_with_every_change_unticked_is_not_deployed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._file(root / "work" / "FM27_Club_Names.lnc", self.ROWS)
+            doc = editor.LncDoc(path)
+            editor.try_set_name(Session5Changes._row(doc, "1"), "Alpha United")
+            editor.try_set_name(Session5Changes._row(doc, "2"), "Beta Town")
+            rows = editor.collect_changes([doc])
+            for row in rows:
+                row.set_included(False)
+            self.assertFalse(doc.grouped)
+            dest = self._other_bytes(root)
+            there = dest.read_bytes()
+            review = editor.WriteReview("Deploy", [(doc, dest)], check=lambda: [])
+            self.assertEqual(review.to_write, [])
+            self.assertEqual(review.plan(), [])
+            self.assertIn("Nothing is ticked", review.problems()[0])
+            with self.assertRaises(editor.WriteError):
+                review.write(root / "archive")
+            self.assertEqual(dest.read_bytes(), there)
+            self.assertEqual(doc.path, path)
+            self.assertTrue(doc.dirty)
+            rows[0].set_included(True)                  # one change ticked again: written
+            review.refresh()
+            self.assertEqual(review.to_write, review.files)
+
+    def test_ticking_the_restore_again_deploys_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc, _path, rows = self._restored(root)
+            dest = self._other_bytes(root)
+            review = editor.WriteReview("Deploy", [(doc, dest)], check=lambda: [])
+            self.assertEqual(review.to_write, [])
+            rows[0].set_included(True)
+            review.refresh()
+            self.assertEqual(review.to_write, review.files)
+            self.assertEqual(review.files[0].write_state(), "1 change(s), written together")
+            review.write(root / "archive")
+            self.assertIn(b"Alpha Old", dest.read_bytes())
+            self.assertEqual(dest.read_bytes(), doc.baseline_bytes)
+            self.assertEqual(doc.path, dest)
+            self.assertFalse(doc.restore_pending)
+
+
+class Session25Engine(unittest.TestCase):
+    """Session 25: a selected restore compares name lists, not their joined text (B2), and
+    Undo and Redo take the file's restore flags with it (B3)."""
+
+    TEXT = Session18BackupRestore.TEXT
+    OLD = Session18BackupRestore.OLD
+    LINE = '"CLUB_NAME_CHANGE"\t9\t"{}"\t""\n'
+    # Two lines under one key whose names hold " | ": joined, both pairs read the same.
+    SHOWN, CHANGED = ("North | Town", "Vale"), ("North", "Town | Vale")
+
+    def _lines(self, base: str, names) -> str:
+        return base + "".join(self.LINE.format(name) for name in names)
+
+    def _pair(self, tmp, backup_names=SHOWN):
+        """An open file and a backup that both have key 9 twice, and the rows shown for them."""
+        path, copy = Path(tmp) / "mine.lnc", Path(tmp) / "backup.lnc"
+        write_lnc(path, self._lines(self.TEXT, ("Nine", "Nueve")))
+        write_lnc(copy, self._lines(self.OLD, backup_names))
+        doc = editor.LncDoc(path)
+        rows = {row["id"]: row for row in editor.diff_documents(doc, editor.LncDoc(copy))}
+        return doc, copy, rows
+
+    def _simple(self, tmp):
+        path, copy = Path(tmp) / "mine.lnc", Path(tmp) / "backup.lnc"
+        write_lnc(path, self.TEXT)
+        write_lnc(copy, self.OLD)
+        return editor.LncDoc(path), copy
+
+    def _restore(self, doc, copy, ids):
+        """Plan and apply a selected restore of ``ids`` in one Operation, and return it."""
+        rows = editor.diff_documents(doc, editor.LncDoc(copy))
+        changes, stale = editor.plan_selected_restore(
+            doc, copy, [row for row in rows if row["id"] in ids])
+        self.assertEqual(stale, [])
+        operation = editor.Operation("restore")
+        with operation:
+            editor.apply_selected_restore(doc, copy, changes)
+        return operation
+
+    @staticmethod
+    def _flags(doc) -> tuple:
+        return doc.restore_pending, doc.restored_from, doc.whole_excluded
+
+    def test_a_backup_changed_to_names_that_join_the_same_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            ticked = [rows["2"], rows["9"]]             # a valid row, and the duplicate
+            write_lnc(copy, self._lines(self.OLD, self.CHANGED))    # after the list was shown
+            changes, stale = editor.plan_selected_restore(doc, copy, ticked)
+            self.assertEqual(changes, [])
+            self.assertEqual([row["id"] for row in stale], ["9"])
+            self.assertFalse(doc.dirty)
+
+    def test_an_unchanged_duplicate_restores_both_names_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            row = rows["9"]
+            self.assertEqual((row.get("working_names"), row.get("archived_names")),
+                             (["Nine", "Nueve"], ["North | Town", "Vale"]))
+            self.assertEqual((row["working"], row["archived"]),
+                             ('"Nine" | "Nueve"', '"North | Town" | "Vale"'))   # each name quoted
+            self.assertEqual((rows["2"]["working"], rows["2"]["archived"]), ("Two", "Dos"))
+            changes, stale = editor.plan_selected_restore(doc, copy, [row])
+            self.assertEqual(stale, [])
+            self.assertEqual(changes, [(("name", "CLUB_NAME_CHANGE", "9", ""),
+                                        ["North | Town", "Vale"])])
+            with editor.Operation("restore"):
+                editor.apply_selected_restore(doc, copy, changes)
+            self.assertEqual([e.name for e in doc.editable() if e.id == "9"],
+                             ["North | Town", "Vale"])
+
+    def test_a_row_without_its_name_lists_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy, rows = self._pair(tmp)
+            bare = {key: value for key, value in rows["2"].items()
+                    if key not in ("working_names", "archived_names")}
+            self.assertEqual(editor.plan_selected_restore(doc, copy, [bare]), ([], [bare]))
+
+    def test_undo_takes_back_the_restore_flags_and_the_edit_ticks_alone_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._simple(tmp)
+            three = doc.editable()[2]
+            editor.try_set_name(three, "Third")         # an ordinary edit first
+            operation = self._restore(doc, copy, {"1"})
+            self.assertEqual(self._flags(doc), (True, copy, False))
+            self.assertTrue(doc.grouped)
+            operation.undo()
+            self.assertEqual(self._flags(doc), (False, None, False))
+            self.assertFalse(doc.grouped)
+            [row] = editor.collect_changes([doc])
+            row.set_included(False)                     # the edit is ticked on its own again
+            self.assertEqual((three.excluded, doc.whole_excluded), (True, False))
+
+    def test_redo_brings_back_the_restore_its_source_and_grouping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._simple(tmp)
+            editor.try_set_name(doc.editable()[2], "Third")
+            operation = self._restore(doc, copy, {"1"})
+            operation.undo()
+            self.assertEqual(self._flags(doc), (False, None, False))
+            operation.redo()
+            self.assertEqual(self._flags(doc), (True, copy, False))
+            self.assertTrue(doc.grouped)
+            self.assertEqual([e.name for e in doc.editable()], ["Uno", "Two", "Third"])
+
+    def test_undo_returns_to_an_earlier_pending_restore_exactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, first = self._simple(tmp)
+            second = Path(tmp) / "second.lnc"
+            write_lnc(second, self.OLD.replace("Dos", "Deux"))
+            self._restore(doc, first, {"1"})
+            editor.collect_changes([doc])[0].set_included(False)    # its group unticked
+            earlier = self._flags(doc)
+            self.assertEqual(earlier, (True, first, True))
+            operation = self._restore(doc, second, {"2"})
+            self.assertEqual(self._flags(doc), (True, second, False))
+            operation.undo()
+            self.assertEqual(self._flags(doc), earlier)
+            self.assertEqual([e.name for e in doc.editable()], ["Uno", "Two", "Three"])
+
+    def test_an_empty_plan_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._simple(tmp)
+            operation = editor.Operation("restore")
+            with operation:
+                editor.apply_selected_restore(doc, copy, [])
+            self.assertEqual(self._flags(doc), (False, None, False))
+            self.assertFalse(operation.changed)
+            self.assertFalse(doc.dirty)
+
+    def test_save_undo_redo_keeps_the_disk_and_leaves_no_clean_file_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc, copy = self._simple(tmp)
+            operation = self._restore(doc, copy, {"1", "2"})
+            doc.save(backup=False)
+            saved = doc.path.read_bytes()
+            self.assertEqual((doc.baseline_bytes, self._flags(doc)), (saved, (False, None, False)))
+            operation.undo()
+            self.assertTrue(doc.dirty)
+            self.assertEqual(self._flags(doc), (False, None, False))
+            operation.redo()
+            self.assertFalse(doc.dirty)
+            self.assertEqual((doc.path.read_bytes(), doc.baseline_bytes), (saved, saved))
+            self.assertEqual(self._flags(doc), (False, None, False))
+            self.assertFalse(doc.grouped)
+
+
+class Session25Window(unittest.TestCase):
+    """Session 25: the Backups window hands the shown rows to the plan unchanged (B2), one
+    Undo takes back a selected restore with its flags (B3), and "Restored ..." leads the
+    comparison that follows a restore (B4). Real worker threads."""
+
+    TEXT = Session18BackupRestore.TEXT
+    OLD = Session18BackupRestore.OLD
+    LINE = Session25Engine.LINE
+
+    def _lines(self, base: str, *names) -> str:
+        return base + "".join(self.LINE.format(name) for name in names)
+
+    def _window(self, tmp, text: str = TEXT, old: str = OLD):
+        """A shown window with real worker threads, an open file, and one differing backup."""
+        from PySide6.QtWidgets import QApplication
+
+        self.enterContext(mock.patch.object(editor, "JOBS_INLINE", False))
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.show()
+        QApplication.processEvents()
+        path = Path(tmp) / "mine.lnc"
+        write_lnc(path, text)
+        copy = Path(tmp) / "backups" / "20261111-120000" / "mine.lnc"
+        copy.parent.mkdir(parents=True)
+        write_lnc(copy, old)
+        self.enterContext(mock.patch.object(editor, "BACKUP_ROOT", copy.parent.parent))
+        self.assertTrue(win.load([str(path)]))
+        self.assertTrue(win.jobs.wait(10))
+        return win, path, copy
+
+    def _backups(self, win, body) -> None:
+        """Open the Backups window, wait for its listing and comparison, and run ``body``."""
+        from PySide6.QtWidgets import QDialog
+
+        seen = []
+
+        def run(dialog):
+            self.assertTrue(win.jobs.wait(10))
+            seen.append(body(dialog))
+            return 0
+
+        with mock.patch.object(QDialog, "exec", run):
+            win.open_backups()
+        self.assertEqual(len(seen), 1)
+
+    def test_ticked_rows_keep_their_name_lists_and_a_changed_backup_is_refused(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path, copy = self._window(
+                tmp, self._lines(self.TEXT, "Nine", "Nueve"),
+                self._lines(self.OLD, "North | Town", "Vale"))
+
+            def body(dialog):
+                Session24Window._tick(dialog, {"2", "9"})
+                ticked = {row["id"]: row for row in dialog.ticked_rows()}
+                self.assertEqual(set(ticked), {"2", "9"})
+                self.assertEqual(ticked["9"].get("working_names"), ["Nine", "Nueve"])
+                self.assertEqual(ticked["9"].get("archived_names"), ["North | Town", "Vale"])
+                shown = next(row for row in range(dialog.table.rowCount())
+                             if dialog.table.item(row, 2).text() == "9")
+                self.assertEqual(dialog.table.item(shown, 5).text(), '"North | Town" | "Vale"')
+                write_lnc(copy, self._lines(self.OLD, "North", "Town | Vale"))
+                with mock.patch.object(QMessageBox, "warning") as warned, \
+                        Session24Window._yes():
+                    dialog.restore_selected_names()
+                    self.assertTrue(win.jobs.wait(10))
+                warned.assert_called_once()
+
+            self._backups(win, body)
+            self.assertEqual([e.name for e in win.docs[0].editable()],
+                             ["One", "Two", "Three", "Nine", "Nueve"])
+            self.assertFalse(win.docs[0].restore_pending)
+            self.assertFalse(win.undo_stack.canUndo())
+
+    def test_a_duplicate_is_restored_in_order_and_one_undo_takes_its_flags_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path, copy = self._window(
+                tmp, self._lines(self.TEXT, "Nine", "Nueve"),
+                self._lines(self.TEXT, "North | Town", "Vale"))
+
+            def body(dialog):
+                Session24Window._tick(dialog, {"9"})
+                with Session24Window._yes():
+                    dialog.restore_selected_names()
+                    self.assertTrue(win.jobs.wait(10))
+
+            self._backups(win, body)
+            doc = win.docs[0]
+            self.assertEqual([e.name for e in doc.editable()][3:], ["North | Town", "Vale"])
+            self.assertEqual((doc.restore_pending, doc.restored_from), (True, copy))
+            win.undo_act.trigger()              # one step: the names and the flags
+            self.assertEqual([e.name for e in doc.editable()][3:], ["Nine", "Nueve"])
+            self.assertEqual((doc.restore_pending, doc.restored_from), (False, None))
+            self.assertFalse(win.undo_stack.canUndo())
+            win.redo_act.trigger()
+            self.assertEqual((doc.restore_pending, doc.restored_from), (True, copy))
+
+    def test_restored_leads_the_comparison_after_a_selected_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path, copy = self._window(tmp)
+            other = copy.parent.parent / "20261110-120000" / "mine.lnc"
+            other.parent.mkdir()
+            write_lnc(other, self.OLD)
+
+            def body(dialog):
+                Session24Window._tick(dialog, {"1"})
+                with Session24Window._yes():
+                    dialog.restore_selected_names()
+                    self.assertTrue(win.jobs.wait(10))
+                summary = dialog.summary.text()
+                self.assertTrue(summary.startswith(
+                    "Restored 1 name(s) from mine.lnc. Save or Deploy to write them. "), summary)
+                self.assertIn("2 difference(s) in supported names", summary)    # the new one
+                dialog.archive_list.setCurrentRow(1)    # another copy, chosen by the user
+                self.assertTrue(win.jobs.wait(10))
+                self.assertTrue(dialog.summary.text().startswith("2 difference(s)"),
+                                dialog.summary.text())
+
+            self._backups(win, body)
+
+    def test_restored_leads_the_comparison_after_a_whole_file_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            win, _path, _copy = self._window(tmp)
+
+            def body(dialog):
+                with Session24Window._yes():
+                    dialog.restore()
+                    self.assertTrue(win.jobs.wait(10))
+                summary = dialog.summary.text()
+                self.assertTrue(summary.startswith(
+                    "Restored mine.lnc into the open file. Save or Deploy to write it. "),
+                    summary)
+                self.assertIn("Supported names match", summary)
+
+            self._backups(win, body)
+            self.assertTrue(win.docs[0].restore_pending)
 
 
 if __name__ == "__main__":
