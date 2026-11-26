@@ -287,7 +287,9 @@ QLabel#raw {
 QPushButton#small { padding: 1px 8px; }
 QPushButton:focus, QToolBar QToolButton:focus { border-color: $focus; }
 QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus,
-QListWidget:focus, QTableView:focus, QTableWidget:focus { border: 1px solid $focus; }
+QListWidget:focus, QTreeWidget:focus, QTableView:focus, QTableWidget:focus {
+    border: 1px solid $focus;
+}
 QCheckBox:focus, QRadioButton:focus { color: $focus_text; }
 QTabBar::tab:focus { color: $focus_text; }
 QLineEdit#invalid { border: 1px solid $warning; }
@@ -297,7 +299,8 @@ QMenu { background: $panel; color: $text; border: 1px solid $rule; }
 QMenu::item { padding: 4px 18px; }
 QMenu::item:selected { background: $accent; color: $on_accent; }
 QMenu::item:disabled { color: $muted; }
-QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QListWidget, QTableView, QTableWidget {
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QListWidget, QTreeWidget, QTableView,
+QTableWidget {
     background: $panel; color: $text; border: 1px solid $rule;
     selection-background-color: $accent; selection-color: $on_accent;
 }
@@ -317,7 +320,7 @@ QTabBar::tab {
     background: $panel; color: $muted; padding: 6px 14px; border: 1px solid $rule;
 }
 QTabBar::tab:selected { color: $text; border-bottom: 2px solid $accent; }
-QListWidget::item:selected, QTableWidget::item:selected {
+QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected {
     background: $accent; color: $on_accent;
 }
 QComboBox QAbstractItemView {
@@ -330,7 +333,9 @@ QFrame#preview_frame { background: $panel; border: 1px solid $rule; border-radiu
 QLabel#preview_cell { background: transparent; color: $text; padding: 2px 4px; }
 QWidget#illustrative_card { background: $panel; border: 1px solid $rule; border-radius: 4px; }
 QWidget#illustrative_header { background: transparent; }
-QLabel#scoreboard_name { background: transparent; color: $text; }
+QLabel#scoreboard_name {
+    background: transparent; color: $text; font-size: 14px; font-weight: bold;
+}
 QLabel#ticker_label { background: transparent; color: $muted; }
 QFrame#rail { background: $panel; border: 0; border-right: 1px solid $rule; }
 QToolButton#rail_button {
@@ -346,6 +351,25 @@ QToolButton#rail_button:disabled { color: $disabled; }
 QTableView#grid::item { border: 0; border-bottom: 1px solid $rule; }
 QTableView#grid::item:selected { background: $accent; color: $on_accent; }
 QPushButton#filter { padding: 3px 9px; }
+QFrame#disk_chip { background: $stripe; border: 1px solid $rule; border-radius: 9px; }
+QLabel#chip_caption { color: $muted; font-size: 11px; font-weight: bold; }
+QLabel#count, QLabel#count_warning, QLabel#count_problem {
+    background: $panel; border: 1px solid $rule; border-radius: 9px; padding: 1px 7px;
+    font-size: 12px;
+}
+QLabel#count { color: $muted; }
+QLabel#count_warning { color: $warning; border-color: $warning; }
+QLabel#count_problem { color: $problem; border-color: $problem; }
+QLabel#preview_caption { color: $muted; font-size: 11px; }
+QLabel#swatch { background: $added; border-radius: 2px; }
+QFrame#score_pill { background: $window; border: 1px solid $rule; border-radius: 11px; }
+QLabel#score_code { color: $text; font-weight: bold; }
+QToolButton#sidebar_button {
+    background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 3px;
+}
+QToolButton#sidebar_button:checked { background: $hover; }
+QToolButton#sidebar_button:hover { background: $hover; border-color: $rule; }
+QToolButton#sidebar_button:focus { border-color: $focus; }
 """
 
 # Session 27: every grid's row height in logical pixels (Mark's choice, 25 November 2026).
@@ -369,6 +393,9 @@ VIEW_ICONS = (
     # Changes: plus and minus, the differences from the files on disk.
     _ICON_HEAD + '<path d="M7.5 4v7M4 7.5h7M13 16.5h7M18.5 4.5L5.5 19.5"/></svg>',
 )
+# Session 28: the sidebar button's icon, a window with a panel down its left side.
+SIDEBAR_ICON = (_ICON_HEAD + '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/>'
+                '<path d="M9.5 4.5v15M5.8 8.5h1.6M5.8 11.5h1.6"/></svg>')
 
 
 def theme_style_sheet(theme=None) -> str:
@@ -412,14 +439,30 @@ USER_GUIDE = (
      "the filter bar above the grid, where each button carries its count from the open "
      "files, narrow it with the search box (Ctrl+F), a file "
      "section, or a collection, and edit a cell with F2 or a double-click. The "
-     "inspector on the right (F4 shows or hides it) shows the text on disk above the "
-     "proposed text for the selected row, the line as it stands in the file, and an "
-     "Illustrative card with table-row, scoreboard and ticker previews of the long, "
-     "short and code spellings. The grid shows each row's ID, by which a row is "
+     "inspector on the right (F4 shows or hides it) shows each field of the selected "
+     "row with a count of its characters beside it, and the text on disk, struck "
+     "through, only when it differs. A footer under the fields gives the file and line "
+     "of the field you are in, with the line as it stands in memory. The Illustrative "
+     "card shows the names as you type them: a league-table row with the short name, "
+     "the long name over a score pill with the code, and a ticker line, each against a "
+     "made-up side. The grid shows each row's ID, by which a row is "
      "matched across versions; View > Show ID column hides or shows it, and a click on "
      "its heading sorts by number. The sorted column's heading is bold. All lines lists "
      "every name line and person rule; Changes lists every difference from the files "
      "on disk."),
+    ("File sections and the sidebar",
+     "The sidebar on the left holds Collections and File sections. F3, or the button "
+     "beside the search box, hides it so the grid takes the room, and shows it again; "
+     "nothing you have chosen changes, and the choice is kept for next time. File "
+     "sections is a tree, each row with the number of names it holds. A heading that "
+     "names a continent, such as Europe or South America, groups the headings below it "
+     "in the same file until the next continent heading, a heading already listed under "
+     "a continent earlier in that file, or an empty heading directly above another "
+     "heading. Other headings are listed on their own, and names under no heading as No "
+     "file section. Choose a continent to show every section under it, or a section to "
+     "show only its own; Right and Left open and close a continent. The tree reads the "
+     "headings only: it is not the game's own map of nations. With no collections yet, "
+     "New collection from selection makes one holding the rows selected in the grid."),
     ("Search scope and club aliases",
      "While a file section or a collection narrows the grid, the search box says so, "
      "for example In: England (42), and Search all sections (Alt+A, also on the Edit "
@@ -433,10 +476,12 @@ USER_GUIDE = (
      "many clubs, such as City or United, are not aliases. Accents and capital letters "
      "are ignored, as everywhere in the search."),
     ("Name length guides",
-     "Under Long name, Short name, and 3-letter code the inspector counts the letters "
-     "against a typical guide: 28 for a long name, 14 for a short name, and 3 for a "
-     "code. The count turns amber within two of the guide and red past it; a code is "
-     "also flagged when it holds a lower-case letter or is not three characters long. "
+     "Beside Long name, Short name, and 3-letter code a pill counts the letters against "
+     "a typical guide, for example 17 / 28: 28 for a long name, 14 for a short name, and "
+     "3 for a code. A field with no guide shows its count alone. The pill turns amber "
+     "within two of the guide and red past it, and a line under the field says so in "
+     "words; a code is also flagged when it holds a lower-case letter or is not three "
+     "characters long. "
      "These are typical guides, not game rules: skins differ, and nothing is blocked, "
      "trimmed, or changed. A name past its guide is kept whole and saved as typed; only "
      "the Illustrative card shows it cut with an ellipsis, as a skin might show it."),
@@ -951,6 +996,19 @@ def _parse_person(entry: Entry, toks, leftover: str) -> None:
     entry.span = toks[4].span()
 
 
+def section_heading(body: str) -> str:
+    """The file section a comment line starts, or "" when it starts none.
+
+    "#Europe:" and "# Europe" both start "Europe"; a rule made of = - _ * ~
+    starts none. Kept here so the parser and the File sections tree read a
+    heading the same way (Session 28).
+    """
+    heading = body.strip().lstrip("#").strip().rstrip(":").strip()
+    if heading and not set(heading) <= set("=-_*~ "):
+        return heading
+    return ""
+
+
 def parse_lnc_bytes(doc, data: bytes):
     """Split file bytes into lines and parse each one.
 
@@ -971,9 +1029,7 @@ def parse_lnc_bytes(doc, data: bytes):
         entry.orig_raw, entry.orig_eol = entry.raw, entry.eol
         parse_line(entry)
         if entry.kind == "comment":
-            heading = body.strip().lstrip("#").strip().rstrip(":").strip()
-            if heading and not set(heading) <= set("=-_*~ "):
-                section = heading
+            section = section_heading(body) or section
         entry.section = section
         entries.append(entry)
     return entries, encoding, has_bom, default_eol
@@ -2051,12 +2107,14 @@ def entity_shown(entity: NameEntity, words, section: str = "", mode: str = "all"
     formal name from CLUB_ALIASES) the words are not used: every word of the
     alias must appear in the entity's names instead. ``section`` and
     ``keys`` (a collection's members, or None) are the scope; "" and None
-    mean every section. The "health" mode shows the entities in ``health``,
-    a name_health result (Session 21).
+    mean every section. ``section`` is one section's name or, since
+    Session 28, a set of names (a continent's, see section_scope). The
+    "health" mode shows the entities in ``health``, a name_health result
+    (Session 21).
     """
     if keys is not None and entity_key(entity) not in keys:
         return False
-    if section and entity.section != section:
+    if not in_section_scope(entity.section, section):
         return False
     if not status_shown(entity, mode, health):
         return False
@@ -2103,6 +2161,169 @@ def alias_for(text: str) -> str:
 def scope_label(scope: str, count: int) -> str:
     """The search box's scope: "In: England (42)"."""
     return f"In: {scope} ({count:,})"
+
+
+# ----- Session 28: the File sections tree -----
+
+# Headings that name a continent. Matched with case, accents, a trailing colon,
+# extra spaces and "&" for "and" ignored; nothing else is read for geography.
+CONTINENT_HEADINGS = ("Africa", "Asia", "Europe", "North America", "Central America",
+                      "South America", "North and Central America", "Oceania")
+# A File sections key that starts with this selects exactly one section, never a
+# group: SECTION_OWN + "Oceania" is the names directly under an Oceania heading,
+# and SECTION_OWN alone the names under no heading. No section starts with it,
+# since a heading's leading "#" is never part of its name.
+SECTION_OWN = "#"
+
+
+def _continent_key(text: str) -> str:
+    return " ".join(fold(text.replace("&", " and ")).split())
+
+
+_CONTINENT_KEYS = frozenset(_continent_key(name) for name in CONTINENT_HEADINGS)
+
+
+def is_continent_heading(section: str) -> bool:
+    """Whether a file section's heading names a continent ("#Europe:", "# north america")."""
+    return _continent_key(section) in _CONTINENT_KEYS
+
+
+def _opens_group(entries, number: int) -> bool:
+    """Whether the heading at ``number`` sits directly above another heading, with no
+    line between: an empty heading over a group of its own."""
+    following = entries[number + 1] if number + 1 < len(entries) else None
+    return (following is not None and following.kind == "comment"
+            and bool(section_heading(following.raw)))
+
+
+def section_outline(docs) -> dict[str, str]:
+    """Which continent each file section sits under: {section: continent}.
+
+    Read from the headings alone, file by file in the order given. A
+    heading that names a continent (is_continent_heading) maps to itself.
+    The headings after it in the same file sit under it until the next
+    continent heading, a heading that already sat under a continent
+    earlier in that file (a second pass, such as a list of later
+    additions), or an empty heading directly above another heading (a group
+    of its own). A section sits under the first continent it is found
+    under; a section found under none is left out, and is listed at the
+    top level of the tree.
+    """
+    outline: dict[str, str] = {}
+    for doc in docs:
+        entries = doc.entries
+        current = ""
+        placed: set[str] = set()        # sections under a continent earlier in this file
+        for number, entry in enumerate(entries):
+            if entry.kind != "comment":
+                continue
+            heading = section_heading(entry.raw)
+            if not heading:
+                continue
+            if is_continent_heading(heading):
+                current = heading
+                outline.setdefault(heading, heading)
+                continue
+            if not current:
+                continue
+            if heading in placed or _opens_group(entries, number):
+                current = ""
+                continue
+            placed.add(heading)
+            outline.setdefault(heading, current)
+    return outline
+
+
+class SectionNode:
+    """One row of the File sections tree: its key (see section_scope), the words it
+    shows, how many entities it selects, and the rows beneath it."""
+
+    __slots__ = ("key", "title", "count", "children")
+
+    def __init__(self, key: str, title: str, count: int, children=()):
+        self.key = key
+        self.title = title
+        self.count = count
+        self.children = list(children)
+
+    def __repr__(self) -> str:
+        return f"SectionNode({self.key!r}, {self.count}, {self.children!r})"
+
+
+def section_title(key: str) -> str:
+    """How a File sections key reads: its section, "Oceania (heading only)", or
+    "No file section"."""
+    if key == SECTION_OWN:
+        return "No file section"
+    if key.startswith(SECTION_OWN):
+        return f"{key[len(SECTION_OWN):]} (heading only)"
+    return key
+
+
+def section_tree(entities, outline: dict) -> list[SectionNode]:
+    """The File sections tree for some entities (one family's), from section_outline.
+
+    Continents come first, each with the sections under it, then the
+    sections under no continent; each level is sorted by name, accents
+    ignored. A count is how many entities the row selects, a continent's
+    being all of its own. Every section with an entity gets a row, so
+    nothing is dropped: names directly under a continent's own heading get
+    a row beneath it, "Oceania (heading only)", when the continent has
+    other sections, and names under no heading at all get "No file
+    section", last.
+    """
+    counts: dict[str, int] = {}
+    for entity in entities:
+        counts[entity.section] = counts.get(entity.section, 0) + 1
+    groups: dict[str, list[str]] = {}
+    loose: list[str] = []
+    for section in counts:
+        if not section:
+            continue
+        continent = outline.get(section, "")
+        if not continent:
+            loose.append(section)
+        elif continent == section:
+            groups.setdefault(section, [])
+        else:
+            groups.setdefault(continent, []).append(section)
+    nodes = []
+    for continent in sorted(groups, key=fold):
+        children = [SectionNode(section, section, counts[section])
+                    for section in sorted(groups[continent], key=fold)]
+        own = counts.get(continent, 0)
+        if own and children:
+            key = SECTION_OWN + continent
+            children.insert(0, SectionNode(key, section_title(key), own))
+        total = own + sum(counts[section] for section in groups[continent])
+        nodes.append(SectionNode(continent, continent, total, children))
+    nodes.extend(SectionNode(section, section, counts[section])
+                 for section in sorted(loose, key=fold))
+    if counts.get(""):
+        nodes.append(SectionNode(SECTION_OWN, section_title(SECTION_OWN), counts[""]))
+    return nodes
+
+
+def section_scope(key: str, outline: dict):
+    """What a File sections key selects: "" every section; a continent's name, the
+    continent with every section under it (a frozenset); SECTION_OWN and a name,
+    exactly that section (a frozenset of one, so "" can be one too); any other
+    key, that one section."""
+    if key.startswith(SECTION_OWN):
+        return frozenset([key[len(SECTION_OWN):]])
+    if key and outline.get(key) == key:
+        return frozenset([key, *(section for section, continent in outline.items()
+                                 if continent == key)])
+    return key
+
+
+def in_section_scope(section: str, scope) -> bool:
+    """Whether a file section is in a scope from section_scope: "" is every section."""
+    if not scope:
+        return True
+    if isinstance(scope, str):
+        return section == scope
+    return section in scope
 
 
 # Typical lengths before a Football Manager skin cuts a name short. They are
@@ -2170,6 +2391,26 @@ def cut_to_guide(text: str, guide: int) -> str:
     if not guide or len(text) <= guide:
         return text
     return text[:guide - 1].rstrip() + "…"
+
+
+def count_pill(family: str, slot: str, text: str) -> tuple[str, str, str]:
+    """The character count beside an inspector field (Session 28): (text, level, tooltip).
+
+    Against a typical guide it reads "17 / 28", in the level length_gauge
+    gives ("muted", "warning" or "problem"), with that counter's words
+    and tooltip; a field with no guide shows its count alone, "17", muted.
+    It reads the same rules as length_gauge and never blocks, trims or
+    changes a name.
+    """
+    count = len(text.strip())
+    gauge = length_gauge(family, slot, text)
+    if gauge is None:
+        return (str(count), "muted",
+                f"{count_of(count, 'character')}. This field has no typical length guide.")
+    shown, level, tip = gauge
+    numbers, _dot, words = shown.partition(" · ")
+    said = f"{numbers} characters" + (f", {words}" if words else "")
+    return numbers, level, f"{said}. {tip}"
 
 
 # ----- Session 21 (note 09, proposals 3 to 5): short names and codes from a long
@@ -6399,8 +6640,9 @@ def clean_view(raw) -> dict:
 
     Keys: "tab", "family", "status", "entity_sort" and "line_sort" (key and
     descending), "entity_widths" (per family, per column key), "line_widths",
-    "inspector" and "id_column" (shown or hidden; the entity grid's ID column
-    since Session 19), and "geometry", "window_state", and "splitter" (base64 text from Qt). A
+    "inspector", "id_column" and "sidebar" (shown or hidden; the entity grid's ID
+    column since Session 19, the sidebar since Session 28), and "geometry",
+    "window_state", and "splitter" (base64 text from Qt). A
     value of the wrong type or out of range is dropped, so an older or
     hand-edited settings file cannot stop the window opening. Each type is
     checked before the value is looked up: a list or an object cannot be.
@@ -6430,7 +6672,7 @@ def clean_view(raw) -> dict:
     line_widths = _clean_widths(raw.get("line_widths"), LINE_COLUMNS)
     if line_widths:
         view["line_widths"] = line_widths
-    for name in ("inspector", "id_column"):
+    for name in ("inspector", "id_column", "sidebar"):
         shown = raw.get(name)
         if isinstance(shown, bool):
             view[name] = shown
@@ -6989,7 +7231,7 @@ def run_gui(paths):
         QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
         QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
         QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolTip,
-        QVBoxLayout, QWidget, QToolButton)
+        QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QToolButton)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
@@ -7408,6 +7650,16 @@ def run_gui(paths):
         view.verticalHeader().setVisible(False)
         view.verticalHeader().setDefaultSectionSize(GRID_ROW_HEIGHT)
 
+    # Session 28: the sidebar (Collections and File sections), which F3 hides and shows.
+    SIDEBAR_WIDTH = 190     # its width when it comes back from nothing
+    SIDEBAR_MIN = 120       # narrower than this, showing it gives it SIDEBAR_WIDTH again
+    SIDEBAR_TIPS = {True: "Hide the sidebar: Collections and File sections (F3)",
+                    False: "Show the sidebar: Collections and File sections (F3)"}
+    SIDEBAR_KEY_ROW = ("F3", "Hide or show the sidebar: Collections and File sections")
+    NEW_FROM_SELECTION_TIPS = {
+        True: "Make a collection of the rows selected in the grid",
+        False: "Select one or more rows in the grid first; the new collection holds them"}
+
     FILTER_GAP = 16         # between the family buttons and the status filters
     FILTER_COUNT_HINT = (
         "Counts are of the open files. A family's count is of its names the status "
@@ -7455,16 +7707,45 @@ def run_gui(paths):
             super().resizeEvent(event)
             self.settle(event.size().width())
 
+    class ElidedLabel(QLabel):
+        """One line of text, cut with an ellipsis where it is wider than the label
+        (Session 28). ``text()`` keeps the whole text; it never widens its parent."""
+
+        def __init__(self, text: str = ""):
+            super().__init__(text)
+            self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+        def minimumSizeHint(self):
+            return QSize(0, super().minimumSizeHint().height())
+
+        def paintEvent(self, _event):
+            painter = QPainter(self)
+            rect = self.contentsRect()
+            painter.setPen(self.palette().color(QPalette.WindowText))
+            painter.setFont(self.font())
+            painter.drawText(rect, int(self.alignment() | Qt.AlignVCenter),
+                             self.fontMetrics().elidedText(self.text(), Qt.ElideRight,
+                                                           rect.width()))
+            painter.end()
+
     class IllustrativePreviewCard(QWidget):
         """A collapsible card showing the selected entity's spellings in three illustrative formats.
 
-        Table row: like the entity grid, with long, short, and code side by side.
-        Scoreboard: large text for the primary name, with short and code below.
-        Ticker: a scrolling marquee showing the names in sequence.
+        Session 28 made each a compact row, for judging lengths. Table row: a
+        league-table row, with a position, a place colour, the short name (or
+        the one name a family has) and points. Scoreboard: the long name over a
+        score pill with the code, such as "ABC 2 - 1 OPP". Ticker: each name in
+        turn as a results line. The other side is always the made-up
+        "Opponents" or "OPP". The window passes the values typed in the
+        inspector (update_from_names), and a name past its typical guide is cut
+        with an ellipsis, as a skin might show it.
 
         Absent overrides are shown honestly using the existing "No X override" text.
         Updates only from selection/edits; no file I/O during paint. Collapsible at small sizes.
         """
+
+        OPPONENT = "Opponents"          # the made-up other side of a score line
+        OPPONENT_CODE = "OPP"
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -7484,7 +7765,7 @@ def run_gui(paths):
             header = QWidget()
             header.setObjectName("illustrative_header")
             header_lay = QHBoxLayout(header)
-            header_lay.setContentsMargins(8, 6, 8, 6)
+            header_lay.setContentsMargins(8, 3, 6, 3)
             self.title_label = QLabel("Illustrative")
             self.title_label.setObjectName("heading")
             self.toggle_btn = QToolButton()
@@ -7501,19 +7782,14 @@ def run_gui(paths):
             # Content area (will be animated)
             self.content = QWidget()
             self.content_lay = QVBoxLayout(self.content)
-            self.content_lay.setContentsMargins(8, 4, 8, 8)
-            self.content_lay.setSpacing(8)
+            self.content_lay.setContentsMargins(8, 0, 8, 8)
+            self.content_lay.setSpacing(6)
 
-            # Three preview widgets
-            self.table_preview = self._make_table_preview()
-            self.scoreboard_preview = self._make_scoreboard_preview()
-            self.ticker_preview = self._make_ticker_preview()
-
-            self.content_lay.addWidget(self.table_preview)
-            self.content_lay.addWidget(self.scoreboard_preview)
-            self.content_lay.addWidget(self.ticker_preview)
+            # The three previews, one row each in one frame (Session 28)
+            self.content_lay.addWidget(self._make_previews())
             # Session 20: said only while a name is shown cut at its typical guide.
-            self.cut_note = QLabel(
+            self.cut_note = QLabel("Cut at its typical guide, as a skin might; kept whole.")
+            self.cut_note.setToolTip(
                 "A name longer than its typical guide is shown cut with an ellipsis, as a skin "
                 "might show it. Skins differ: this is illustrative, not exact. The name itself "
                 "is kept whole.")
@@ -7527,123 +7803,87 @@ def run_gui(paths):
             # Set initial size
             self.content.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
 
-        def _make_table_preview(self) -> QWidget:
-            """Create the table row preview: long | short | code side by side."""
+        def _make_previews(self) -> QFrame:
+            """The three previews in one frame (Session 28), a small caption beside each:
+            a league-table row, the long name over a score pill, and a ticker line."""
             frame = QFrame()
             frame.setObjectName("preview_frame")
-            frame.setFrameShape(QFrame.StyledPanel)
-            lay = QVBoxLayout(frame)
-            lay.setContentsMargins(8, 6, 8, 6)
-            lay.setSpacing(4)
+            grid = QGridLayout(frame)
+            grid.setContentsMargins(8, 6, 8, 6)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(6)
+            grid.setColumnStretch(1, 1)
+            for row, (caption, tip) in enumerate((
+                    ("Table row", "A league-table row: the short name, or the one name a "
+                                  "family has, in a table's name column."),
+                    ("Scoreboard", "The long name over a score pill with the code, as a "
+                                   "match scoreboard might show them."),
+                    ("Ticker", "Each name in turn, as a line of a results ticker."))):
+                label = QLabel(caption)
+                label.setObjectName("preview_caption")
+                label.setToolTip(tip)
+                grid.addWidget(label, row, 0, Qt.AlignLeft | Qt.AlignTop)
 
-            title = QLabel("Table row")
-            title.setObjectName("muted")
-            title.setFont(QFont(title.font().family(), title.font().pointSize(), QFont.Bold))
-            lay.addWidget(title)
-
-            row = QHBoxLayout()
-            row.setSpacing(8)
-
-            self.table_long = QLabel()
-            self.table_long.setObjectName("preview_cell")
-            self.table_long.setWordWrap(True)
-            self.table_long.setTextInteractionFlags(Qt.TextSelectableByMouse)
-
-            self.table_short = QLabel()
+            # Table row: a position, a place colour, the name, and points.
+            self.table_preview = QWidget()
+            table = QHBoxLayout(self.table_preview)
+            table.setContentsMargins(0, 0, 0, 0)
+            table.setSpacing(6)
+            self.table_position = QLabel("1")
+            self.table_position.setObjectName("muted")
+            self.table_swatch = QLabel()
+            self.table_swatch.setObjectName("swatch")
+            self.table_swatch.setFixedSize(4, 14)
+            self.table_swatch.setToolTip(
+                "A place colour, as a table marks promotion or qualification (illustrative)")
+            self.table_short = ElidedLabel()
             self.table_short.setObjectName("preview_cell")
-            self.table_short.setWordWrap(True)
-            self.table_short.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.table_points = QLabel("21 pts")
+            self.table_points.setObjectName("muted")
+            table.addWidget(self.table_position)
+            table.addWidget(self.table_swatch)
+            table.addWidget(self.table_short, 1)
+            table.addWidget(self.table_points)
+            grid.addWidget(self.table_preview, 0, 1)
 
-            self.table_code = QLabel()
-            self.table_code.setObjectName("preview_cell")
-            self.table_code.setWordWrap(True)
-            self.table_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
-
-            for lbl, widget in (("Long", self.table_long), ("Short", self.table_short), ("Code", self.table_code)):
-                col = QVBoxLayout()
-                col.setSpacing(2)
-                cap = QLabel(lbl)
-                cap.setObjectName("muted")
-                cap.setFont(QFont(cap.font().family(), max(7, cap.font().pointSize() - 1)))
-                col.addWidget(cap)
-                col.addWidget(widget)
-                row.addLayout(col, 1)
-
-            lay.addLayout(row)
-            return frame
-
-        def _make_scoreboard_preview(self) -> QWidget:
-            """Create the scoreboard preview: large primary name with short/code below."""
-            frame = QFrame()
-            frame.setObjectName("preview_frame")
-            frame.setFrameShape(QFrame.StyledPanel)
-            lay = QVBoxLayout(frame)
-            lay.setContentsMargins(8, 6, 8, 6)
-            lay.setSpacing(6)
-
-            title = QLabel("Scoreboard")
-            title.setObjectName("muted")
-            title.setFont(QFont(title.font().family(), title.font().pointSize(), QFont.Bold))
-            lay.addWidget(title)
-
+            # Scoreboard: the long name, then a pill with the code and a made-up score.
+            self.scoreboard_preview = QWidget()
+            board = QVBoxLayout(self.scoreboard_preview)
+            board.setContentsMargins(0, 0, 0, 0)
+            board.setSpacing(4)
             self.scoreboard_name = QLabel()
             self.scoreboard_name.setObjectName("scoreboard_name")
             self.scoreboard_name.setWordWrap(True)
-            self.scoreboard_name.setAlignment(Qt.AlignHCenter)
-            self.scoreboard_name.setFont(QFont(self.scoreboard_name.font().family(), 18, QFont.Bold))
             self.scoreboard_name.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            lay.addWidget(self.scoreboard_name)
-
-            detail_row = QHBoxLayout()
-            detail_row.setSpacing(16)
-
-            self.scoreboard_short = QLabel()
-            self.scoreboard_short.setObjectName("muted")
-            self.scoreboard_short.setAlignment(Qt.AlignHCenter)
-            self.scoreboard_short.setTextInteractionFlags(Qt.TextSelectableByMouse)
-
+            board.addWidget(self.scoreboard_name)
+            self.score_pill = QFrame()
+            self.score_pill.setObjectName("score_pill")
+            self.score_pill.setToolTip(
+                f"The code on a scoreboard, against a made-up side ({self.OPPONENT_CODE})")
+            pill = QHBoxLayout(self.score_pill)
+            pill.setContentsMargins(10, 1, 10, 1)
+            pill.setSpacing(8)
             self.scoreboard_code = QLabel()
-            self.scoreboard_code.setObjectName("muted")
-            self.scoreboard_code.setAlignment(Qt.AlignHCenter)
-            self.scoreboard_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.scoreboard_code.setObjectName("score_code")
+            self.score_result = QLabel("2 - 1")
+            self.score_result.setObjectName("score_code")
+            self.score_opponent = QLabel(self.OPPONENT_CODE)
+            self.score_opponent.setObjectName("muted")
+            for label in (self.scoreboard_code, self.score_result, self.score_opponent):
+                pill.addWidget(label)
+            board.addWidget(self.score_pill, 0, Qt.AlignLeft)
+            grid.addWidget(self.scoreboard_preview, 1, 1)
 
-            detail_row.addStretch(1)
-            detail_row.addWidget(self.scoreboard_short)
-            detail_row.addWidget(self.scoreboard_code)
-            detail_row.addStretch(1)
-            lay.addLayout(detail_row)
-
-            return frame
-
-        def _make_ticker_preview(self) -> QWidget:
-            """Create the ticker preview: a scrolling marquee of the names."""
-            frame = QFrame()
-            frame.setObjectName("preview_frame")
-            frame.setFrameShape(QFrame.StyledPanel)
-            lay = QVBoxLayout(frame)
-            lay.setContentsMargins(8, 6, 8, 6)
-            lay.setSpacing(4)
-
-            title = QLabel("Ticker")
-            title.setObjectName("muted")
-            title.setFont(QFont(title.font().family(), title.font().pointSize(), QFont.Bold))
-            lay.addWidget(title)
-
-            self.ticker_label = QLabel()
+            # Ticker: each name in turn, changing every 3 seconds while it can be seen.
+            self.ticker_label = ElidedLabel()
             self.ticker_label.setObjectName("ticker_label")
-            self.ticker_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-            self.ticker_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.ticker_label.setMinimumHeight(28)
-            self.ticker_label.setFont(QFont(self.ticker_label.font().family(), 12))
-            lay.addWidget(self.ticker_label)
-
-            # Simple timer-based scrolling (no complex animation needed for MVP)
+            self.ticker_preview = self.ticker_label
+            grid.addWidget(self.ticker_label, 2, 1)
             self._ticker_timer = QTimer(self)
-            self._ticker_timer.setInterval(3000)  # Change every 3 seconds
+            self._ticker_timer.setInterval(3000)
             self._ticker_timer.timeout.connect(self._advance_ticker)
             self._ticker_texts = []
             self._ticker_index = 0
-
             return frame
 
         def _advance_ticker(self) -> None:
@@ -7727,79 +7967,95 @@ def run_gui(paths):
                 self._animation.setEasingCurve(QEasingCurve.OutCubic)
                 self._animation.setStartValue(0)
                 self._animation.setEndValue(target_height)
+                # Session 28: open, the content may grow again (a name that wraps, a pill
+                # that shows), so the height it had when it opened is not kept as a cap.
+                self._animation.finished.connect(
+                    lambda: self.content.setMaximumHeight(16777215))
                 self._animation.start()
             else:
                 self._animation = QPropertyAnimation(self.content, b"maximumHeight")
                 self._animation.setDuration(150)
                 self._animation.setEasingCurve(QEasingCurve.InCubic)
-                self._animation.setStartValue(self.content.maximumHeight())
+                self._animation.setStartValue(min(self.content.maximumHeight(),
+                                                  self.content.height()))
                 self._animation.setEndValue(0)
                 self._animation.finished.connect(lambda: self.content.hide())
                 self._animation.start()
 
         def update_from_entity(self, entity) -> None:
-            """Update all three previews from the given entity."""
-            self._entity = entity
+            """Show an entity's names as they are in memory, or clear the card for None."""
             if entity is None:
+                self.update_from_names("", None)
+                return
+            self.update_from_names(entity.family, {
+                slot: entity.name_in(slot) for slot, _label, _cmd in FAMILY_FIELDS[entity.family]})
+
+        def update_from_names(self, family: str, names) -> None:
+            """Show names (slot -> text) as the three previews would; None clears the card.
+
+            Session 28: the window passes the values in the inspector's fields, so a
+            length can be judged while typing, before Enter keeps the name.
+            """
+            self._entity = names
+            if names is None:
                 self._clear_all()
                 return
+            slots = [slot for slot, _label, _cmd in FAMILY_FIELDS[family]]
 
-            family = entity.family
-            # Get names for each slot
-            long_name = entity.name_in("long") if "long" in [s for s, _, _ in FAMILY_FIELDS[family]] else ""
-            short_name = entity.name_in("short") if "short" in [s for s, _, _ in FAMILY_FIELDS[family]] else ""
-            code_name = entity.name_in("code") if "code" in [s for s, _, _ in FAMILY_FIELDS[family]] else ""
+            def shown(slot):
+                """(the text shown, the whole name, whether it was cut); "" when absent."""
+                whole = (names.get(slot) or "").strip() if slot in slots else ""
+                if not whole:
+                    return no_override_text(family, slot), "", False
+                cut = cut_to_guide(whole, length_guide(family, slot))
+                return cut, whole, cut != whole
 
-            # For families without certain slots (e.g., stadium only has long), use honest "No override" text
-            if not long_name and "long" in [s for s, _, _ in FAMILY_FIELDS[family]]:
-                long_name = no_override_text(family, "long")
-            if not short_name and "short" in [s for s, _, _ in FAMILY_FIELDS[family]]:
-                short_name = no_override_text(family, "short")
-            if not code_name and "code" in [s for s, _, _ in FAMILY_FIELDS[family]]:
-                code_name = no_override_text(family, "code")
-
-            # Session 20: a name past its typical guide is shown cut, with an ellipsis.
-            def cut(slot, text):
-                if not text or text == no_override_text(family, slot):
-                    return text
-                return cut_to_guide(text, length_guide(family, slot))
-
-            names = {"long": long_name, "short": short_name, "code": code_name}
-            shown = {slot: cut(slot, text) for slot, text in names.items()}
-            for slot, label in (("long", self.table_long), ("short", self.table_short),
-                                ("code", self.table_code)):
-                label.setText(shown[slot])
-                label.setToolTip(names[slot] if shown[slot] != names[slot] else "")
-            self.cut_note.setVisible(shown != names)
-
-            # Scoreboard preview - use long name as primary, or first available
-            primary = "long" if long_name != no_override_text(family, "long") else (
-                "short" if short_name != no_override_text(family, "short") else "code")
-            self.scoreboard_name.setText(shown[primary])
-            self.scoreboard_short.setText(f"Short: {shown['short']}")
-            self.scoreboard_code.setText(f"Code: {shown['code']}")
-
-            # Ticker preview - cycle through available names
+            team = family in THREE_LETTER_FAMILIES      # clubs and nations play matches
+            # Table row: the short name, or the one name a family has.
+            text, whole, cut = shown("short" if "short" in slots else "long")
+            self.table_short.setText(text)
+            self.table_short.setToolTip(whole if cut else "")
+            restyle(self.table_short, "preview_cell" if whole else "muted")
+            self.table_points.setVisible(team)
+            # Scoreboard: the long name, or the first name there is, over the score pill.
+            primary = next((shown(slot) for slot in ("long", "short", "code")
+                            if shown(slot)[1]), shown("long"))
+            self.scoreboard_name.setText(primary[0])
+            self.scoreboard_name.setToolTip(primary[1] if primary[2] else "")
+            if "code" in slots:
+                code, whole, cut = shown("code")
+                self.scoreboard_code.setText(code if whole else EMPTY_CELL_MARK)
+                self.scoreboard_code.setToolTip(
+                    (whole if cut else "") if whole else no_override_text(family, "code"))
+                self.score_result.setVisible(team)
+                self.score_opponent.setVisible(team)
+                self.score_pill.show()
+            else:
+                self.score_pill.hide()
+            # Ticker: each name there is, in turn, as a results line.
             self._ticker_texts = []
-            if long_name and long_name != no_override_text(family, "long"):
-                self._ticker_texts.append(f"Long: {shown['long']}")
-            if short_name and short_name != no_override_text(family, "short"):
-                self._ticker_texts.append(f"Short: {shown['short']}")
-            if code_name and code_name != no_override_text(family, "code"):
-                self._ticker_texts.append(f"Code: {shown['code']}")
+            for slot in ("long", "short", "code"):
+                text, whole, _cut = shown(slot)
+                if not whole:
+                    continue
+                if team:
+                    other = self.OPPONENT_CODE if slot == "code" else self.OPPONENT
+                    text = f"{text} 2 - 1 {other}"
+                self._ticker_texts.append(text)
             if not self._ticker_texts:
-                # All are "No override" - show one message
                 self._ticker_texts = [f"No overrides for {ENTITY_KINDS.get(family, family).lower()}"]
             self._ticker_index = 0
             self.ticker_label.setText(self._ticker_texts[0])
+            self.cut_note.setVisible(any(shown(slot)[2] for slot in slots))
             self._sync_ticker()
 
         def _clear_all(self) -> None:
             """Clear all previews when no entity is selected."""
-            for lbl in (self.table_long, self.table_short, self.table_code,
-                        self.scoreboard_name, self.scoreboard_short, self.scoreboard_code):
-                lbl.setText("")
-                lbl.setToolTip("")
+            for label in (self.table_short, self.scoreboard_name, self.scoreboard_code):
+                label.setText("")
+                label.setToolTip("")
+            self.table_points.hide()
+            self.score_pill.hide()
             self.cut_note.hide()
             self._ticker_texts = []
             self.ticker_label.setText("")
@@ -11077,6 +11333,7 @@ def run_gui(paths):
 
         escaped = Signal()
         step = Signal(int)
+        focused = Signal()          # Session 28: the inspector's footer follows the focus
 
         def keyPressEvent(self, event):
             key = event.key()
@@ -11094,6 +11351,170 @@ def run_gui(paths):
                 self.step.emit(1)
                 return
             super().keyPressEvent(event)
+
+        def focusInEvent(self, event):
+            super().focusInEvent(event)
+            self.focused.emit()
+
+    class SectionTree(QTreeWidget):
+        """File sections as a tree (Session 28): continents with the sections under them,
+        then the sections under no continent (section_tree), each row with its count
+        on the right.
+
+        Each row keeps its key in column 0 (KEY): "" for All sections, a
+        section's or continent's name, or SECTION_OWN and a name for exactly one
+        section. A continent folds and unfolds with a click or Left and Right;
+        the folds it keeps (``opened``) last while the window runs. ``filter``
+        shows the rows whose names hold the words typed, with their continents.
+        """
+
+        KEY = Qt.UserRole
+
+        def __init__(self):
+            super().__init__()
+            self.setObjectName("sections")
+            self.setAccessibleName("File sections")
+            self.setColumnCount(2)
+            self.setHeaderHidden(True)
+            self.setUniformRowHeights(True)
+            self.setIndentation(14)
+            self.setTextElideMode(Qt.ElideRight)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            header = self.header()
+            header.setStretchLastSection(False)
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.Fixed)
+            self.opened: set[str] = set()
+            self.items: dict[str, QTreeWidgetItem] = {}
+            self._words: list[str] = []
+            self._quiet = False         # folds made by the program, not by the user
+            self._group = False         # the row being added is a continent with rows under it
+            self.itemExpanded.connect(lambda item: self._folded(item, True))
+            self.itemCollapsed.connect(lambda item: self._folded(item, False))
+
+        def _folded(self, item, opened: bool) -> None:
+            if self._quiet or self._words:
+                return
+            key = item.data(0, self.KEY)
+            if opened:
+                self.opened.add(key)
+            else:
+                self.opened.discard(key)
+
+        def _add(self, parent, key: str, title: str, count: int) -> QTreeWidgetItem:
+            item = QTreeWidgetItem([title, f"{count:,}"])
+            item.setData(0, self.KEY, key)
+            item.setData(0, Qt.AccessibleTextRole, f"{title}, {count_of(count, 'name')}")
+            item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+            item.setForeground(1, COLOURS["muted"])
+            if key.startswith(SECTION_OWN) and key != SECTION_OWN:
+                item.setToolTip(0, f"Names directly under the {key[len(SECTION_OWN):]} "
+                                   "heading, not under a section below it")
+            elif parent is None and key and key != SECTION_OWN and count and self._group:
+                item.setToolTip(0, f"{title} and every file section under it")
+            if parent is None:
+                self.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+            self.items[key] = item
+            return item
+
+        def fill(self, total: int, nodes, chosen: str) -> str:
+            """Show ``nodes`` under All sections (``total``), choose ``chosen`` (All
+            sections when it is not there) and keep the folds. Signals are the caller's
+            to block. Returns the key chosen."""
+            self._quiet = True
+            try:
+                self.clear()
+                self.items = {}
+                self._group = False
+                current = self._add(None, "", "All sections", total)
+                for node in nodes:
+                    self._group = bool(node.children)
+                    parent = self._add(None, node.key, node.title, node.count)
+                    for child in node.children:
+                        self._add(parent, child.key, child.title, child.count)
+                    parent.setExpanded(node.key in self.opened)
+                current = self.items.get(chosen, current)
+                if current.parent() is not None:
+                    current.parent().setExpanded(True)
+                self.setCurrentItem(current)
+                widest = max(len(f"{total:,}"), 1)
+                self.setColumnWidth(1, self.fontMetrics().horizontalAdvance("0" * widest) + 14)
+            finally:
+                self._quiet = False
+            self.filter(self._words)
+            return current.data(0, self.KEY)
+
+        def current_key(self) -> str:
+            item = self.currentItem()
+            return (item.data(0, self.KEY) or "") if item is not None else ""
+
+        def item_for(self, key: str):
+            return self.items.get(key)
+
+        def select_key(self, key: str) -> bool:
+            """Choose the row with this key, as a click would. False when there is none."""
+            item = self.items.get(key)
+            if item is None:
+                return False
+            if item.parent() is not None and not item.parent().isExpanded():
+                self._quiet = True
+                item.parent().setExpanded(True)
+                self._quiet = False
+            self.setCurrentItem(item)
+            return True
+
+        def rows(self):
+            """Every row, continents before the rows under them, in the order shown."""
+            for index in range(self.topLevelItemCount()):
+                top = self.topLevelItem(index)
+                yield top
+                for child in range(top.childCount()):
+                    yield top.child(child)
+
+        def visible_keys(self) -> list[str]:
+            """The keys of the rows the search leaves in view, folded or not."""
+            return [item.data(0, self.KEY) for item in self.rows() if not item.isHidden()]
+
+        def filter(self, words) -> None:
+            """Show only the rows whose names hold every word (folded), with their continents;
+            a continent that matches shows every row under it. All sections always shows.
+            While words are typed, the continents shown are open; without words the folds
+            are as they were."""
+            self._words = list(words)
+
+            def hit(item) -> bool:
+                key = item.data(0, self.KEY) or ""
+                name = key[len(SECTION_OWN):] if key.startswith(SECTION_OWN) else key
+                return all(word in fold(name) for word in self._words)
+
+            self._quiet = True
+            try:
+                for index in range(self.topLevelItemCount()):
+                    top = self.topLevelItem(index)
+                    if not top.data(0, self.KEY):
+                        top.setHidden(False)
+                        continue
+                    whole = hit(top)
+                    shown = 0
+                    for number in range(top.childCount()):
+                        child = top.child(number)
+                        keep = whole or hit(child)
+                        child.setHidden(not keep)
+                        shown += keep
+                    top.setHidden(not (whole or shown))
+                    if top.childCount():
+                        top.setExpanded(bool(self._words and (whole or shown))
+                                        or (not self._words
+                                            and (top.data(0, self.KEY) in self.opened
+                                                 or self._holds_current(top))))
+            finally:
+                self._quiet = False
+
+        def _holds_current(self, top) -> bool:
+            current = self.currentItem()
+            return current is not None and current.parent() is top
 
     class Jobs(QObject):
         """Slow work on a worker thread, with its answer handed back on the GUI thread.
@@ -11182,7 +11603,9 @@ def run_gui(paths):
             self._pending_token_refresh: "set | None" = None
             self.family = "club"
             self.status_mode = "all"
-            self.section_filter = ""
+            self.section_filter = ""            # a File sections key (see section_scope)
+            self.section_outline: dict = {}     # Session 28: section -> continent (reload_views)
+            self._source_slot = ""              # the field the inspector's footer describes
             self.inspector_entity = None
             self.inspector_edits: dict = {}
             self._filling = False
@@ -11296,7 +11719,7 @@ def run_gui(paths):
             self.line_search.textChanged.connect(lambda _text: self.line_timer.start())
             self.type_box.currentIndexChanged.connect(lambda _index: self.apply_line_filter())
             self.changed_box.toggled.connect(lambda _state: self.apply_line_filter())
-            self.section_list.currentItemChanged.connect(lambda _cur, _prev: self.on_section())
+            self.section_tree.currentItemChanged.connect(lambda _cur, _prev: self.on_section())
             self.family_group.buttonClicked.connect(self.on_family_clicked)
             self.status_group.buttonClicked.connect(self.on_status_clicked)
             self.entity_view.selectionModel().selectionChanged.connect(
@@ -11478,6 +11901,15 @@ def run_gui(paths):
                 "Show or hide the inspector beside the entity grid")
             self.inspector_act.setCheckable(True)
             self.inspector_act.setChecked(True)
+            # Session 28: F3 hides and shows the sidebar. A window key, so the View menu,
+            # the palette and every other key stay as they were; the button beside the
+            # search box does the same.
+            self.sidebar_act = a(
+                "Sidebar", self.set_sidebar_shown, ["F3"], SIDEBAR_TIPS[True])
+            self.sidebar_act.setCheckable(True)
+            self.sidebar_act.setChecked(True)
+            self.sidebar_act.setIcon(rail_icon(SIDEBAR_ICON))
+            self.addAction(self.sidebar_act)
             # Session 19 revises decision 26: the ID is how a row is matched across
             # versions, so the grid shows it by default; the inspector shows it as well.
             self.id_column_act = a(
@@ -11698,6 +12130,14 @@ def run_gui(paths):
             entity_lay.addWidget(self.filter_bar)
 
             status_row = QHBoxLayout()
+            # Session 28: hide and show the sidebar (F3); it stays here when it is hidden.
+            self.sidebar_btn = QToolButton()
+            self.sidebar_btn.setObjectName("sidebar_button")
+            self.sidebar_btn.setDefaultAction(self.sidebar_act)
+            self.sidebar_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            self.sidebar_btn.setIconSize(QSize(18, 18))
+            self.sidebar_btn.setAccessibleName("Sidebar")
+            status_row.addWidget(self.sidebar_btn)
             # Session 20: what the search box searches, while a file section or a
             # collection narrows the grid, and the way out of it (Alt+A).
             self.scope_label = QLabel("")
@@ -11738,6 +12178,8 @@ def run_gui(paths):
             splitter = QSplitter()
             self.entity_splitter = splitter
             left = QWidget()
+            self.sidebar = left             # Session 28: F3 hides and shows all of it
+            left.setAccessibleName("Sidebar")
             left_lay = QVBoxLayout(left)
             left_lay.setContentsMargins(0, 0, 0, 0)
             heading = QHBoxLayout()
@@ -11757,7 +12199,13 @@ def run_gui(paths):
                 "and are not file sections.")
             self.collection_list.setMaximumHeight(118)
             left_lay.addWidget(self.collection_list)
-            self.collection_hint = QLabel("")
+            # Session 28: with no collections, one action instead of a paragraph. It makes a
+            # collection the usual way (new_collection), holding the rows selected.
+            self.collection_empty_btn = QPushButton("New collection from selection")
+            self.collection_empty_btn.clicked.connect(
+                lambda _checked=False: self.new_collection(True))
+            left_lay.addWidget(self.collection_empty_btn)
+            self.collection_hint = QLabel("")       # a damaged collections file is named here
             self.collection_hint.setObjectName("muted")
             self.collection_hint.setWordWrap(True)
             left_lay.addWidget(self.collection_hint)
@@ -11769,8 +12217,11 @@ def run_gui(paths):
             self.section_search.setPlaceholderText("Search file sections")
             self.section_search.setClearButtonEnabled(True)
             left_lay.addWidget(self.section_search)
-            self.section_list = QListWidget()
-            left_lay.addWidget(self.section_list, 1)
+            # Session 28: continents with their sections under them, each with its count.
+            self.section_tree = SectionTree()
+            self.section_tree.setAccessibleDescription(FILE_SECTION_HINT)
+            label.setBuddy(self.section_tree)
+            left_lay.addWidget(self.section_tree, 1)
             splitter.addWidget(left)
 
             self.entity_view = QTableView()
@@ -12167,7 +12618,7 @@ def run_gui(paths):
             proxy = self.entity_proxy
             if proxy.words or proxy.mode != "all":
                 if proxy.alias:     # the words typed may find the row now: they come first
-                    proxy.configure(self.entity_search.text(), self.section_filter,
+                    proxy.configure(self.entity_search.text(), self.section_scope(),
                                     self.status_mode, self.collection_keys())
                 proxy.invalidate()
                 self.settle_search()
@@ -12304,6 +12755,7 @@ def run_gui(paths):
             shown = view.get("inspector", True)
             self.inspector_act.setChecked(shown)
             self.set_inspector_shown(shown)
+            self.set_sidebar_shown(view.get("sidebar", True), quiet=True)     # Session 28
             self.id_column_act.setChecked(view.get("id_column", True))  # apply_family shows it
 
         def remember_view(self) -> None:
@@ -12326,6 +12778,7 @@ def run_gui(paths):
                 "splitter": text(self.entity_splitter.saveState()),
                 "inspector": self.inspector_act.isChecked(),
                 "id_column": self.id_column_act.isChecked(),
+                "sidebar": self.sidebar_act.isChecked(),
             })
             # The window is closing: when the file cannot be written, the next run
             # starts with the view before, and a damaged file stays as it is.
@@ -12344,6 +12797,36 @@ def run_gui(paths):
                     sizes[1] = max(200, sizes[1] - 300)
                     sizes[2] = 300
                     self.entity_splitter.setSizes(sizes)
+
+        def set_sidebar_shown(self, shown: bool, quiet: bool = False) -> None:
+            """Hide or show the sidebar, Collections and File sections (F3, Session 28).
+
+            The entity, file section, collection and view chosen stay as they
+            are, and the grid takes the room. Shown again, the sidebar gets its
+            width back if the splitter had squeezed it to nothing. The choice is
+            kept with the view, as the inspector's is (F4). ``quiet`` leaves
+            the status bar alone, as when the window opens.
+            """
+            shown = bool(shown)
+            if self.sidebar_act.isChecked() != shown:
+                self.sidebar_act.setChecked(shown)
+            self.sidebar_act.setToolTip(SIDEBAR_TIPS[shown])
+            focus = QApplication.focusWidget()
+            had_focus = focus is not None and self.sidebar.isAncestorOf(focus)
+            self.sidebar.setVisible(shown)
+            if shown:
+                sizes = self.entity_splitter.sizes()
+                if len(sizes) == 3 and sizes[0] < SIDEBAR_MIN:
+                    sizes[1] = max(200, sizes[1] - (SIDEBAR_WIDTH - sizes[0]))
+                    sizes[0] = SIDEBAR_WIDTH
+                    self.entity_splitter.setSizes(sizes)
+            elif had_focus:
+                self.entity_view.setFocus()
+            if not quiet:
+                self.statusBar().showMessage(
+                    "Sidebar shown. F3 hides it." if shown
+                    else "Sidebar hidden. F3, or the button beside the search box, shows it.",
+                    5000)
 
         def reset_column_widths(self) -> None:
             """Forget the widths set by hand and size every grid column to its text."""
@@ -12445,8 +12928,13 @@ def run_gui(paths):
                 self.changed_box.isChecked())
             self.refresh_status()
 
+        def section_scope(self):
+            """What the chosen file section shows: every section, one, or a continent's
+            (Session 28, see section_scope)."""
+            return section_scope(self.section_filter, self.section_outline)
+
         def apply_entity_filter(self):
-            self.entity_proxy.set_filter(self.entity_search.text(), self.section_filter,
+            self.entity_proxy.set_filter(self.entity_search.text(), self.section_scope(),
                                          self.status_mode, self.collection_keys())
             self.settle_search()
             self.refresh_status()
@@ -12491,9 +12979,10 @@ def run_gui(paths):
                 count = collection.count_in(self.family) if collection is not None else 0
                 return f"★ {self.collection_filter}", count
             if self.section_filter:
-                return self.section_filter, sum(
+                scope = self.section_scope()
+                return section_title(self.section_filter), sum(
                     1 for entity in self.entity_model.rows
-                    if entity.section == self.section_filter)
+                    if in_section_scope(entity.section, scope))
             return "", 0
 
         def show_search_scope(self, alias: str = "", elsewhere: int = 0) -> None:
@@ -12535,14 +13024,20 @@ def run_gui(paths):
                 return
             self.section_filter = ""
             self.collection_filter = ""
-            for widget, row in ((self.section_list, 0), (self.collection_list, -1)):
-                widget.blockSignals(True)
-                widget.setCurrentRow(row)
-                widget.blockSignals(False)
+            self.choose_no_scope()
             self.update_collection_actions()
             self.show_columns()
             self.entity_timer.stop()
             self.apply_entity_filter()
+
+        def choose_no_scope(self) -> None:
+            """Show All sections chosen and no collection, without running their handlers."""
+            self.section_tree.blockSignals(True)
+            self.section_tree.select_key("")
+            self.section_tree.blockSignals(False)
+            self.collection_list.blockSignals(True)
+            self.collection_list.setCurrentRow(-1)
+            self.collection_list.blockSignals(False)
 
         def import_old(self):
             if not self.docs:
@@ -12634,10 +13129,7 @@ def run_gui(paths):
                 button.setChecked(button.property("mode") == "all")
             self.section_filter = ""
             self.collection_filter = ""
-            for widget, row in ((self.section_list, 0), (self.collection_list, -1)):
-                widget.blockSignals(True)
-                widget.setCurrentRow(row)
-                widget.blockSignals(False)
+            self.choose_no_scope()
             self.update_collection_actions()
             self.show_columns()
             self.apply_entity_filter()
@@ -12842,6 +13334,7 @@ def run_gui(paths):
             self._updating = True
             try:
                 self.all_entities = build_entities(self.docs)
+                self.section_outline = section_outline(self.docs)     # Session 28
                 self.refresh_health()
                 self.token_index.rebuild(self.all_entities)
                 self._entry_entity = {entry: entity
@@ -12912,9 +13405,11 @@ def run_gui(paths):
             it. Session 19 revises it: the ID is how a row is matched across
             versions, so it is shown by default and the choice is remembered.
             """
+            scope = self.section_scope()
+            one_section = bool(scope) and (isinstance(scope, str) or len(scope) == 1)
             for column, key in enumerate(self.entity_model.columns()):
                 hidden = ((key == "id" and not self.id_column_act.isChecked())
-                          or (key == "section" and bool(self.section_filter)))
+                          or (key == "section" and one_section))
                 self.entity_view.setColumnHidden(column, hidden)
 
         def set_id_column_shown(self, shown: bool) -> None:
@@ -12957,7 +13452,7 @@ def run_gui(paths):
             rows = [entity for entity in self.all_entities if entity.family == self.family]
             self.refill_sections()
             self.refill_collections()
-            self.entity_proxy.configure(self.entity_search.text(), self.section_filter,
+            self.entity_proxy.configure(self.entity_search.text(), self.section_scope(),
                                         self.status_mode, self.collection_keys())
             self._sizing = True
             try:
@@ -12999,33 +13494,23 @@ def run_gui(paths):
                     self.entity_view.setColumnWidth(column, width)
 
         def refill_sections(self) -> None:
+            """File sections for the family shown, as a tree (Session 28): the choice stays
+            when the new tree has it, and so do the continents opened, and the words in its
+            search box still apply."""
             rows = [entity for entity in self.all_entities if entity.family == self.family]
-            counts: dict[str, int] = {}
-            for entity in rows:
-                counts[entity.section] = counts.get(entity.section, 0) + 1
-            self.section_list.blockSignals(True)
-            self.section_list.clear()
-            all_item = QListWidgetItem(f"All sections ({len(rows)})")
-            all_item.setData(Qt.UserRole, "")
-            self.section_list.addItem(all_item)
-            chosen = 0
-            for section in sorted(counts, key=fold):
-                item = QListWidgetItem(f"{section} ({counts[section]})")
-                item.setData(Qt.UserRole, section)
-                self.section_list.addItem(item)
-                if section == self.section_filter:
-                    chosen = self.section_list.count() - 1
-            if chosen == 0:
-                self.section_filter = ""
-            self.section_list.setCurrentRow(chosen)
-            self.section_list.blockSignals(False)
-            self.filter_sections()          # the search box still applies to the new list
+            nodes = section_tree(rows, self.section_outline)
+            self.section_tree.blockSignals(True)
+            try:
+                self.section_filter = self.section_tree.fill(len(rows), nodes,
+                                                             self.section_filter)
+            finally:
+                self.section_tree.blockSignals(False)
+            self.filter_sections()
 
         def on_section(self) -> None:
             if self._updating:
                 return
-            item = self.section_list.currentItem()
-            self.section_filter = (item.data(Qt.UserRole) if item is not None else "") or ""
+            self.section_filter = self.section_tree.current_key()
             if self.collection_filter:          # a file section and a collection do not mix
                 self.collection_filter = ""
                 self.collection_list.blockSignals(True)
@@ -13036,13 +13521,9 @@ def run_gui(paths):
             self.apply_entity_filter()
 
         def filter_sections(self) -> None:
-            """Show only the file sections whose names hold the words typed (accents ignored)."""
-            words = fold(self.section_search.text()).split()
-            for row in range(self.section_list.count()):
-                item = self.section_list.item(row)
-                section = item.data(Qt.UserRole) or ""
-                item.setHidden(bool(words and section)
-                               and not all(word in fold(section) for word in words))
+            """Show only the file sections whose names hold the words typed (accents ignored),
+            with the continents they sit under."""
+            self.section_tree.filter(fold(self.section_search.text()).split())
 
         # ----- collections -----
         def load_collections(self) -> None:
@@ -13090,13 +13571,12 @@ def run_gui(paths):
                 set_level(self.collection_hint,
                           f"{self.collections_problem} The file is left alone, and "
                           "collections are off until it is put right or moved.", "warning")
-            elif not self.collections.collections:
-                set_level(self.collection_hint,
-                          "None yet. Select rows in the grid, then Collections > Add selected "
-                          "to, or press New.", "muted")
             else:
                 set_level(self.collection_hint, "", "muted")
             self.collection_hint.setVisible(bool(self.collection_hint.text()))
+            # Session 28: none yet is one action, not a paragraph.
+            self.collection_empty_btn.setVisible(
+                not self.collections_problem and not self.collections.collections)
             self.update_collection_actions()
 
         def update_collection_actions(self) -> None:
@@ -13108,6 +13588,18 @@ def run_gui(paths):
             for action in (self.rename_collection_act, self.delete_collection_act,
                            self.remove_from_collection_act):
                 action.setEnabled(usable and shown)
+            self.update_new_from_selection()
+
+        def update_new_from_selection(self) -> None:
+            """New collection from selection (Session 28) needs rows selected in the grid;
+            without them it is off, and its tooltip says what to do."""
+            if not hasattr(self, "collection_empty_btn"):
+                return
+            chosen = bool(self.selected_entity_rows())
+            button = self.collection_empty_btn
+            button.setEnabled(chosen and not self.collections_problem)
+            button.setToolTip(NEW_FROM_SELECTION_TIPS[chosen])
+            button.setAccessibleDescription(NEW_FROM_SELECTION_TIPS[chosen])
 
         def on_collection(self) -> None:
             if self._updating:
@@ -13116,9 +13608,9 @@ def run_gui(paths):
             self.collection_filter = (item.data(Qt.UserRole) if item is not None else "") or ""
             if self.collection_filter:          # a collection replaces the file section
                 self.section_filter = ""
-                self.section_list.blockSignals(True)
-                self.section_list.setCurrentRow(0)
-                self.section_list.blockSignals(False)
+                self.section_tree.blockSignals(True)
+                self.section_tree.select_key("")
+                self.section_tree.blockSignals(False)
             self.update_collection_actions()
             self.show_columns()
             self.apply_entity_filter()
@@ -13251,6 +13743,7 @@ def run_gui(paths):
         def update_selection_actions(self) -> None:
             if not hasattr(self, "selection_pill"):
                 return
+            self.update_new_from_selection()
             count = len(self.selected_entity_rows())
             available = count > 0 and self.entity_view.isEnabled()
             self.batch_rename_act.setEnabled(available)
@@ -13684,7 +14177,7 @@ def run_gui(paths):
             if search.collection:
                 parts.append(f"collection: {search.collection}")
             elif search.section:
-                parts.append(f"file section: {search.section}")
+                parts.append(f"file section: {section_title(search.section)}")
             return "; ".join(parts)
 
         def fill_searches_menu(self) -> None:
@@ -13763,8 +14256,8 @@ def run_gui(paths):
             missing = search.section and search.section != self.section_filter
             self.statusBar().showMessage(
                 f"{search.name}: {self.entity_proxy.rowCount():,} shown."
-                + (f" The file section {search.section} is not in the open files."
-                   if missing else ""), 8000)
+                + (f" The file section {section_title(search.section)} is not in the open "
+                   "files." if missing else ""), 8000)
 
         def on_family_clicked(self, button) -> None:
             if self._updating:
@@ -13806,9 +14299,14 @@ def run_gui(paths):
         def rebuild_inspector(self) -> None:
             """Lay out the inspector for the chosen family: a heading, then one block per field.
 
-            Each block shows the field's change marker, its text on disk above
-            the proposed text (so a spelling can be compared letter by letter),
-            the file and line, and a message when the typed text cannot be used.
+            Session 28 made each block compact: the field's change marker, the
+            text on disk in a struck-through chip only when it differs from the
+            text in memory, the proposed text with its character count in a
+            pill beside it, and a message when the typed text cannot be used.
+            The file and line, and the line as it stands in memory, sit in a
+            footer under the fields, for the field with the focus (the first
+            field until another has it), and in each field's tooltip and
+            accessible description.
             """
             while self.inspector_lay.count():
                 item = self.inspector_lay.takeAt(0)
@@ -13818,6 +14316,7 @@ def run_gui(paths):
                     widget.deleteLater()
             self.inspector_edits = {}
             self.inspector_fields = {}
+            self._source_slot = ""
             self.inspector_title = QLabel("Select a row")
             self.inspector_title.setObjectName("title")
             self.inspector_title.setWordWrap(True)
@@ -13845,6 +14344,14 @@ def run_gui(paths):
             health_lay.addWidget(self.inspector_fix, 0, Qt.AlignLeft)
             self.health_box.hide()
             self.inspector_lay.addWidget(self.health_box)
+            # Session 28: the footer that says where the field with the focus comes from.
+            self.inspector_source = QWidget()
+            source_lay = QVBoxLayout(self.inspector_source)
+            source_lay.setContentsMargins(0, 2, 0, 0)
+            source_lay.setSpacing(1)
+            self.inspector_source_caption = QLabel("")
+            self.inspector_source_caption.setObjectName("chip_caption")
+            source_lay.addWidget(self.inspector_source_caption)
             for slot, label, _cmd in FAMILY_FIELDS[self.family]:
                 rule = QFrame()
                 rule.setObjectName("rule")
@@ -13852,10 +14359,10 @@ def run_gui(paths):
                 self.inspector_lay.addWidget(rule)
                 block = QWidget()
                 grid = QGridLayout(block)
-                grid.setContentsMargins(0, 2, 0, 2)
-                grid.setHorizontalSpacing(8)
+                grid.setContentsMargins(0, 1, 0, 1)
+                grid.setHorizontalSpacing(6)
                 grid.setVerticalSpacing(3)
-                grid.setColumnStretch(1, 1)
+                grid.setColumnStretch(0, 1)
                 top = QHBoxLayout()
                 caption = QLabel(label)
                 caption.setObjectName("heading")
@@ -13865,59 +14372,82 @@ def run_gui(paths):
                 top.addStretch(1)
                 top.addWidget(marker)
                 grid.addLayout(top, 0, 0, 1, 2)
+                # The text on disk, only while it differs from the text in memory.
+                chip = QFrame()
+                chip.setObjectName("disk_chip")
+                chip_lay = QHBoxLayout(chip)
+                chip_lay.setContentsMargins(8, 1, 8, 1)
+                chip_lay.setSpacing(6)
                 disk_caption = QLabel("On disk")
-                disk_caption.setObjectName("muted")
+                disk_caption.setObjectName("chip_caption")
                 disk = QLabel("")
                 disk.setWordWrap(True)
                 disk.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                grid.addWidget(disk_caption, 1, 0)
-                grid.addWidget(disk, 1, 1)
-                proposed = QLabel("Proposed")
-                proposed.setObjectName("muted")
+                chip_lay.addWidget(disk_caption)
+                chip_lay.addWidget(disk, 1)
+                chip.hide()
+                grid.addWidget(chip, 1, 0, 1, 2)
                 edit = InspectorEdit()
+                edit.setAccessibleName(f"Proposed {label.lower()}")
                 edit.editingFinished.connect(
                     lambda slot=slot, edit=edit: self.commit_inspector(slot, edit))
                 edit.textEdited.connect(lambda _text, slot=slot: self.check_field(slot))
                 edit.escaped.connect(lambda slot=slot: self.put_back_field(slot))
                 edit.step.connect(lambda step, slot=slot: self.step_inspector(slot, step))
-                grid.addWidget(proposed, 2, 0)
-                grid.addWidget(edit, 2, 1)
-                # Session 20: the length against its typical guide; a warning only.
+                edit.focused.connect(lambda slot=slot: self.show_source(slot))
+                grid.addWidget(edit, 2, 0)
+                # Session 28: the character count, against the field's guide where it has one.
+                count = QLabel("")
+                count.setObjectName("count")
+                count.setAlignment(Qt.AlignCenter)
+                count.setAccessibleName(f"{label} length")
+                grid.addWidget(count, 2, 1)
+                # Session 20: the counter in words, now shown only near or past its guide.
                 gauge = QLabel("")
                 gauge.setObjectName("muted")
-                gauge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                gauge.setWordWrap(True)
+                gauge.hide()
+                grid.addWidget(gauge, 3, 0, 1, 2)
                 edit.textChanged.connect(lambda _text, slot=slot: self.update_gauge(slot))
-                grid.addWidget(gauge, 3, 1)
-                gauge.setHidden(not length_guide(self.family, slot))
-                where = QLabel("")
-                where.setObjectName("muted")
-                where.setWordWrap(True)
-                grid.addWidget(where, 4, 1)
-                # Session 14: the line as it stands in memory, command and all.
-                raw = QLabel("")
-                raw.setObjectName("raw")
-                raw.setWordWrap(True)
-                raw.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                raw.setToolTip("The line as it stands in memory, as Save would write it. "
-                               "Tabs between the fields are shown as wide spaces.")
-                grid.addWidget(raw, 5, 1)
                 problem = QLabel("")
                 problem.setObjectName("warning")
                 problem.setWordWrap(True)
                 problem.hide()
-                grid.addWidget(problem, 6, 0, 1, 2)
+                grid.addWidget(problem, 4, 0, 1, 2)
                 # Session 13: the review hint. Local list of suspicious baselines
                 # such as "Wolverhamption"; shown, never applied.
                 hint = QLabel("")
                 hint.setObjectName("warning")
                 hint.setWordWrap(True)
                 hint.hide()
-                grid.addWidget(hint, 7, 0, 1, 2)
+                grid.addWidget(hint, 5, 0, 1, 2)
                 self.inspector_lay.addWidget(block)
+                # The footer's part for this field: its file and line, and (Session 14) the
+                # line as it stands in memory, command and all.
+                where = QLabel("")
+                where.setObjectName("muted")
+                where.setWordWrap(True)
+                where.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                where.hide()
+                source_lay.addWidget(where)
+                raw = QLabel("")
+                raw.setObjectName("raw")
+                raw.setWordWrap(True)
+                raw.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                raw.setToolTip("The line as it stands in memory, as Save would write it. "
+                               "Tabs between the fields are shown as wide spaces.")
+                raw.hide()
+                source_lay.addWidget(raw)
                 self.inspector_edits[slot] = edit
-                self.inspector_fields[slot] = {"marker": marker, "disk": disk, "edit": edit,
-                                               "gauge": gauge, "where": where, "raw": raw,
-                                               "problem": problem, "hint": hint}
+                self.inspector_fields[slot] = {"marker": marker, "disk": disk, "chip": chip,
+                                               "edit": edit, "count": count, "gauge": gauge,
+                                               "where": where, "raw": raw, "problem": problem,
+                                               "hint": hint, "caption": caption}
+            rule = QFrame()
+            rule.setObjectName("rule")
+            rule.setFrameShape(QFrame.HLine)
+            self.inspector_lay.addWidget(rule)
+            self.inspector_lay.addWidget(self.inspector_source)
 
             # Session 21: a short name and code suggested from the long name, for a club
             # missing either. Shown first; Use suggestion adds them as one Undo step.
@@ -13966,20 +14496,25 @@ def run_gui(paths):
                 if entity is None:
                     self.inspector_title.setText("Select a row")
                     self.inspector_meta.setText(
-                        "Its fields show here: the text on disk, the proposed text, and "
-                        "the file and line.")
+                        "Its fields show here, each with its length, and the text on disk "
+                        "when it differs.")
                     for widgets in self.inspector_fields.values():
-                        for name in ("marker", "disk", "where", "raw", "gauge"):
+                        for name in ("marker", "disk", "where", "raw", "gauge", "count"):
                             widgets[name].setText("")
+                        for name in ("chip", "gauge", "count"):
+                            widgets[name].hide()
                         edit = widgets["edit"]
                         edit.blockSignals(True)
                         edit.clear()
                         edit.setPlaceholderText("")
                         edit.blockSignals(False)
                         edit.setEnabled(False)
+                        edit.setToolTip("")
+                        edit.setAccessibleDescription("")
                         self.show_field_problem(widgets, "")
                         widgets["hint"].setText("")
                         widgets["hint"].hide()
+                    self.show_source("")
                     self.show_entity_health(None)
                     if hasattr(self, "illustrative_card"):
                         self.illustrative_card.update_from_entity(None)
@@ -13991,9 +14526,10 @@ def run_gui(paths):
                     next((entity.name_in(slot) for slot, _label, _cmd
                           in FAMILY_FIELDS[entity.family] if entity.name_in(slot)), ""))
                 self.inspector_meta.setText(
-                    f"{ENTITY_KINDS[entity.family]}    ID {entity.id}\n"
-                    f"File section: {entity.section or 'none'}\n"
-                    f"Language: {language or 'none'}")
+                    f"{ENTITY_KINDS[entity.family]} · ID {entity.id} · "
+                    f"Language: {language or 'none'}\n"
+                    f"File section: {entity.section or 'none'}")
+                first_line = ""
                 for view in describe_fields(entity):
                     widgets = self.inspector_fields[view.slot]
                     if view.state == "none":
@@ -14003,12 +14539,20 @@ def run_gui(paths):
                         level = {"edited": "edited", "added": "added"}.get(view.state, "muted")
                         if view.count > 1:
                             level = "warning"       # a repeated key: worded and coloured
+                        first_line = first_line or view.slot
                     set_level(widgets["marker"], marker, level)
                     if view.on_disk is None:
                         set_level(widgets["disk"],
                                   "No line yet" if view.state == "added" else "No line", "muted")
                     else:
                         set_level(widgets["disk"], view.on_disk, "")
+                    # Session 28: the text on disk shows only while it differs, struck through.
+                    differs = view.state != "none" and view.on_disk != view.current
+                    font = widgets["disk"].font()
+                    font.setStrikeOut(view.on_disk is not None)
+                    widgets["disk"].setFont(font)
+                    widgets["chip"].setVisible(differs)
+                    widgets["chip"].setAccessibleName(f"On disk: {widgets['disk'].text()}")
                     edit = widgets["edit"]
                     draft = drafts.get(view.slot)
                     edit.blockSignals(True)
@@ -14018,19 +14562,51 @@ def run_gui(paths):
                         "Type a name to add one" if view.state == "none" else "")
                     edit.blockSignals(False)
                     edit.setEnabled(True)
-                    self.update_gauge(view.slot)
                     widgets["where"].setText(view.where)
                     widgets["raw"].setText(view.raw.replace("\t", "    "))
+                    disk_words = (f"On disk: {widgets['disk'].text()}." if differs
+                                  else "No line on disk yet." if view.state == "none"
+                                  else "It is the same as on disk.")
+                    edit.setToolTip(view.where)
+                    edit.setAccessibleDescription(f"{disk_words} {view.where}".strip())
+                    self.update_gauge(view.slot)
                     self.show_field_problem(widgets, draft[1] if draft else "")
                     widgets["hint"].setText(view.hint)
                     widgets["hint"].setVisible(bool(view.hint))
+                slots = list(self.inspector_fields)
+                self.show_source(self._source_slot if same and self._source_slot in slots
+                                 else first_line or slots[0])
                 self.show_entity_health(entity)
-                # Update illustrative preview card (Session 18)
-                if hasattr(self, "illustrative_card"):
-                    self.illustrative_card.update_from_entity(entity)
                 self.inspector_revert.setEnabled(entity.changed())
             finally:
                 self._filling = False
+            self.refresh_preview()          # Illustrative card (Session 18), from the fields
+
+        def show_source(self, slot: str) -> None:
+            """The inspector's footer (Session 28): where one field's line is, and the line as
+            it stands in memory. "" empties it."""
+            if not self.inspector_fields:
+                return
+            self._source_slot = slot
+            label = next((label for key, label, _cmd in FAMILY_FIELDS[self.family]
+                          if key == slot), "")
+            self.inspector_source_caption.setText(label)
+            self.inspector_source_caption.setVisible(bool(label))
+            for key, widgets in self.inspector_fields.items():
+                for name in ("where", "raw"):
+                    widgets[name].setVisible(key == slot and bool(widgets[name].text()))
+
+        def refresh_preview(self) -> None:
+            """The Illustrative card from the values in the inspector's fields (Session 28),
+            so a length can be judged while typing; it empties when nothing is selected."""
+            if not hasattr(self, "illustrative_card"):
+                return
+            entity = self.inspector_entity
+            if entity is None:
+                self.illustrative_card.update_from_entity(None)
+                return
+            self.illustrative_card.update_from_names(entity.family, {
+                slot: widgets["edit"].text() for slot, widgets in self.inspector_fields.items()})
 
         def inspector_drafts(self) -> dict:
             """The fields holding text that cannot be used: slot -> (text, message)."""
@@ -14122,20 +14698,40 @@ def run_gui(paths):
             return True
 
         def update_gauge(self, slot: str) -> None:
-            """The counter under a field: its length against the typical guide (Session 20).
+            """A field's length (Session 20): the counter against its typical guide, and since
+            Session 28 the count pill beside the field, as it is typed. The counter's words
+            show under the field only near or past the guide; the Illustrative card follows
+            the typing too.
 
             A warning only; it never blocks, trims, or changes a name.
             """
             widgets = self.inspector_fields.get(slot)
             if widgets is None:
                 return
-            gauge = length_gauge(self.family, slot, widgets["edit"].text())
-            if gauge is None or self.inspector_entity is None:
+            text = widgets["edit"].text()
+            gauge = length_gauge(self.family, slot, text)
+            if self.inspector_entity is None:
                 widgets["gauge"].setText("")
+                widgets["gauge"].hide()
+                widgets["count"].hide()
                 return
-            text, level, tip = gauge
-            set_level(widgets["gauge"], text, level)
-            widgets["gauge"].setToolTip(tip)
+            shown, level, tip = count_pill(self.family, slot, text)
+            pill = widgets["count"]
+            pill.setText(shown)
+            restyle(pill, "count" if level == "muted" else f"count_{level}")
+            pill.setToolTip(tip)
+            pill.setAccessibleDescription(tip)
+            pill.show()
+            if gauge is None:
+                widgets["gauge"].setText("")
+                widgets["gauge"].hide()
+            else:
+                words, level, tip = gauge
+                set_level(widgets["gauge"], words, level)
+                widgets["gauge"].setToolTip(tip)
+                widgets["gauge"].setVisible(level != "muted")
+            if not self._filling:
+                self.refresh_preview()
 
         def entity_row(self, key: tuple) -> int:
             """The grid row that shows the entity with this key, or -1 when none does."""
@@ -14609,6 +15205,7 @@ def run_gui(paths):
                                             "shown, and stay in the same field"),
                 ("Alt+Up", "In an inspector field: keep it, go to the row before, and stay in "
                            "the same field"),
+                SIDEBAR_KEY_ROW,                    # Session 28: a window key, in no menu
             ])
             return rows
 

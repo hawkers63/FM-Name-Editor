@@ -10,6 +10,42 @@ and Codex CLI. Update it at the end of every session.
 
 ---
 
+## 26 November 2026 (Europe/London) — Claude Code (Session 28)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** the Session 28 brief for release 3.13 (inspector and sidebar), pasted by Mark, building on note 10 sections 2 and 3. Implementation only: the version stays 3.12.
+- **Branch / commit:** main, this local commit `feat: compact the inspector and organise the sidebar`; not pushed, not tagged
+
+### Done this session
+
+- Stage 0, checked first: each inspector field stacked On disk, Proposed, a counter, the file and line, and the raw line; the Illustrative card had three framed boxes; File sections was a flat, sorted `QListWidget` of section strings ("" for all); Collections showed a "None yet" paragraph; the sidebar was the entity splitter's left pane with no way to collapse it; F3 was free. Session 27's rail, 30 px grid and filter bar were the baseline and are unchanged. In real name files a trailing colon does not mark a continent (country headings often carry one), so the tree recognises continents by name and reads the rest from the order of the headings.
+- Stage 1, inspector: the text on disk shows only when it differs from the text in memory, in a struck-through `disk_chip` ("No line yet" for an added line); the `disk` label keeps its text for screen readers and the older tests. The file and line, and the raw line, moved to one footer (`inspector_source`) for the field with the focus (the first field until another has it), and into each field's tooltip and accessible description. Engine `count_pill` builds the pill from `length_gauge`, so there is no second rule: "17 / 28", or the count alone where a field has no guide, at the gauge's level. The Session 20 counter line now shows only near or past the guide. `IllustrativePreviewCard.update_from_names` follows the typed values: a league-table row (position, place colour, short name, points), the long name over a score pill (code 2 - 1 OPP) and a ticker line, always against a made-up side; `ElidedLabel` keeps the table and ticker rows to one line. Fixed a latent card bug: after an unfold, the content kept the height it opened at as a cap, so names that came later were clipped. On a test file the inspector needs 482 px, down from 792, and fits without scrolling at 1280×800, 1100×700 and 1280×640, and at 125% and 150%.
+- Stage 2, File sections tree: engine `section_heading` (now shared with the parser), `is_continent_heading` (`CONTINENT_HEADINGS`), `section_outline` (a continent heading groups the headings after it in the same file, until the next continent heading, a heading already under a continent earlier in that file, or an empty heading directly above another heading; the first continent found wins), `section_tree` (continents first, then the other sections, each with its count; an "X (heading only)" row for names directly under a continent heading, and "No file section", so nothing is dropped), `section_scope` and `in_section_scope`; `entity_shown` takes a set. Keys: "" is every section, a continent's name its whole group, `SECTION_OWN` and a name exactly one section (no real section starts with "#"). `SectionTree` keeps the keys, right-aligned counts, accessible text for each row, the folds while the window runs, and the search box over the tree. Saved searches store the key as before, so no file format changed. The outline takes about 4 ms and the tree under 1 ms on both FM27 files.
+- Stage 3, sidebar: `sidebar_act` (F3) is a window action, not on the View menu, so the View menu, the command palette and every other key are unchanged; `sidebar_btn` beside the search box carries it ("Hide the sidebar ... (F3)" or "Show ...", accessible name "Sidebar"), and Keyboard shortcuts lists F3. `set_sidebar_shown` keeps every choice, gives the grid the room, gives the sidebar its width back when the splitter had squeezed it, and is kept as `view["sidebar"]`, as F4's `inspector` is.
+- Stage 4, Collections: `collection_empty_btn`, New collection from selection, replaces the paragraph and calls `new_collection(True)`; it is off without a selection, and its tooltip and accessible description say why. A damaged collections file still shows its warning.
+- Stage 5, tests: new `Session28Engine` (7), `Session28Inspector` (6), `Session28Preview` (4), `Session28Sections` (6), `Session28Sidebar` (5), `Session28Collections` (2) and `Session28Display` (1, at 125% and 150%); against the 3.12 code all 31 fail (25 errors, 6 failures). Old assertions were updated only where the brief replaced a widget: `Session7Window` and `Session8Window` (`section_list` to `section_tree`, and "None yet" to the button), `_Session20Window.choose_section`, `Session18Preview` (two tests) and the `Session20Gauges` cut test, for the new preview labels.
+- Stage 6: CHANGELOG (Unreleased), the user guide (a new section, File sections and the sidebar, and new wording for the inspector and the length guides), the public roadmap's Next, this entry, and Session 23 moved to the archive.
+- Targeted runs, offscreen, one process at a time, all passing: `Session28*` (31) in 8.8 s; Session 28 with `WindowSmoke`, `Session2Window`, `Session6Window`, `Session7Window`, `Session8Engine`, `Session8Window`, `Session8Scaling`, `Session9Settings`, `Session9Window`, `Session14Visual`, `Session14Display`, `Session15BatchRename`, `Session18Preview`, `Session19Engine`, `Session19IdColumn`, `Session19AddName`, `Session20Engine`, `Session20Search`, `Session20Gauges`, `Session20Cadence`, `Session21Fill`, `Session21Health`, `Session21Snapshots`, `Session22RollbackConfirm`, `Session27View`, `Session27Grid` and `Session27Filters` (180) in 51.7 s; `Session7Speed`, `Session20Speed` and `Session21Speed` (3) in 7.5 s. Full suite not run (Eve runs it).
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Eve: review, run the full suite once, and prepare release 3.13 with Mark's approval. The README's text and screenshots still show the 3.12 inspector and the flat File sections list (left alone, as the brief asked).
+
+### Known issues / blockers
+
+- None found. Two limits, by design: the tree reads the order of the headings, not geography, so a heading that is not a country but follows a continent's countries sits under that continent until one of the stop rules applies (every section stays selectable either way); and F3 is not on the View menu or in the command palette, which the brief kept unchanged, though it is on the sidebar button and in Keyboard shortcuts.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+
+---
+
 ## 25 November 2026 (Europe/London) — Claude Code (Session 27)
 
 - **Tool:** claude (Claude Code)
@@ -178,42 +214,5 @@ and Codex CLI. Update it at the end of every session.
 
 - `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md`, `.gitignore`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
 - `chore` commit: `fm_name_editor.py`, `FM Name Editor.bat`, `README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`
-
----
-
-## 24 November 2026 (Europe/London) — Claude Code (Session 23)
-
-- **Tool:** claude (Claude Code)
-- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
-- **Brief:** Neal's Session 23 brief, pasted by Mark (three stages, targeted tests only, one local commit). Old proposal prompts in `notes/` ignored as instructed.
-- **Branch / commit:** main, local `feat: background pack import and backups, byte-difference explanation, faster save`, not pushed, not tagged
-
-### Done this session
-
-- Stage 1, Save timing: each part of a Save was timed on copies of the live files over six runs. Write, review, payload and status took under 0.2 s together; the reload after the write took most of the rest, and about half of that was `FamilyTokenIndex.rebuild` splitting every name into words again (twice per name), although a Save changes no name. That was the clear single cause. Fix: `_name_tokens` is an `lru_cache` (65,536 names) behind `extract_name_tokens`, which still returns a fresh list. Save went from 0.78 to 0.94 s down to 0.61 to 0.67 s (unprofiled runs). The 1 s limit and `Session7Speed` are unchanged.
-- Stage 2, responsiveness: `read_pack_file` (engine) reads, decodes and parses a pack; `import_pack` runs it and `proposals_from_pack` on `MainWindow.jobs`, then `show_pack` opens the pack dialog. `BackupDialog` lists the folders (`read_archives`) and compares a copy (`compare_backup_in_full`) on the jobs worker through `BackupDialog.run`, which drops an answer once the dialog is closed (`done` sets `closed`) or another copy was chosen (`request`). A whole-file restore goes through `run` too, so closing during its read restores nothing; the lists and buttons wait meanwhile (`restoring`). The restore of ticked names still re-compares on the GUI thread (unchanged).
-- Stage 3, why the bytes differ: `explain_byte_differences` / `describe_byte_differences` (engine, read only) report the encoding or BOM, line endings, comments, blank lines, unsupported lines and name lines written differently, with counts, the first 20 lines (`BYTE_EXPLAIN_SHOWN`) and a whole-file cap of 200,000 lines (`BYTE_EXPLAIN_MAX_LINES`); moved lines are reported as a different order. The Backups window shows it in a read-only panel only when the names match and the bytes do not. Help text updated.
-- Tests: new `Session23Engine` (4) and `Session23Window` (4); `Session8Workers` waits for the listing before restoring.
-
-### In progress
-
-- Nothing.
-
-### Next steps
-
-- Neal: set everything to 3.9, run the full suite once, tag, build and prepare publication; Mark confirms before any push.
-
-### Known issues / blockers
-
-- None found. The 3.8 executable was launched once for a smoke test at that release, against the never-launch rule; the release itself is fine. This session launched nothing.
-
-### Neal — release 3.9
-
-- Reviewed `ffb6d66`. Set `VERSION`, the module header, the launcher banner, the README and CHANGELOG headers and the public roadmap to 3.9; dated the changelog section 24 November 2026 with an empty Unreleased kept.
-- Ran the full offscreen suite once for the release: 384 tests in 59.460s, all passing; built the Windows executable from the release commit without launching it. Push and publication wait for Mark's confirmation.
-
-### Files touched
-
-- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
 
 ---

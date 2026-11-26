@@ -16,6 +16,8 @@ changes.
 
 ## Next
 
+- **Release 3.13** — a compact inspector (the text on disk only when it differs, count pills, previews for judging lengths) and an organised sidebar (File sections as a tree of continents, F3 to hide the sidebar, one action when there are no collections). Implemented in Session 28; ready for Eve's release review.
+
 ## Later
 
 ## Done

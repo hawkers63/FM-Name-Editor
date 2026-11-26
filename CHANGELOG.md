@@ -8,6 +8,18 @@ The source on disk reports `VERSION = "3.12"`. The launcher banner says v3.12.
 
 ## Unreleased
 
+Session 28 — a compact inspector and an organised sidebar (release 3.13, ready for Eve's review):
+
+- **On disk only when it differs.** An inspector field no longer repeats the text on disk when it matches the text in memory. When it differs, the text on disk shows above the field in a small chip labelled On disk, struck through; a line added since the file was read says No line yet. The marker (Unchanged, Edited, Added) and Undo, Save and the unsaved state work as before.
+- **File and line in a footer.** The file and line, and the line as it stands in memory, are no longer repeated under every field. They sit in one footer under the fields, for the field you are in (the first field until you move), and in each field's tooltip and the description a screen reader gives.
+- **Count pills.** Each field has a pill beside it with its length against its typical guide, for example 17 / 28, updated as you type; a field with no guide shows its count alone. The pill turns amber near the guide and red past it, and the existing line under the field gives the words only then. The guides and rules are unchanged.
+- **Previews for judging lengths.** The Illustrative card shows the values as they are typed, in three compact rows: a league-table row with a position, a place colour, the short name and points; the long name over a score pill with the code against a made-up side, such as ABC 2 - 1 OPP; and a ticker line. The card also opens to its full height again after it has been folded. At the usual window sizes, and at 125% and 150% scaling, the inspector now fits without scrolling.
+- **File sections as a tree.** Continent headings, such as Europe, group the headings after them in the same file, each row with its count on the right; other headings stay at the top level, and names under no heading are listed as No file section. Choosing a continent shows every section under it; choosing a section shows only its own, as before. Continents open and close with a click or Right and Left, and stay as you left them while the window runs. Saved searches, the search box over the list and the choice after an edit keep working. The tree reads only the headings in the open files.
+- **F3 hides the sidebar.** F3, or the new button beside the search box, hides and shows the whole sidebar (Collections and File sections), and the grid takes the room. The entity, file section, collection and view chosen stay as they are, and the choice is remembered with the view, as the inspector's (F4) is. Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+Shift+C, the View menu, the command palette and the remembered view are unchanged; F3 is listed under Keyboard shortcuts.
+- **Collections when there are none.** The explanatory paragraph is replaced by one button, New collection from selection, which makes a collection of the rows selected in the grid in the usual way; with nothing selected it is off, and its tooltip says why. A damaged collections file is still named and left alone.
+- **User guide.** A new section, File sections and the sidebar, and new wording for the inspector and the length guides.
+- **Verification.** New `Session28Engine` (7), `Session28Inspector` (6), `Session28Preview` (4), `Session28Sections` (6), `Session28Sidebar` (5), `Session28Collections` (2) and `Session28Display` (1, at 125% and 150%). Old assertions that named the flat File sections list, the "None yet" paragraph and the old preview labels now name the tree, the button and the new previews.
+
 ## 3.12 (25 November 2026)
 
 A left-hand view rail, 30-pixel grid rows and a single filter bar with counts.

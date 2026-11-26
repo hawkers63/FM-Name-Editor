@@ -3312,12 +3312,10 @@ class Session7Window(unittest.TestCase):
             self._click_heading(view, columns.index("long"))           # a third: the file's order
             self.assertEqual(header.sortIndicatorSection(), -1)
             self.assertEqual(self._shown(win), ["10", "30", "20"])     # file section, then ID
-            wales = next(n for n in range(win.section_list.count())
-                         if win.section_list.item(n).data(Qt.UserRole) == "Wales")
-            win.section_list.setCurrentRow(wales)
+            self.assertTrue(win.section_tree.select_key("Wales"))   # a tree since Session 28
             self.assertEqual(self._shown(win), ["20"])
             self.assertTrue(view.isColumnHidden(columns.index("section")))
-            win.section_list.setCurrentRow(0)
+            win.section_tree.select_key("")
             self.assertFalse(view.isColumnHidden(columns.index("section")))
             # Adding a field reloads the views; the club stays selected and in the inspector.
             header.setSortIndicator(columns.index("long"), Qt.AscendingOrder)
@@ -3656,11 +3654,8 @@ class Session8Window(unittest.TestCase):
 
     @staticmethod
     def _section(win, name: str) -> None:
-        from PySide6.QtCore import Qt
-
-        row = next(n for n in range(win.section_list.count())
-                   if win.section_list.item(n).data(Qt.UserRole) == name)
-        win.section_list.setCurrentRow(row)
+        if not win.section_tree.select_key(name):          # a tree since Session 28
+            raise AssertionError(f"no file section {name!r}")
 
     def test_the_view_is_remembered_between_runs(self):
         from PySide6.QtCore import Qt
@@ -3708,7 +3703,6 @@ class Session8Window(unittest.TestCase):
             self.assertEqual((third.width(), third.height(), third.family), (1280, 820, "club"))
 
     def test_saved_searches_and_the_section_search(self):
-        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QDialog, QMessageBox
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3716,9 +3710,7 @@ class Session8Window(unittest.TestCase):
             win = self._window(tmp)
             self._open(win, tmp)
             win.section_search.setText("IRELAND")                # accents and capitals ignored
-            shown = [win.section_list.item(n).data(Qt.UserRole)
-                     for n in range(win.section_list.count())
-                     if not win.section_list.item(n).isHidden()]
+            shown = win.section_tree.visible_keys()             # a tree since Session 28
             self.assertEqual(shown, ["", "Northern Ireland"])   # All sections always shows
             win.section_search.clear()
             self._section(win, "Wales")
@@ -3762,7 +3754,9 @@ class Session8Window(unittest.TestCase):
             win = self._window(tmp)
             self._open(win, tmp)
             self.assertFalse(win.collection_list.isVisible())
-            self.assertIn("None yet", win.collection_hint.text())
+            # Session 28: one action in place of the paragraph that began "None yet".
+            self.assertTrue(win.collection_empty_btn.isVisible())
+            self.assertFalse(win.collection_hint.isVisible())
             self.assertFalse(win.remove_from_collection_act.isEnabled())
             self._select(win, "10", "30")
             win.fill_add_to_menu()
@@ -7920,16 +7914,16 @@ class Session18Preview(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._open(win, tmp)
             self._select(win, "10")
-            self.assertEqual((card.table_long.text(), card.table_short.text(),
-                              card.table_code.text()), ("Alpha United", "Alpha", "ALP"))
+            # Session 28: a league-table row with the short name, the long name over a score
+            # pill with the code, and a ticker line.
+            self.assertEqual(card.table_short.text(), "Alpha")
             self.assertEqual(card.scoreboard_name.text(), "Alpha United")
-            self.assertEqual(card.scoreboard_short.text(), "Short: Alpha")
-            self.assertEqual(card.scoreboard_code.text(), "Code: ALP")
-            self.assertEqual(card.ticker_label.text(), "Long: Alpha United")
+            self.assertEqual(card.scoreboard_code.text(), "ALP")
+            self.assertEqual(card.ticker_label.text(), "Alpha United 2 - 1 Opponents")
             self._select(win, "20")
             self.assertEqual(card.table_short.text(), editor.no_override_text("club", "short"))
-            self.assertEqual(card.table_code.text(), "No code override")
-            self.assertEqual(card.ticker_label.text(), "Long: Beta Town")
+            self.assertEqual(card.scoreboard_code.toolTip(), "No code override")
+            self.assertEqual(card.ticker_label.text(), "Beta Town 2 - 1 Opponents")
 
     def test_an_edit_and_an_undo_update_the_card(self):
         from PySide6.QtWidgets import QApplication
@@ -7944,11 +7938,10 @@ class Session18Preview(unittest.TestCase):
             column = model.columns().index("long")
             self.assertTrue(model.setData(model.index(row, column), "Alpha Rovers"))
             QApplication.processEvents()
-            self.assertEqual(card.table_long.text(), "Alpha Rovers")
             self.assertEqual(card.scoreboard_name.text(), "Alpha Rovers")
             win.undo_act.trigger()
             QApplication.processEvents()
-            self.assertEqual(card.table_long.text(), "Alpha United")
+            self.assertEqual(card.scoreboard_name.text(), "Alpha United")
 
     def test_the_ticker_runs_only_while_it_can_be_seen(self):
         win = self._window()
@@ -8848,13 +8841,8 @@ class _Session20Window:
 
     @staticmethod
     def choose_section(win, section: str) -> None:
-        from PySide6.QtCore import Qt
-
-        for row in range(win.section_list.count()):
-            if win.section_list.item(row).data(Qt.UserRole) == section:
-                win.section_list.setCurrentRow(row)
-                return
-        raise AssertionError(f"no file section {section!r}")
+        if not win.section_tree.select_key(section):       # a tree since Session 28
+            raise AssertionError(f"no file section {section!r}")
 
     @staticmethod
     def shown(win) -> list[str]:
@@ -9047,23 +9035,23 @@ class Session20Gauges(_Session20Window, unittest.TestCase):
         win = self.window()
         card = win.illustrative_card
         self.select(win, "1")
-        self.assertEqual(card.table_long.text(), "Wolverhampton Wanderers")
+        # Session 28: the long name is on the scoreboard; the table row has the short name.
+        self.assertEqual(card.scoreboard_name.text(), "Wolverhampton Wanderers")
         self.assertTrue(card.cut_note.isHidden())
         win.inspector_fields["long"]["edit"].setText("A" * 28)
         win.commit_inspector("long", win.inspector_fields["long"]["edit"])
-        self.assertEqual(card.table_long.text(), "A" * 28)          # at the guide: whole
+        self.assertEqual(card.scoreboard_name.text(), "A" * 28)     # at the guide: whole
         self.assertTrue(card.cut_note.isHidden())
         win.inspector_fields["long"]["edit"].setText("B" * 30)
         win.commit_inspector("long", win.inspector_fields["long"]["edit"])
         self.assertEqual(win.inspector_entity.name_in("long"), "B" * 30)   # stored whole
-        self.assertEqual(card.table_long.text(), "B" * 27 + "…")
         self.assertEqual(card.scoreboard_name.text(), "B" * 27 + "…")
-        self.assertEqual(card.table_long.toolTip(), "B" * 30)
+        self.assertEqual(card.scoreboard_name.toolTip(), "B" * 30)
         self.assertFalse(card.cut_note.isHidden())
         self.assertIn("Illustrative", card.title_label.text())
         self.assertIn("typical", card.cut_note.text())
         self.select(win, "2")
-        self.assertEqual(card.table_long.text(), "Tottenham Hotspur")
+        self.assertEqual(card.scoreboard_name.text(), "Tottenham Hotspur")
         self.assertTrue(card.cut_note.isHidden())
 
     def test_a_field_without_a_guide_has_no_counter(self):
@@ -11505,3 +11493,850 @@ class Session27Grid(unittest.TestCase):
             unticked = win.change_proxy.mapFromSource(win.change_model.index(0,
                                                                               win.change_model.STATE))
             self.assertEqual({name for _word, name in state.pills(unticked)}, {"muted"})
+
+
+class Session28Engine(unittest.TestCase):
+    """Session 28 (release 3.13): the File sections tree, read from the headings alone, and
+    the character count beside an inspector field. Made-up places and names only."""
+
+    SECTIONS = (
+        '"CLUB_NAME_CHANGE"\t1\t"Loose Athletic"\t""\n'
+        "#Europe:\n"
+        "\n"
+        "#Northland\n"
+        '"CLUB_NAME_CHANGE"\t2\t"North Athletic"\t""\n'
+        '"CLUB_NAME_CHANGE"\t3\t"North Rovers"\t""\n'
+        "##Southland\n"
+        '"CLUB_NAME_CHANGE"\t4\t"South Town"\t""\n'
+        "#==========\n"
+        '"CLUB_NAME_CHANGE"\t5\t"South Wanderers"\t""\n'
+        "#South America\n"
+        "#Eastmark:\n"
+        '"CLUB_NAME_CHANGE"\t6\t"East City"\t""\n'
+        "#Westvale\n"
+        "\n"
+        "#Isle of Fen\n"
+        '"CLUB_NAME_CHANGE"\t7\t"Fen United"\t""\n'
+        "#Oceania:\n"
+        '"CLUB_NAME_CHANGE"\t8\t"Ocean Select"\t""\n'
+        "#Reefland\n"
+        '"CLUB_NAME_CHANGE"\t9\t"Reef Rangers"\t""\n'
+        "#Added later (checked 2026/27)\n"
+        "\n"
+        "#Northland:\n"
+        '"CLUB_NAME_CHANGE"\t10\t"North Albion"\t""\n'
+        "#Newland\n"
+        '"CLUB_NAME_CHANGE"\t11\t"New Town"\t""\n'
+        "#Asia\n"
+        "#Riverland\n"
+        '"CLUB_NAME_CHANGE"\t12\t"Riverside Town"\t""\n'
+        "#Cup sides\n"
+        "#Grand Cup\n"
+        '"CLUB_NAME_CHANGE"\t13\t"Cup Holders"\t""\n'
+    )
+    UNUSUAL = (
+        "#\n"
+        "#   :\n"
+        '"CLUB_NAME_CHANGE"\t1\t"Nowhere Town"\t""\n'
+        "#EUROPE\n"
+        "#  Spaced   Land  :\n"
+        '"CLUB_NAME_CHANGE"\t2\t"Spaced Athletic"\t""\n'
+        "#North & Central America:\n"
+        "#\u00cele-de-Test (2026/27)\n"
+        '"CLUB_NAME_CHANGE"\t3\t"Isle Test"\t""\n'
+        "#~~~~~\n"
+        '"CLUB_NAME_CHANGE"\t4\t"Isle Test Reserves"\t""\n'
+        "#Europe\n"
+        "#Spaced   Land\n"
+        '"CLUB_NAME_CHANGE"\t5\t"Spaced Rovers"\t""\n'
+    )
+
+    def _open(self, *texts):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        paths = []
+        for number, text in enumerate(texts):
+            path = Path(folder.name) / f"names{number}.lnc"
+            write_lnc(path, text)
+            paths.append(str(path))
+        return editor.open_documents(paths)
+
+    @staticmethod
+    def _shape(nodes):
+        return [(node.key, node.title, node.count,
+                 [(child.key, child.title, child.count) for child in node.children])
+                for node in nodes]
+
+    def test_a_heading_line_and_a_continent_heading(self):
+        texts = ("#Europe:", "# Europe :", "##Southland", "#  Spaced   Land  :", "#", "#   :",
+                 "#=====", "#~-~-~", "#Added later (checked 2026/27)")
+        self.assertEqual([editor.section_heading(text) for text in texts],
+                         ["Europe", "Europe", "Southland", "Spaced   Land", "", "", "", "",
+                          "Added later (checked 2026/27)"])
+        for text in ("Europe", "EUROPE", "north america", "North & Central America",
+                     "Oc\u00e9ania", " Asia "):
+            self.assertTrue(editor.is_continent_heading(text), text)
+        for text in ("Europa", "Eastern Europe", "Northland", "Americas", ""):
+            self.assertFalse(editor.is_continent_heading(text), text)
+
+    def test_the_outline_follows_the_headings_in_file_order(self):
+        outline = editor.section_outline(self._open(self.SECTIONS))
+        self.assertEqual(outline, {
+            "Europe": "Europe", "Northland": "Europe", "Southland": "Europe",
+            "South America": "South America", "Eastmark": "South America",
+            "Westvale": "South America", "Isle of Fen": "South America",
+            "Oceania": "Oceania", "Reefland": "Oceania",
+            "Added later (checked 2026/27)": "Oceania",
+            "Asia": "Asia", "Riverland": "Asia"})
+
+    def test_a_section_sits_under_the_first_continent_it_is_found_under(self):
+        first = '#Tailland\n"CLUB_NAME_CHANGE"\t1\t"Tail Town"\t""\n'
+        second = ('#Africa:\n#Tailland\n"CLUB_NAME_CHANGE"\t2\t"Tail Rovers"\t""\n'
+                  '#Europe\n#Tailland\n"CLUB_NAME_CHANGE"\t3\t"Tail Albion"\t""\n')
+        outline = editor.section_outline(self._open(first, second))
+        self.assertEqual(outline["Tailland"], "Africa")     # loose in the first file
+        self.assertEqual(editor.section_outline(self._open(first)), {})
+
+    def test_the_tree_counts_each_row_and_drops_nothing(self):
+        docs = self._open(self.SECTIONS)
+        entities = editor.build_entities(docs)
+        nodes = editor.section_tree(entities, editor.section_outline(docs))
+        own = editor.SECTION_OWN
+        self.assertEqual(self._shape(nodes), [
+            ("Asia", "Asia", 1, [("Riverland", "Riverland", 1)]),
+            ("Europe", "Europe", 5, [("Northland", "Northland", 3),
+                                     ("Southland", "Southland", 2)]),
+            ("Oceania", "Oceania", 2, [(own + "Oceania", "Oceania (heading only)", 1),
+                                       ("Reefland", "Reefland", 1)]),
+            ("South America", "South America", 2, [("Eastmark", "Eastmark", 1),
+                                                   ("Isle of Fen", "Isle of Fen", 1)]),
+            ("Grand Cup", "Grand Cup", 1, []),
+            ("Newland", "Newland", 1, []),
+            (own, "No file section", 1, [])])
+        leaves = sum(child.count for node in nodes for child in (node.children or [node]))
+        self.assertEqual(leaves, len(entities))
+
+    def test_unusual_headings_are_kept(self):
+        docs = self._open(self.UNUSUAL)
+        entities = editor.build_entities(docs)
+        nodes = editor.section_tree(entities, editor.section_outline(docs))
+        self.assertEqual(self._shape(nodes), [
+            ("EUROPE", "EUROPE", 2, [("Spaced   Land", "Spaced   Land", 2)]),
+            ("North & Central America", "North & Central America", 2,
+             [("\u00cele-de-Test (2026/27)", "\u00cele-de-Test (2026/27)", 2)]),
+            (editor.SECTION_OWN, "No file section", 1, [])])
+        self.assertEqual(editor.section_tree([], {}), [])
+
+    def test_a_key_selects_a_section_a_continent_or_exactly_one(self):
+        docs = self._open(self.SECTIONS)
+        outline = editor.section_outline(docs)
+        scope = editor.section_scope
+        own = editor.SECTION_OWN
+        self.assertEqual(scope("", outline), "")
+        self.assertEqual(scope("Newland", outline), "Newland")
+        self.assertEqual(scope("Northland", outline), "Northland")
+        self.assertEqual(scope("Europe", outline), frozenset({"Europe", "Northland", "Southland"}))
+        self.assertEqual(scope(own + "Oceania", outline), frozenset({"Oceania"}))
+        self.assertEqual(scope(own, outline), frozenset({""}))
+        entities = editor.build_entities(docs)
+
+        def ids(key):
+            return sorted((entity.id for entity in entities
+                           if editor.entity_shown(entity, [], scope(key, outline))), key=int)
+
+        self.assertEqual(ids("Europe"), ["2", "3", "4", "5", "10"])
+        self.assertEqual(ids("Oceania"), ["8", "9"])
+        self.assertEqual(ids(own + "Oceania"), ["8"])
+        self.assertEqual(ids(own), ["1"])
+        self.assertEqual(len(ids("")), 13)
+        self.assertTrue(editor.in_section_scope("Anything", ""))
+        self.assertFalse(editor.in_section_scope("", "Northland"))
+        self.assertEqual(editor.section_title(own + "Oceania"), "Oceania (heading only)")
+        self.assertEqual(editor.section_title(own), "No file section")
+        self.assertEqual(editor.section_title("Northland"), "Northland")
+
+    def test_the_count_beside_a_field_reads_the_length_rules(self):
+        pill = editor.count_pill
+        text, level, tip = pill("club", "long", "Alpha United")
+        self.assertEqual((text, level), ("12 / 28", "muted"))
+        self.assertIn("12 / 28 characters", tip)
+        self.assertIn("Skins differ", tip)
+        self.assertEqual(pill("club", "long", "A" * 27)[:2], ("27 / 28", "warning"))
+        self.assertIn("near the guide", pill("club", "long", "A" * 27)[2])
+        self.assertEqual(pill("club", "short", "Northern Athletic")[:2], ("17 / 14", "problem"))
+        self.assertIn("over the guide", pill("club", "short", "Northern Athletic")[2])
+        self.assertEqual(pill("club", "code", "alp")[:2], ("3 / 3", "problem"))
+        self.assertIn("lower case", pill("club", "code", "alp")[2])
+        self.assertEqual(pill("club", "code", "")[:2], ("0 / 3", "muted"))
+        self.assertEqual(pill("stadium", "long", "Gamma Park Stadium")[:2], ("18", "muted"))
+        self.assertIn("no typical length guide", pill("stadium", "long", "Gamma Park Stadium")[2])
+        self.assertEqual(pill("comp", "code", "NORCUP")[:2], ("6", "muted"))   # no guide for six
+        for size in range(34):                  # the counter's own rule, never a second one
+            gauge = editor.length_gauge("club", "long", "x" * size)
+            shown, level, _tip = pill("club", "long", "x" * size)
+            self.assertEqual(level, gauge[1])
+            self.assertTrue(gauge[0].startswith(shown))
+
+
+class _Session28Window:
+    """A shown, active window on a small file of the test's own (made-up names)."""
+
+    CLUBS = (
+        "#Northland\n"
+        '"CLUB_NAME_CHANGE"\t10\t"Alpha United"\t""\n'
+        '"CLUB_SHORT_NAME_CHANGE"\t10\t"Alpha"\t""\n'
+        '"CLUB_3LETTER_NAME_CHANGE"\t10\t"ALP"\t""\n'
+        '"CLUB_NAME_CHANGE"\t20\t"Beta Town"\t""\n'
+        "#Southland\n"
+        '"CLUB_NAME_CHANGE"\t30\t"Gamma Rovers"\t""\n'
+        '"STADIUM_NAME_CHANGE"\t40\t"Gamma Park Stadium"\t""\n'
+    )
+
+    def use_state(self) -> Path:
+        """Settings and collections in a folder of this test's own."""
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name) / "state"
+        self.enterContext(mock.patch.object(editor, "STATE_ROOT", root))
+        return root
+
+    def window(self, text: str | None = None, size=(1280, 800)):
+        from PySide6.QtWidgets import QApplication
+
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "FM27_Club_Names.lnc"
+        write_lnc(path, self.CLUBS if text is None else text)
+        win = make_window(self)
+        self.addCleanup(close_window, win)
+        win.resize(*size)
+        win.show()
+        win.activateWindow()
+        QApplication.processEvents()
+        self.assertTrue(win.load([str(path)]))
+        QApplication.processEvents()
+        return win
+
+    @staticmethod
+    def select(win, ident: str) -> None:
+        win.select_entities_matching(lambda entity: entity.id == ident)
+
+    @staticmethod
+    def shown(win) -> list[str]:
+        proxy = win.entity_proxy
+        return sorted((win.entity_model.rows[proxy.mapToSource(proxy.index(row, 0)).row()].id
+                       for row in range(proxy.rowCount())), key=int)
+
+
+class Session28Inspector(_Session28Window, unittest.TestCase):
+    """Stage 1: the inspector shows the text on disk only when it differs, keeps the file and
+    line in a footer, a tooltip and the accessible description, and counts each field's
+    characters in a pill beside it."""
+
+    def test_an_unchanged_value_is_not_repeated(self):
+        win = self.window()
+        self.select(win, "10")
+        long = win.inspector_fields["long"]
+        self.assertFalse(long["chip"].isVisible())
+        self.assertEqual(long["disk"].text(), "Alpha United")   # still there for screen readers
+        self.assertEqual((long["marker"].text(), long["edit"].text()),
+                         ("Unchanged", "Alpha United"))
+        self.assertIn("the same as on disk", long["edit"].accessibleDescription())
+        self.assertFalse(win.inspector_fields["code"]["chip"].isVisible())
+        self.select(win, "20")
+        self.assertFalse(win.inspector_fields["code"]["chip"].isVisible())   # no line at all
+
+    def test_a_changed_value_shows_the_disk_value_struck_through(self):
+        from PySide6.QtWidgets import QDialog
+
+        win = self.window()
+        self.select(win, "10")
+        long = win.inspector_fields["long"]
+        long["edit"].setText("Alpha Athletic")
+        win.commit_inspector("long", long["edit"])
+        self.assertTrue(long["chip"].isVisible())
+        self.assertEqual(long["disk"].text(), "Alpha United")
+        self.assertTrue(long["disk"].font().strikeOut())
+        self.assertEqual(long["chip"].accessibleName(), "On disk: Alpha United")
+        self.assertEqual((long["marker"].text(), long["edit"].text()),
+                         ("Edited (Manual edit)", "Alpha Athletic"))
+        self.assertIn("On disk: Alpha United", long["edit"].accessibleDescription())
+        self.assertTrue(win.docs[0].dirty)
+        win.undo_act.trigger()
+        self.assertFalse(long["chip"].isVisible())
+        self.assertFalse(win.docs[0].dirty)
+        win.redo_act.trigger()
+        self.assertTrue(long["chip"].isVisible())
+        seen = []
+        with mock.patch.object(editor, "football_manager_running", return_value=[]), \
+                mock.patch.object(QDialog, "exec", press_write(seen)):
+            win.save()
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(win.docs[0].dirty)
+        self.assertFalse(long["chip"].isVisible())             # saved: the disk holds it now
+        self.assertEqual(long["marker"].text(), "Unchanged")
+
+    def test_an_added_line_says_there_is_none_on_disk(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.select(win, "20")
+        code = win.inspector_fields["code"]
+        code["edit"].setText("BET")
+        win.commit_inspector("code", code["edit"])
+        QApplication.processEvents()            # a first line reloads the views
+        code = win.inspector_fields["code"]
+        self.assertTrue(code["chip"].isVisible())
+        self.assertEqual(code["disk"].text(), "No line yet")
+        self.assertFalse(code["disk"].font().strikeOut())
+        self.assertEqual(code["marker"].text(), "Added (Manual edit)")
+
+    def test_the_file_and_line_sit_in_a_footer_and_a_tooltip(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.select(win, "10")
+        long, short = win.inspector_fields["long"], win.inspector_fields["short"]
+        self.assertEqual(long["where"].text(), "FM27_Club_Names.lnc, line 2")
+        self.assertTrue(win.inspector_source.isAncestorOf(long["where"]))
+        self.assertFalse(long["edit"].parentWidget().isAncestorOf(long["where"]))
+        self.assertTrue(long["where"].isVisible())      # the first field's, until another has focus
+        self.assertTrue(long["raw"].isVisible())
+        self.assertIn('"CLUB_NAME_CHANGE"', long["raw"].text())
+        self.assertFalse(short["where"].isVisible())
+        self.assertEqual(win.inspector_source_caption.text(), "Long name")
+        self.assertIn("FM27_Club_Names.lnc, line 2", long["edit"].toolTip())
+        self.assertIn("FM27_Club_Names.lnc, line 2", long["edit"].accessibleDescription())
+        short["edit"].setFocus()
+        QApplication.processEvents()
+        self.assertTrue(short["where"].isVisible())
+        self.assertFalse(long["where"].isVisible())
+        self.assertEqual(short["where"].text(), "FM27_Club_Names.lnc, line 3")
+        self.assertEqual(win.inspector_source_caption.text(), "Short name")
+
+    def test_count_pills_follow_typing_and_say_when_a_value_is_over(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.select(win, "10")
+        long, short, code = (win.inspector_fields[slot] for slot in ("long", "short", "code"))
+        self.assertEqual((long["count"].text(), long["count"].objectName()), ("12 / 28", "count"))
+        self.assertEqual((short["count"].text(), code["count"].text()), ("5 / 14", "3 / 3"))
+        for widgets in (long, short, code):                 # beside its field, on its row
+            edit, pill = widgets["edit"], widgets["count"]
+            self.assertTrue(pill.isVisible())
+            self.assertIs(pill.parentWidget(), edit.parentWidget())
+            self.assertGreater(pill.geometry().left(), edit.geometry().right())
+            self.assertLess(abs(pill.geometry().center().y() - edit.geometry().center().y()), 4)
+        self.assertFalse(long["gauge"].isVisible())          # within the guide: nothing to add
+        long["edit"].setText("A" * 27)
+        self.assertEqual((long["count"].text(), long["count"].objectName()),
+                         ("27 / 28", "count_warning"))
+        long["edit"].setText("Northern Athletic Football Club")
+        self.assertEqual((long["count"].text(), long["count"].objectName()),
+                         ("31 / 28", "count_problem"))
+        self.assertIn("over the guide", long["count"].toolTip())
+        self.assertIn("over the guide", long["count"].accessibleDescription())
+        self.assertTrue(long["gauge"].isVisible())           # and in words under the field
+        self.assertEqual(long["gauge"].text(), "31 / 28 · over the guide")
+        self.assertEqual(win.inspector_entity.name_in("long"), "Alpha United")   # typing only
+        code["edit"].setText("al")
+        self.assertEqual((code["count"].text(), code["count"].objectName()),
+                         ("2 / 3", "count_problem"))
+        win.family = "stadium"
+        win.apply_family()
+        QApplication.processEvents()                # the new fields are shown
+        self.select(win, "40")
+        name = win.inspector_fields["long"]
+        self.assertEqual((name["count"].text(), name["count"].objectName()), ("18", "count"))
+        self.assertTrue(name["count"].isVisible())
+        self.assertTrue(name["gauge"].isHidden())
+
+    def test_the_inspector_fits_without_scrolling(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        self.select(win, "10")
+        long = win.inspector_fields["long"]
+        long["edit"].setText("Alpha Athletic")
+        win.commit_inspector("long", long["edit"])           # the chip shows too
+        from PySide6.QtCore import QAbstractAnimation
+
+        card = win.illustrative_card
+        animation = card._animation
+        if animation is not None and animation.state() == QAbstractAnimation.Running:
+            animation.setCurrentTime(animation.duration())  # a fold or unfold, finished now
+        for _ in range(10):                                  # nested layouts settle in turns
+            QApplication.processEvents()
+        self.assertTrue(card._expanded)
+        self.assertTrue(card.content.isVisible())
+        self.assertEqual(card.content.maximumHeight(), 16777215)    # open in full, no cap
+        self.assertEqual(win.inspector_scroll.verticalScrollBar().maximum(), 0,
+                         (win.inspector.sizeHint().height(),
+                          win.inspector_scroll.viewport().height()))
+
+
+class Session28Preview(_Session28Window, unittest.TestCase):
+    """Stage 1: the Illustrative card reads the values typed in the inspector, in a league
+    table row, a score pill and a ticker line, with made-up opponents only."""
+
+    def test_the_previews_follow_the_typed_values(self):
+        win = self.window()
+        card = win.illustrative_card
+        self.select(win, "10")
+        self.assertEqual((card.table_position.text(), card.table_short.text(),
+                          card.table_points.text()), ("1", "Alpha", "21 pts"))
+        self.assertTrue(card.table_swatch.isVisible())
+        self.assertEqual((card.scoreboard_code.text(), card.score_result.text(),
+                          card.score_opponent.text()), ("ALP", "2 - 1", "OPP"))
+        self.assertEqual(card.scoreboard_name.text(), "Alpha United")
+        self.assertEqual(card.ticker_label.text(), "Alpha United 2 - 1 Opponents")
+        fields = win.inspector_fields
+        steps = win.undo_stack.count()
+        fields["short"]["edit"].setText("Alpha Utd")         # typed, not kept yet
+        fields["code"]["edit"].setText("AUT")
+        fields["long"]["edit"].setText("Alpha United Athletic Club")
+        self.assertEqual(card.table_short.text(), "Alpha Utd")
+        self.assertEqual(card.scoreboard_code.text(), "AUT")
+        self.assertEqual(card.scoreboard_name.text(), "Alpha United Athletic Club")
+        fields["short"]["edit"].setText("Alpha United Athletic")     # past the guide of 14
+        self.assertEqual(card.table_short.text(), "Alpha United…")
+        self.assertEqual(card.table_short.toolTip(), "Alpha United Athletic")
+        self.assertFalse(card.cut_note.isHidden())
+        self.assertEqual(win.undo_stack.count(), steps)
+        self.assertEqual(win.inspector_entity.name_in("short"), "Alpha")
+        fields["short"]["edit"].escaped.emit()               # Esc: the name in memory again
+        self.assertEqual(card.table_short.text(), "Alpha")
+
+    def test_absent_names_and_other_families(self):
+        win = self.window()
+        card = win.illustrative_card
+        self.select(win, "20")                               # no short name and no code
+        self.assertEqual(card.table_short.text(), editor.no_override_text("club", "short"))
+        self.assertEqual(card.scoreboard_code.text(), editor.EMPTY_CELL_MARK)
+        self.assertEqual(card.scoreboard_code.toolTip(), "No code override")
+        self.assertEqual(card.ticker_label.text(), "Beta Town 2 - 1 Opponents")
+        win.family = "stadium"
+        win.apply_family()
+        card = win.illustrative_card
+        self.select(win, "40")
+        self.assertEqual(card.table_short.text(), "Gamma Park Stadium")   # its one name
+        self.assertFalse(card.table_points.isVisible())
+        self.assertFalse(card.score_pill.isVisible())
+        self.assertEqual(card.scoreboard_name.text(), "Gamma Park Stadium")
+        self.assertEqual(card.ticker_label.text(), "Gamma Park Stadium")
+
+    def test_the_card_opens_in_full_after_folding(self):
+        from PySide6.QtCore import QAbstractAnimation
+        from PySide6.QtWidgets import QApplication
+
+        def settle(card):
+            animation = card._animation
+            if animation is not None and animation.state() == QAbstractAnimation.Running:
+                animation.setCurrentTime(animation.duration())
+            for _ in range(10):
+                QApplication.processEvents()
+
+        win = self.window()
+        card = win.illustrative_card
+        win.entity_view.clearSelection()
+        card.set_expanded(False)
+        settle(card)
+        self.assertFalse(card.content.isVisible())
+        card.set_expanded(True)                 # opened while empty, so small at first
+        settle(card)
+        self.select(win, "10")                  # the previews fill in and need more room
+        settle(card)
+        self.assertEqual(card.content.maximumHeight(), 16777215)   # not held at its old size
+        self.assertTrue(card.score_pill.isVisible())
+        self.assertGreaterEqual(card.content.height(), card.content.minimumSizeHint().height())
+
+    def test_the_previews_stay_compact(self):
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window()
+        card = win.illustrative_card
+        self.select(win, "10")
+        win.inspector_fields["long"]["edit"].setText("Northern Athletic Football Club of Testing")
+        win.inspector_fields["short"]["edit"].setText("Northern Athletic Testing")
+        QApplication.processEvents()
+        line = card.fontMetrics().height()
+        self.assertFalse(card.table_short.wordWrap())        # the table row stays one line
+        self.assertLessEqual(card.table_preview.height(), 2 * line + 8)
+        self.assertLessEqual(card.score_pill.height(), 2 * line)
+        self.assertLessEqual(card.content.sizeHint().height(), 12 * line)
+
+
+class Session28Sections(_Session28Window, unittest.TestCase):
+    """Stage 2: File sections is a tree of continents and the sections under them, each
+    with its count on the right. Made-up places only."""
+
+    def test_the_tree_groups_continents_with_counts_on_the_right(self):
+        from PySide6.QtCore import Qt
+
+        win = self.window(Session28Engine.SECTIONS)
+        tree = win.section_tree
+        self.assertEqual(tree.accessibleName(), "File sections")
+        tops = [tree.topLevelItem(number) for number in range(tree.topLevelItemCount())]
+        self.assertEqual([(item.text(0), item.text(1)) for item in tops], [
+            ("All sections", "13"), ("Asia", "1"), ("Europe", "5"), ("Oceania", "2"),
+            ("South America", "2"), ("Grand Cup", "1"), ("Newland", "1"),
+            ("No file section", "1")])
+        europe = tops[2]
+        self.assertEqual([(europe.child(n).text(0), europe.child(n).text(1))
+                          for n in range(europe.childCount())],
+                         [("Northland", "3"), ("Southland", "2")])
+        self.assertTrue(europe.textAlignment(1) & Qt.AlignRight.value)
+        self.assertFalse(europe.isExpanded())                 # continents start folded
+        self.assertEqual(europe.data(0, Qt.AccessibleTextRole), "Europe, 5 names")
+        self.assertEqual(tree.current_key(), "")
+
+    def test_continents_fold_and_unfold_from_the_keyboard(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        win = self.window(Session28Engine.SECTIONS)
+        tree = win.section_tree
+        tree.setFocus()
+        self.assertTrue(tree.select_key("Europe"))
+        europe = tree.currentItem()
+        QTest.keyClick(tree, Qt.Key_Right)                    # unfold
+        self.assertTrue(europe.isExpanded())
+        QTest.keyClick(tree, Qt.Key_Down)                     # into it
+        self.assertEqual((tree.current_key(), win.section_filter), ("Northland", "Northland"))
+        QTest.keyClick(tree, Qt.Key_Left)                     # back to the continent
+        self.assertEqual(tree.current_key(), "Europe")
+        QTest.keyClick(tree, Qt.Key_Left)                     # fold
+        self.assertFalse(europe.isExpanded())
+        self.assertEqual(win.section_filter, "Europe")
+
+    def test_a_continent_shows_all_its_sections_and_a_country_its_own(self):
+        win = self.window(Session28Engine.SECTIONS)
+        tree = win.section_tree
+        columns = win.entity_model.columns()
+        tree.select_key("Northland")
+        self.assertEqual(self.shown(win), ["2", "3", "10"])
+        self.assertTrue(win.entity_view.isColumnHidden(columns.index("section")))
+        tree.select_key("Europe")
+        self.assertEqual(self.shown(win), ["2", "3", "4", "5", "10"])
+        self.assertFalse(win.entity_view.isColumnHidden(columns.index("section")))
+        self.assertEqual(win.scope_label.text(), "In: Europe (5)")
+        tree.select_key(editor.SECTION_OWN + "Oceania")
+        self.assertEqual(self.shown(win), ["8"])
+        self.assertTrue(tree.currentItem().parent().isExpanded())     # the choice is in view
+        self.assertEqual(win.scope_label.text(), "In: Oceania (heading only) (1)")
+        tree.select_key(editor.SECTION_OWN)
+        self.assertEqual(self.shown(win), ["1"])
+        win.search_all_sections()
+        self.assertEqual((tree.current_key(), len(self.shown(win))), ("", 13))
+
+    def test_the_choice_and_the_folds_survive_a_reload_and_a_saved_search(self):
+        from PySide6.QtWidgets import QApplication, QDialog
+
+        self.use_state()
+        win = self.window(Session28Engine.SECTIONS)
+        tree = win.section_tree
+        tree.select_key("Europe")
+        tree.currentItem().setExpanded(True)
+        self.select(win, "4")
+        model = win.entity_model
+        row = next(n for n, entity in enumerate(model.rows) if entity.id == "4")
+        self.assertTrue(model.setData(model.index(row, model.columns().index("short")), "South"))
+        QApplication.processEvents()                          # a new line: the views reload
+        self.assertEqual((win.section_filter, tree.current_key()), ("Europe", "Europe"))
+        self.assertTrue(tree.currentItem().isExpanded())
+        self.assertEqual(win.inspector_entity.id, "4")
+        with mock.patch.object(QDialog, "exec", Session8Window._name("Europe sides")):
+            win.save_search()
+        self.assertEqual(win.saved_searches[-1].section, "Europe")
+        next(b for b in win.family_buttons if b.property("family") == "comp").click()
+        self.assertEqual(win.section_filter, "")
+        win.apply_saved_search(win.saved_searches[-1])
+        self.assertEqual((win.family, win.section_filter, tree.current_key()),
+                         ("club", "Europe", "Europe"))
+        self.assertEqual(self.shown(win), ["2", "3", "4", "5", "10"])
+
+    def test_unusual_headings_open_safely_and_every_section_is_kept(self):
+        win = self.window(Session28Engine.UNUSUAL)
+        tree = win.section_tree
+        self.assertEqual(tree.visible_keys(), [
+            "", "EUROPE", "Spaced   Land", "North & Central America",
+            "\u00cele-de-Test (2026/27)", editor.SECTION_OWN])
+        total = 0
+        for key in ("Spaced   Land", "\u00cele-de-Test (2026/27)", editor.SECTION_OWN):
+            self.assertTrue(tree.select_key(key), key)
+            total += len(self.shown(win))
+        self.assertEqual(total, 5)
+
+    def test_the_section_search_looks_inside_continents(self):
+        win = self.window(Session28Engine.SECTIONS)
+        tree = win.section_tree
+        win.section_search.setText("SOUTH")
+        self.assertEqual(tree.visible_keys(), ["", "Europe", "Southland", "South America",
+                                               "Eastmark", "Isle of Fen"])
+        self.assertTrue(tree.item_for("Europe").isExpanded())
+        win.section_search.clear()
+        self.assertFalse(tree.item_for("Europe").isExpanded())   # the folds come back
+        self.assertEqual(len(tree.visible_keys()), 15)
+
+
+class Session28Sidebar(_Session28Window, unittest.TestCase):
+    """Stage 3: F3, or the sidebar button, hides and shows the whole sidebar (Collections and
+    File sections). Nothing chosen changes, and the grid takes the room."""
+
+    def test_f3_hides_and_shows_the_sidebar_and_keeps_every_choice(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        win = self.window(Session28Engine.SECTIONS)
+        win.section_tree.select_key("Europe")
+        self.select(win, "4")
+        win.entity_view.setFocus()
+        QApplication.processEvents()
+        width = win.entity_view.width()
+        self.assertTrue(win.sidebar.isVisible())
+        QTest.keyClick(win.entity_view, Qt.Key_F3)
+        QApplication.processEvents()
+        self.assertFalse(win.sidebar.isVisible())
+        self.assertFalse(win.sidebar_act.isChecked())
+        self.assertGreater(win.entity_view.width(), width + 100)     # the grid takes the room
+        self.assertEqual((win.section_filter, win.tabs.currentIndex(), win.inspector_entity.id),
+                         ("Europe", 0, "4"))
+        self.assertEqual([entity.id for entity in win.selected_entities()], ["4"])
+        self.assertIn("F3", win.statusBar().currentMessage())
+        QTest.keyClick(win.entity_view, Qt.Key_F3)
+        QApplication.processEvents()
+        self.assertTrue(win.sidebar.isVisible())
+        self.assertGreaterEqual(win.entity_splitter.sizes()[0], 120)
+        self.assertEqual((win.section_filter, win.section_tree.current_key()),
+                         ("Europe", "Europe"))
+        self.assertEqual([entity.id for entity in win.selected_entities()], ["4"])
+
+    def test_a_collection_and_the_view_stay_chosen(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QDialog
+
+        self.use_state()
+        win = self.window(Session28Engine.SECTIONS)
+        self.select(win, "2")
+        with mock.patch.object(QDialog, "exec", Session8Window._name("Picks")):
+            self.assertTrue(win.new_collection(True))
+        win.collection_list.setCurrentRow(0)
+        self.assertEqual((win.collection_filter, self.shown(win)), ("Picks", ["2"]))
+        win.sidebar_act.trigger()
+        win.sidebar_act.trigger()
+        self.assertEqual((win.collection_filter, self.shown(win)), ("Picks", ["2"]))
+        win.lines_act.trigger()
+        QTest.keyClick(win.line_view, Qt.Key_F3)
+        self.assertEqual(win.tabs.currentIndex(), 1)                  # F3 keeps the view
+        self.assertTrue(win.sidebar.isHidden())
+        win.entities_act.trigger()
+        self.assertTrue(win.sidebar.isHidden())
+        self.assertFalse(win.sidebar_btn.isChecked())
+        win.sidebar_btn.click()
+        self.assertFalse(win.sidebar.isHidden())
+        self.assertEqual(win.collection_filter, "Picks")
+
+    def test_the_sidebar_button_says_what_it_does(self):
+        win = self.window()
+        button = win.sidebar_btn
+        self.assertTrue(button.isVisible())
+        self.assertEqual(button.accessibleName(), "Sidebar")
+        self.assertIn("Hide the sidebar", button.toolTip())
+        self.assertIn("F3", button.toolTip())
+        button.click()
+        self.assertTrue(win.sidebar.isHidden())
+        self.assertIn("Show the sidebar", button.toolTip())
+        self.assertEqual(win.sidebar_act.shortcut().toString(), "F3")
+
+    def test_the_choice_is_remembered_like_the_inspector(self):
+        root = self.use_state()
+        win = make_window(self)
+        try:
+            win.sidebar_act.trigger()
+            win.tabs.setCurrentIndex(1)
+            win.remember_view()
+            state, problem = editor.read_state(root)
+            self.assertEqual(problem, "")
+            self.assertIs(state["view"]["sidebar"], False)
+            self.assertEqual(state["view"]["tab"], 1)                 # the view, as before
+        finally:
+            close_window(win)
+        again = make_window(self)
+        try:
+            self.assertTrue(again.sidebar.isHidden())
+            self.assertFalse(again.sidebar_act.isChecked())
+            self.assertEqual(again.tabs.currentIndex(), 1)
+            again.sidebar_act.trigger()
+            self.assertFalse(again.sidebar.isHidden())
+            self.assertGreaterEqual(again.entity_splitter.sizes()[0], 120)
+        finally:
+            close_window(again)
+        self.assertEqual(editor.clean_view({"sidebar": "no"}), {})
+
+    def test_the_keys_the_view_menu_and_the_palette_are_as_before(self):
+        from PySide6.QtGui import QAction
+
+        win = self.window()
+        self.assertEqual([action.text() for action in win.view_menu.actions() if action.text()],
+                         ["Entities", "All lines", "Changes", "Inspector", "Show ID column",
+                          "Reset column widths"])
+        self.assertEqual({action.text(): [key.toString() for key in action.shortcuts()]
+                          for action in (win.entities_act, win.lines_act, win.changes_act,
+                                         win.inspector_act)},
+                         {"Entities": ["Ctrl+1"], "All lines": ["Ctrl+2"],
+                          "Changes": ["Ctrl+Shift+C", "Ctrl+3"], "Inspector": ["F4"]})
+        taken = [key.toString() for action in win.findChildren(QAction)
+                 for key in action.shortcuts()]
+        self.assertEqual(len(taken), len(set(taken)), taken)
+        self.assertIn("F3", taken)
+        self.assertIn(("F3", "Hide or show the sidebar: Collections and File sections"),
+                      win.shortcut_rows())
+        self.assertFalse(any("Sidebar" in row[0] for row in win.palette_commands()))
+        win.sidebar_act.trigger()
+        for action, index in ((win.lines_act, 1), (win.changes_act, 2), (win.entities_act, 0)):
+            action.trigger()
+            self.assertEqual(win.tabs.currentIndex(), index)
+            self.assertTrue(win.tabs.buttons[index].isChecked())
+
+
+class Session28Collections(_Session28Window, unittest.TestCase):
+    """Stage 4: with no collections the sidebar offers one action, New collection from
+    selection, through the usual way of making a collection."""
+
+    def test_the_empty_state_is_one_action(self):
+        from PySide6.QtWidgets import QDialog
+
+        root = self.use_state()
+        win = self.window()
+        button = win.collection_empty_btn
+        self.assertTrue(button.isVisible())
+        self.assertEqual(button.text(), "New collection from selection")
+        self.assertFalse(win.collection_hint.isVisible())             # no paragraph
+        self.assertFalse(win.collection_list.isVisible())
+        win.entity_view.clearSelection()
+        self.assertFalse(button.isEnabled())
+        self.assertIn("Select", button.toolTip())
+        self.assertIn("Select", button.accessibleDescription())
+        self.select(win, "10")
+        self.assertTrue(button.isEnabled())
+        with mock.patch.object(QDialog, "exec", Session8Window._name("Shortlist")):
+            button.click()
+        self.assertEqual(editor.load_collection_file(root).find("Shortlist").keys,
+                         {("club", "10", "")})
+        self.assertFalse(button.isVisible())
+        self.assertTrue(win.collection_list.isVisible())
+        self.assertEqual(win.collection_list.item(0).text(), "★ Shortlist (1)")
+
+    def test_a_damaged_collections_file_still_says_so(self):
+        root = self.use_state()
+        root.mkdir(parents=True)
+        (root / "collections.json").write_text("{bad", encoding="utf-8")
+        win = self.window()
+        self.assertTrue(win.collection_hint.isVisible())
+        self.assertIn("not readable JSON", win.collection_hint.text())
+        self.assertFalse(win.collection_empty_btn.isVisible())
+        self.assertEqual((root / "collections.json").read_text(encoding="utf-8"), "{bad")
+
+
+class Session28Display(unittest.TestCase):
+    """Stages 1 and 3 at 125% and 150% scaling: each count pill shows its current and
+    maximum counts in full beside its field, and F3 gives the grid the sidebar's room."""
+
+    SCRIPT = (
+        "import json, sys, tempfile\n"
+        "from pathlib import Path\n"
+        "from unittest import mock\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import fm_name_editor as editor\n"
+        "root = Path(tempfile.mkdtemp())\n"
+        "for name in ('BACKUP_ROOT', 'PROFILE_ROOT', 'STATE_ROOT'):\n"
+        "    mock.patch.object(editor, name, root / name).start()\n"
+        "editor.JOBS_INLINE = True\n"
+        "lnc = root / 'FM27_Club_Names.lnc'\n"
+        "text = ('#Northland\\r\\n'\n"
+        "        '\"CLUB_NAME_CHANGE\"\\t1\\t\"Northern Athletic Town\"\\t\"\"\\r\\n'\n"
+        "        '\"CLUB_SHORT_NAME_CHANGE\"\\t1\\t\"Northern\"\\t\"\"\\r\\n'\n"
+        "        '\"CLUB_3LETTER_NAME_CHANGE\"\\t1\\t\"NOR\"\\t\"\"\\r\\n')\n"
+        "lnc.write_bytes(b'\\xef\\xbb\\xbf' + text.encode('utf-8'))\n"
+        "from PySide6.QtWidgets import QApplication\n"
+        "app, win = editor.run_gui([str(lnc)])\n"
+        "QApplication.processEvents()\n"
+        "win.entity_view.selectRow(0)\n"
+        "QApplication.processEvents()\n"
+        "from PySide6.QtCore import QAbstractAnimation\n"
+        "card = win.illustrative_card\n"
+        "animation = card._animation\n"
+        "if animation is not None and animation.state() == QAbstractAnimation.Running:\n"
+        "    animation.setCurrentTime(animation.duration())\n"
+        "for _ in range(10):\n"
+        "    QApplication.processEvents()\n"
+        "room = win.inspector_scroll.viewport().width()\n"
+        "def pill(slot):\n"
+        "    widget = win.inspector_fields[slot]['count']\n"
+        "    return {'text': widget.text(), 'name': widget.objectName(),\n"
+        "            'visible': widget.isVisible(), 'height': widget.height(),\n"
+        "            'needed': widget.fontMetrics().height(), 'width': widget.width(),\n"
+        "            'text_width': widget.fontMetrics().horizontalAdvance(widget.text()),\n"
+        "            'right': widget.mapTo(win.inspector, widget.rect().topRight()).x()}\n"
+        "before = {slot: pill(slot) for slot in ('long', 'short', 'code')}\n"
+        "scroll = win.inspector_scroll.verticalScrollBar().maximum()\n"
+        "opened = [card._expanded, card.content.isVisible(), card.content.maximumHeight()]\n"
+        "win.inspector_fields['long']['edit'].setText('Northern Athletic Football Club')\n"
+        "QApplication.processEvents()\n"
+        "over = pill('long')\n"
+        "grid = win.entity_view.width()\n"
+        "win.sidebar_act.trigger()\n"
+        "QApplication.processEvents()\n"
+        "collapsed = [win.sidebar.isVisible(), win.entity_view.width()]\n"
+        "win.sidebar_act.trigger()\n"
+        "QApplication.processEvents()\n"
+        "restored = [win.sidebar.isVisible(), win.entity_splitter.sizes()[0]]\n"
+        "free = app.primaryScreen().availableGeometry()\n"
+        "print(json.dumps({'free': [free.width(), free.height()],\n"
+        "                  'ratio': app.primaryScreen().devicePixelRatio(),\n"
+        "                  'window': [win.width(), win.height()], 'room': room,\n"
+        "                  'before': before, 'over': over, 'scroll': scroll, 'grid': grid,\n"
+        "                  'opened': opened,\n"
+        "                  'collapsed': collapsed, 'restored': restored}))\n"
+        "for doc in win.docs:\n"
+        "    doc.mark_clean()\n"
+        "win.remember_on_close = False\n"
+        "win.close()\n"
+    )
+
+    def test_count_pills_and_f3_at_125_and_150_percent(self):
+        import subprocess
+        import sys
+
+        project = str(Path(__file__).resolve().parent.parent)
+        for ratio, width, height in ((1.25, 1536, 824), (1.5, 1280, 688)):
+            with self.subTest(ratio=ratio), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "screen.json").write_text(json.dumps({"screens": [{
+                    "name": "Desktop", "x": 0, "y": 0, "width": width, "height": height,
+                    "logicalDpi": 96, "logicalBaseDpi": 96, "dpr": ratio}]}), encoding="utf-8")
+                (Path(tmp) / "probe.py").write_text(self.SCRIPT, encoding="utf-8")
+                env = dict(os.environ, QT_QPA_PLATFORM="offscreen:configfile=screen.json")
+                run = subprocess.run([sys.executable, "probe.py", project], cwd=tmp, env=env,
+                                     capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                found = json.loads(run.stdout.strip().splitlines()[-1])
+                self.assertEqual((found["free"], found["ratio"]), ([width, height], ratio))
+                texts = {slot: found["before"][slot]["text"] for slot in found["before"]}
+                self.assertEqual(texts, {"long": "22 / 28", "short": "8 / 14", "code": "3 / 3"})
+                for slot, pill in [*found["before"].items(), ("over", found["over"])]:
+                    with self.subTest(pill=slot):
+                        self.assertTrue(pill["visible"])
+                        self.assertLessEqual(pill["right"], found["room"])    # in view
+                        self.assertGreaterEqual(pill["width"], pill["text_width"])  # not cut
+                        self.assertGreaterEqual(pill["height"], pill["needed"])
+                self.assertEqual((found["over"]["text"], found["over"]["name"]),
+                                 ("31 / 28", "count_problem"))
+                self.assertEqual(found["opened"], [True, True, 16777215])   # card open in full
+                self.assertEqual(found["scroll"], 0, found)        # and the inspector fits
+                self.assertFalse(found["collapsed"][0])
+                self.assertGreater(found["collapsed"][1], found["grid"] + 100)
+                self.assertTrue(found["restored"][0])
+                self.assertGreaterEqual(found["restored"][1], 120)

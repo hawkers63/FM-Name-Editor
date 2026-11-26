@@ -10,6 +10,43 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 24 November 2026 (Europe/London) — Claude Code (Session 23)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** Neal's Session 23 brief, pasted by Mark (three stages, targeted tests only, one local commit). Old proposal prompts in `notes/` ignored as instructed.
+- **Branch / commit:** main, local `feat: background pack import and backups, byte-difference explanation, faster save`, not pushed, not tagged
+
+### Done this session
+
+- Stage 1, Save timing: each part of a Save was timed on copies of the live files over six runs. Write, review, payload and status took under 0.2 s together; the reload after the write took most of the rest, and about half of that was `FamilyTokenIndex.rebuild` splitting every name into words again (twice per name), although a Save changes no name. That was the clear single cause. Fix: `_name_tokens` is an `lru_cache` (65,536 names) behind `extract_name_tokens`, which still returns a fresh list. Save went from 0.78 to 0.94 s down to 0.61 to 0.67 s (unprofiled runs). The 1 s limit and `Session7Speed` are unchanged.
+- Stage 2, responsiveness: `read_pack_file` (engine) reads, decodes and parses a pack; `import_pack` runs it and `proposals_from_pack` on `MainWindow.jobs`, then `show_pack` opens the pack dialog. `BackupDialog` lists the folders (`read_archives`) and compares a copy (`compare_backup_in_full`) on the jobs worker through `BackupDialog.run`, which drops an answer once the dialog is closed (`done` sets `closed`) or another copy was chosen (`request`). A whole-file restore goes through `run` too, so closing during its read restores nothing; the lists and buttons wait meanwhile (`restoring`). The restore of ticked names still re-compares on the GUI thread (unchanged).
+- Stage 3, why the bytes differ: `explain_byte_differences` / `describe_byte_differences` (engine, read only) report the encoding or BOM, line endings, comments, blank lines, unsupported lines and name lines written differently, with counts, the first 20 lines (`BYTE_EXPLAIN_SHOWN`) and a whole-file cap of 200,000 lines (`BYTE_EXPLAIN_MAX_LINES`); moved lines are reported as a different order. The Backups window shows it in a read-only panel only when the names match and the bytes do not. Help text updated.
+- Tests: new `Session23Engine` (4) and `Session23Window` (4); `Session8Workers` waits for the listing before restoring.
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Neal: set everything to 3.9, run the full suite once, tag, build and prepare publication; Mark confirms before any push.
+
+### Known issues / blockers
+
+- None found. The 3.8 executable was launched once for a smoke test at that release, against the never-launch rule; the release itself is fine. This session launched nothing.
+
+### Neal — release 3.9
+
+- Reviewed `ffb6d66`. Set `VERSION`, the module header, the launcher banner, the README and CHANGELOG headers and the public roadmap to 3.9; dated the changelog section 24 November 2026 with an empty Unreleased kept.
+- Ran the full offscreen suite once for the release: 384 tests in 59.460s, all passing; built the Windows executable from the release commit without launching it. Push and publication wait for Mark's confirmation.
+
+### Files touched
+
+- `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+
+---
+
 ## 24 November 2026 (Europe/London) — Session 22 and local v3.8 finalisation
 
 ### Neal — local release preparation
