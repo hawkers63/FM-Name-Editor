@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FM Name Editor v3.12
+FM Name Editor v3.13
 ====================
 Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.
 Proprietary and confidential. No copying, distribution, modification,
@@ -78,6 +78,9 @@ leaves clean, so it is no longer shown as a pending restore.
 Release 3.12 adds a left-hand view rail, 30-pixel grid rows and one filter
 bar with counts.
 
+Release 3.13 compacts the inspector with count pills and live previews,
+organises File sections into a tree, and adds F3 to hide the sidebar.
+
 Requires:  pip install PySide6
 Run:       python fm_name_editor.py [file1.lnc file2.lnc ...]
 
@@ -124,7 +127,7 @@ from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "FM Name Editor"
-VERSION = "3.12"
+VERSION = "3.13"
 
 COPYRIGHT_FULL = (
     "Copyright (c) 2026 onwards Mark Hawksworth (hawkers63). All rights reserved.")

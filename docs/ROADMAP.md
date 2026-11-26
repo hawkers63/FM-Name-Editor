@@ -12,11 +12,10 @@ changes.
 
 ## Now
 
-- **Release 3.12** (25 November 2026), tagged source. A left-hand view rail, 30-pixel grid rows and a single filter bar with counts.
+- **Release 3.13** (26 November 2026). Compact inspector, File sections tree, F3 sidebar control and simpler collection creation.
 
 ## Next
 
-- **Release 3.13** — a compact inspector (the text on disk only when it differs, count pills, previews for judging lengths) and an organised sidebar (File sections as a tree of continents, F3 to hide the sidebar, one action when there are no collections). Implemented in Session 28; ready for Eve's release review.
 
 ## Later
 
@@ -24,6 +23,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.12 — left-hand view rail, 30-pixel grid rows and one filter bar
 - 3.11.1 — clear stale restore flags after a snapshot roll back
 - 3.11 — unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state
 - 3.10 — Restore selected names in the background, refusing names changed since the list was shown

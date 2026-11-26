@@ -1,16 +1,18 @@
 # Changelog
 
-Release: 3.12
-Status: source tagged for release
-Application on disk: 3.12
+Release: 3.13
+Status: released
+Application on disk: 3.13
 
-The source on disk reports `VERSION = "3.12"`. The launcher banner says v3.12.
+The source on disk reports `VERSION = "3.13"`. The launcher banner says v3.13.
 
 ## Unreleased
 
+## 3.13 (26 November 2026)
+
 - **Private coding instructions.** Keep `AGENTS.md` and `CLAUDE.md` locally, ignored and untracked, rather than publishing future revisions. Previous commits and tags retain their historical copies.
 
-Session 28 — a compact inspector and an organised sidebar (release 3.13, ready for Eve's review):
+Session 28 — a compact inspector and an organised sidebar (release 3.13):
 
 - **On disk only when it differs.** An inspector field no longer repeats the text on disk when it matches the text in memory. When it differs, the text on disk shows above the field in a small chip labelled On disk, struck through; a line added since the file was read says No line yet. The marker (Unchanged, Edited, Added) and Undo, Save and the unsaved state work as before.
 - **File and line in a footer.** The file and line, and the line as it stands in memory, are no longer repeated under every field. They sit in one footer under the fields, for the field you are in (the first field until you move), and in each field's tooltip and the description a screen reader gives.
@@ -21,6 +23,8 @@ Session 28 — a compact inspector and an organised sidebar (release 3.13, ready
 - **Collections when there are none.** The explanatory paragraph is replaced by one button, New collection from selection, which makes a collection of the rows selected in the grid in the usual way; with nothing selected it is off, and its tooltip says why. A damaged collections file is still named and left alone.
 - **User guide.** A new section, File sections and the sidebar, and new wording for the inspector and the length guides.
 - **Verification.** New `Session28Engine` (7), `Session28Inspector` (6), `Session28Preview` (4), `Session28Sections` (6), `Session28Sidebar` (5), `Session28Collections` (2) and `Session28Display` (1, at 125% and 150%). Old assertions that named the flat File sections list, the "None yet" paragraph and the old preview labels now name the tree, the button and the new previews.
+
+- **Release verification.** Full offscreen suite: 462 tests passed in 104.439 seconds, none skipped.
 
 ## 3.12 (25 November 2026)
 

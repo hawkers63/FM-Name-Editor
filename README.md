@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.12](https://img.shields.io/badge/Release-v3.12-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/tree/v3.12)
+[![Release v3.13](https://img.shields.io/badge/Release-v3.13-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.13)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-431-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-462-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.12
-Status: source tagged for release
-Application on disk: 3.12
+Release: 3.13
+Status: released
+Application on disk: 3.13
 </sub>
 
 </div>
@@ -50,6 +50,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 
 ## ✨ Key features
 
+**New in 3.13:** A compact inspector with character-count pills and live previews, a File sections tree, F3 to hide the sidebar, and a direct action to create your first collection.
+
 **New in 3.12:** A left-hand view rail, 30-pixel grid rows and a single filter bar with counts.
 
 **New in 3.11.1:** A one-fix release. **Edit > Roll back to snapshot** no longer leaves a saved file flagged as a pending restore when the snapshot was taken while a restore was pending.
@@ -78,7 +80,7 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 | --- | --- |
 | 🧩 **Entities grid** | A club or competition is one row: long name, short name, and code. Tabs for clubs, competitions, stadiums, cities, nations, and awards; **All lines** keeps the full table |
 | 🔎 **Search that forgives accents** | Search and filter by file section, type, edited rows, **No short-name override**, or **No code override**. Keep searches under a name |
-| 🗂️ **Inspector panel** | For each field: the text on disk above the text to write, whether it is unchanged, edited, or added, and the file and line |
+| 🗂️ **Inspector panel** | Character-count pills, the text on disk only when it differs, compact live previews, and a source footer |
 | ✅ **Changes view and review** | Every pending change with a tick. Untick one to leave it out of the next write; it stays pending in memory |
 | ↩️ **Undo and Redo** | Whole operations, one step each: a bulk tool, a name pack, a profile, a restore, or a Revert. Undo goes back past a Save |
 | 📝 **Spelling profiles** | Record your preferred spellings, then **Apply...** them again when the game's files change. Only names the game has not changed are ticked for you |
@@ -92,6 +94,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## 📸 Screenshots
+
+These screenshots show an earlier interface; 3.13 uses the compact inspector and File sections tree described above.
 
 <p align="center">
   <img src="docs/images/main-window.png" alt="The Entities grid with three edited clubs and the inspector panel showing the text on disk and the proposed text" width="100%">
@@ -199,6 +203,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.13**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.13) | 26&nbsp;Nov&nbsp;2026 | Compact inspector, File sections tree, F3 sidebar control and simpler collection creation. |
 | [**3.12**](https://github.com/hawkers63/FM-Name-Editor/tree/v3.12) | 25&nbsp;Nov&nbsp;2026 | A left-hand view rail, 30-pixel grid rows and a single filter bar with counts. |
 | [**3.11.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11.1) | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fix: a snapshot roll back no longer leaves a saved file flagged as a pending restore |
 | [**3.11**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11) | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fixes: unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state |
@@ -223,6 +228,17 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.13 adds</b> &nbsp;·&nbsp; 26&nbsp;Nov&nbsp;2026</summary>
+
+- A compact inspector with on-disk differences, count pills, a source footer and live previews.
+- File sections grouped by continent headings, with counts and keyboard navigation.
+- F3 hides and restores the sidebar; New collection from selection creates the first collection.
+- Coding-agent instruction files remain local and are excluded from the current source snapshot.
+- [Windows executable and verification details](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.13).
+
+</details>
 
 <details>
 <summary><b>What 3.12 adds</b> &nbsp;·&nbsp; 25&nbsp;Nov&nbsp;2026</summary>
