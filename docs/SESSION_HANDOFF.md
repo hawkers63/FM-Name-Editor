@@ -30,6 +30,8 @@ and Codex CLI. Update it at the end of every session.
 
 ### Release 3.13 - Eve, 26 November 2026
 
+- **Published and verified:** GitHub Latest is `v3.13`, tagged release commit `1b66add`. Windows executable: 49,141,261 bytes, FileVersion/ProductVersion 3.13. Fresh download matches SHA-256 `3f1c8e73986fb79dbc891538cd71fb0f769e5ea7680b943d174a55c9f2674286`. GitHub main excludes both local instruction files.
+
 - Mark authorised pushing, tagging, building and publishing release 3.13.
 - Version, launcher and release documents synchronised to 3.13. Full suite already passed: 462 tests in 104.439 seconds, none skipped; the version/About check is repeated after the bump.
 - Release includes the local-only instruction-file change. Existing historical copies remain in older commits and tags.
