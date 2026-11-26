@@ -8,6 +8,8 @@ The source on disk reports `VERSION = "3.12"`. The launcher banner says v3.12.
 
 ## Unreleased
 
+- **Private coding instructions.** Keep `AGENTS.md` and `CLAUDE.md` locally, ignored and untracked, rather than publishing future revisions. Previous commits and tags retain their historical copies.
+
 Session 28 — a compact inspector and an organised sidebar (release 3.13, ready for Eve's review):
 
 - **On disk only when it differs.** An inspector field no longer repeats the text on disk when it matches the text in memory. When it differs, the text on disk shows above the field in a small chip labelled On disk, struck through; a line added since the file was read says No line yet. The marker (Unchanged, Edited, Added) and Undo, Save and the unsaved state work as before.

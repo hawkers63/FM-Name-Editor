@@ -24,3 +24,7 @@ CLAUDE.local.md
 # builds it after tagging and attaches it to the GitHub Release.
 /build/
 /dist/
+
+# Local coding-agent instructions (not published).
+/AGENTS.md
+/CLAUDE.md

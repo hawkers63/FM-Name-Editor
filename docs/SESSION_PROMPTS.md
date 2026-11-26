@@ -3,6 +3,10 @@
 Paste the matching block at the start or end of a session. The three tools
 share the protocol in `AGENTS.md`; only the tool-specific notes differ.
 
+`AGENTS.md` and `CLAUDE.md` are private local files, excluded from the
+repository. These prompts require the local working copy that holds them.
+Never stage or publish either instruction file.
+
 Dates are Europe/London. Follow the confidentiality rule in `AGENTS.md`.
 
 © Mark Hawksworth. All rights reserved.

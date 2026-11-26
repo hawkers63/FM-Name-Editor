@@ -28,6 +28,12 @@ and Codex CLI. Update it at the end of every session.
 - Stage 6: CHANGELOG (Unreleased), the user guide (a new section, File sections and the sidebar, and new wording for the inspector and the length guides), the public roadmap's Next, this entry, and Session 23 moved to the archive.
 - Targeted runs, offscreen, one process at a time, all passing: `Session28*` (31) in 8.8 s; Session 28 with `WindowSmoke`, `Session2Window`, `Session6Window`, `Session7Window`, `Session8Engine`, `Session8Window`, `Session8Scaling`, `Session9Settings`, `Session9Window`, `Session14Visual`, `Session14Display`, `Session15BatchRename`, `Session18Preview`, `Session19Engine`, `Session19IdColumn`, `Session19AddName`, `Session20Engine`, `Session20Search`, `Session20Gauges`, `Session20Cadence`, `Session21Fill`, `Session21Health`, `Session21Snapshots`, `Session22RollbackConfirm`, `Session27View`, `Session27Grid` and `Session27Filters` (180) in 51.7 s; `Session7Speed`, `Session20Speed` and `Session21Speed` (3) in 7.5 s. Full suite not run (Eve runs it).
 
+### Eve review - 26 November 2026
+
+- Full offscreen suite: 462 tests passed in 104.439 seconds, none skipped. Log kept locally in `notes/full_suite_3.13.log`. No executable or desktop visual check performed.
+- At Mark's request, `AGENTS.md` and `CLAUDE.md` stay on this PC but are removed from tracking and ignored. Session prompts now explain that they require those local files. Published history and tags retain their old copies.
+- Version remains 3.12; release 3.13 is reviewed and awaits Mark's release approval. Nothing pushed, tagged, built or published.
+
 ### In progress
 
 - Nothing.
