@@ -8,19 +8,19 @@
 
 A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club, competition, stadium, and related spellings, carry your edits across from an older game's files by database ID, and write the file back safely.
 
-[![Release v3.13](https://img.shields.io/badge/Release-v3.13-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.13)
+[![Release v3.14](https://img.shields.io/badge/Release-v3.14-8b5cf6)](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.14)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20(Qt%206)-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![Tests](https://img.shields.io/badge/Tests-462-success)](tests/test_engine.py)
+[![Tests](https://img.shields.io/badge/Tests-467-success)](tests/test_engine.py)
 [![Licence](https://img.shields.io/badge/Licence-Proprietary%20%2F%20All%20Rights%20Reserved-red)](LICENSE)
 
 [![Download the .exe](https://img.shields.io/badge/Download-FM%20Name%20Editor.exe-7859cb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/hawkers63/FM-Name-Editor/releases/latest)
 
 <sub>
-Release: 3.13
-Status: released
-Application on disk: 3.13
+Release: 3.14
+Status: prepared locally; not yet published
+Application on disk: 3.14
 </sub>
 
 </div>
@@ -49,6 +49,8 @@ FM Name Editor turns those files into a searchable grid, keeps a record of what 
 ---
 
 ## ✨ Key features
+
+**New in 3.14:** A notification-area football icon with Show, optional Minimise to tray and Quit. Minimise to tray starts off, remembers your choice, and Quit preserves the usual unsaved-changes confirmation.
 
 **New in 3.13:** A compact inspector with character-count pills and live previews, a File sections tree, F3 to hide the sidebar, and a direct action to create your first collection.
 
@@ -203,6 +205,7 @@ Game data and backups do not belong in this repository.
 
 | Release | Date | Highlights |
 | --- | --- | --- |
+| [**3.14**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.14) | 28&nbsp;Nov&nbsp;2026 | Tray icon with Show, optional Minimise to tray and safe Quit. |
 | [**3.13**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.13) | 26&nbsp;Nov&nbsp;2026 | Compact inspector, File sections tree, F3 sidebar control and simpler collection creation. |
 | [**3.12**](https://github.com/hawkers63/FM-Name-Editor/tree/v3.12) | 25&nbsp;Nov&nbsp;2026 | A left-hand view rail, 30-pixel grid rows and a single filter bar with counts. |
 | [**3.11.1**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v3.11.1) | 25&nbsp;Nov&nbsp;2026 | 🔧 Bug fix: a snapshot roll back no longer leaves a saved file flagged as a pending restore |
@@ -228,6 +231,16 @@ Game data and backups do not belong in this repository.
 | [**2.0**](https://github.com/hawkers63/FM-Name-Editor/releases/tag/v2.0) | 11&nbsp;Nov&nbsp;2026 | 🧩 The Entities grid, accent-insensitive search, Quick load, Deploy, bulk tools, licensing toggle |
 
 Full version notes are in [CHANGELOG.md](CHANGELOG.md). Open a release below for its summary.
+
+<details>
+<summary><b>What 3.14 adds</b> &nbsp;·&nbsp; 28&nbsp;Nov&nbsp;2026</summary>
+
+- Click the notification-area football icon to restore the editor.
+- Right-click for Show FM Name Editor, Minimise to tray and Quit.
+- Minimise to tray is off by default and remembered when selected. Quit still asks about unsaved changes.
+- Help > User guide explains the tray. Menus, keyboard shortcuts and the command palette stay as before.
+
+</details>
 
 <details>
 <summary><b>What 3.13 adds</b> &nbsp;·&nbsp; 26&nbsp;Nov&nbsp;2026</summary>

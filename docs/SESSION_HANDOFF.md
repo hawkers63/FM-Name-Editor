@@ -27,6 +27,13 @@ and Codex CLI. Update it at the end of every session.
 - Tests: new `Session29Tray` (5): the icon, tooltip and menu (and the View menu and palette unchanged, and the guide section); minimise hides to the tray and a click or double-click brings it back, with the notice once; minimise stays on the taskbar when the option is off or there is no tray; the choice survives a reopen (and `clean_view` drops a non-bool); Quit with unsaved changes asks from a visible window, Cancel keeps the editor open and Discard closes it and the icon. Against the 3.13 code all 5 fail (the tray attributes do not exist).
 - Targeted runs, offscreen, one process at a time, all passing: `Session29Tray` (5) in 9.4 s; with `WindowSmoke`, `Session7Window`, `Session8Engine`, `Session9Settings`, `Session9Window`, `Session14Visual`, `Session19Engine`, `Session19IdColumn`, `Session20Cadence`, `Session27View` and `Session28Sidebar` (65) in 16.2 s; `Session29Tray` with `Session14Visual` after the guide section (18) in 3.6 s; `Session7Speed`, `Session20Speed` and `Session21Speed` (3) in 7.3 s. Desktop check (not offscreen): the tray is available, the icon is visible with sizes 16 to 256, the menu reads Show FM Name Editor, Minimise to tray, Quit, and the icon goes when the window closes. Full suite not run (Eve runs it).
 
+### Eve release preparation - 28 November 2026
+
+- Source, launcher banner and release documents synchronised to 3.14; the release is prepared locally and not published.
+- Full offscreen Windows suite: 467 tests passed in 90.699 seconds, none skipped. Log stays in ignored notes/full_suite_3.14.log.
+- AGENTS.md and CLAUDE.md remain ignored and untracked. Proprietary licence and copyright preserved.
+- Building the Windows executable without launching it. Push and publication await Mark's explicit approval.
+
 ### In progress
 
 - Nothing.

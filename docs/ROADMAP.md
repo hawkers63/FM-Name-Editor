@@ -16,6 +16,8 @@ changes.
 
 ## Next
 
+- **Release 3.14** - notification-area icon with Show, optional Minimise to tray and Quit. Implementation complete; 467 tests passed; local release preparation awaits publication approval.
+
 
 ## Later
 
