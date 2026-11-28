@@ -19,7 +19,7 @@ A Windows desktop editor for Football Manager 27 `.lnc` name files. Change club,
 
 <sub>
 Release: 3.14
-Status: prepared locally; not yet published
+Status: released
 Application on disk: 3.14
 </sub>
 

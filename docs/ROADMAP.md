@@ -12,11 +12,11 @@ changes.
 
 ## Now
 
-- **Release 3.13** (26 November 2026). Compact inspector, File sections tree, F3 sidebar control and simpler collection creation.
+- **Release 3.14** (28 November 2026). Notification-area icon with Show, optional Minimise to tray and safe Quit.
 
 ## Next
 
-- **Release 3.14** - notification-area icon with Show, optional Minimise to tray and Quit. Implementation complete; 467 tests passed; local release preparation awaits publication approval.
+
 
 
 ## Later
@@ -25,6 +25,7 @@ changes.
 
 Public releases already shipped (see `CHANGELOG.md` and the GitHub tags):
 
+- 3.13 — compact inspector, File sections tree and F3 sidebar control
 - 3.12 — left-hand view rail, 30-pixel grid rows and one filter bar
 - 3.11.1 — clear stale restore flags after a snapshot roll back
 - 3.11 — unticked files stay out of Deploy, exact names for a selected restore, and Undo takes a restore's file state

@@ -1,7 +1,7 @@
 # Changelog
 
 Release: 3.14
-Status: prepared locally; not yet published
+Status: released
 Application on disk: 3.14
 
 The source on disk reports `VERSION = "3.14"`. The launcher banner says v3.14.

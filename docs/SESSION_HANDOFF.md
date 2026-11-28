@@ -27,6 +27,10 @@ and Codex CLI. Update it at the end of every session.
 - Tests: new `Session29Tray` (5): the icon, tooltip and menu (and the View menu and palette unchanged, and the guide section); minimise hides to the tray and a click or double-click brings it back, with the notice once; minimise stays on the taskbar when the option is off or there is no tray; the choice survives a reopen (and `clean_view` drops a non-bool); Quit with unsaved changes asks from a visible window, Cancel keeps the editor open and Discard closes it and the icon. Against the 3.13 code all 5 fail (the tray attributes do not exist).
 - Targeted runs, offscreen, one process at a time, all passing: `Session29Tray` (5) in 9.4 s; with `WindowSmoke`, `Session7Window`, `Session8Engine`, `Session9Settings`, `Session9Window`, `Session14Visual`, `Session19Engine`, `Session19IdColumn`, `Session20Cadence`, `Session27View` and `Session28Sidebar` (65) in 16.2 s; `Session29Tray` with `Session14Visual` after the guide section (18) in 3.6 s; `Session7Speed`, `Session20Speed` and `Session21Speed` (3) in 7.3 s. Desktop check (not offscreen): the tray is available, the icon is visible with sizes 16 to 256, the menu reads Show FM Name Editor, Minimise to tray, Quit, and the icon goes when the window closes. Full suite not run (Eve runs it).
 
+### Publication - Eve, 28 November 2026
+
+- Published as GitHub Latest after Mark's explicit approval. Annotated tag `v3.14` points to release commit `fa06f95`. Windows exe: 49,142,797 bytes, FileVersion/ProductVersion 3.14. Fresh download matches local build and GitHub SHA-256 `0b8f10100a904eaf064d9e5b6513bb5cf1535c7ac71dd802f950c891a9e08deb`. Full suite: 467 passed in 90.699 seconds, none skipped. Executable not launched. Private instruction files remain ignored and untracked.
+
 ### Eve release preparation - 28 November 2026
 
 - Source, launcher banner and release documents synchronised to 3.14; the release is prepared locally and not published.
