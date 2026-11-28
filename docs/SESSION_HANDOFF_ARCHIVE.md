@@ -10,6 +10,52 @@ Older handoff entries, still newest first. The live file
 
 ---
 
+## 25 November 2026 (Europe/London) — Claude Code (Session 24)
+
+- **Tool:** claude (Claude Code)
+- **Model:** Claude Opus 5.5 (`claude-opus-5-5`)
+- **Brief:** Eve's Session 24 brief for release 3.10 (private, in `notes/`), with Mark's kick-off: four stages, targeted tests only, two local commits, no tag, build or push.
+- **Branch / commit:** main, local `01f0c38` `fix: restore selected names in the background and refuse stale rows`, then `chore: release 3.10`; not pushed, not tagged
+
+### Done this session
+
+- Stage 0: the five problems in the brief all still held. `restore_selected_names` compared on the GUI thread, read the backup a second time in `_apply_selected_restore`, walked every line for each tick, checked staleness by key only, and wrote the table's text as the name.
+- Stage 1 (engine): `plan_selected_restore(doc, archive_file, ticked)` reads the backup once, groups both files (`_diff_groups`) and compares them again (`_diff_rows`, which `diff_documents` now runs too, with the same output). It returns `(changes, stale)`: a ticked row is stale unless the fresh comparison still has it with the same open name and backup name, and it can be restored by name (`restorable_by_name`). When anything is stale, `changes` is empty. `apply_selected_restore` gives the open lines the planned backup names through one dict of the open lines. It keeps `set_name(..., "restore")`, `restore_pending`, `restored_from`, `whole_excluded = False` and `touch()`. `diff_row_key` gives a shown row's comparison key.
+- Stage 2 (GUI): `BackupDialog.restore_selected_names` collects the ticks (`ticked_rows`) and asks the same question. It then calls `restoring(True)` and `run(plan_selected_restore ...)`. `finish_selected_restore` either applies the plan in one `Operation` (`push_operation`, `reload_views`, `show_diff`, the same summary), or warns, applies nothing and compares again. A read error goes to `restore_failed`. The GUI-thread `compare_with_backup` call and the second `LncDoc` read are gone.
+- Reasoned deviations, both in the part being rewritten. (1) The lookup key is the comparison key (`_diff_key`), so a person rule's ending is part of it. Person rules share their number and language, so with (command, ID, language) alone another rule would be changed. The ending rides in the ID column's UserRole. (2) A row that a name alone cannot restore (only in one file, or a different number of lines) has no tick box, and its tooltip points to Restore into open file. Before, ticking one did nothing, or wrote every backup name into one line, and still said it had restored it. The plan treats such a row as stale if one is passed in.
+- Stage 3: the help sentence; CHANGELOG under Unreleased; "Neal" to "Eve" where it names the current release manager in `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md` and the build comment in `.gitignore`; four root-anchored private files added to `.gitignore` (`git check-ignore` lists all four and not the tracked archive); the oldest live entry moved to the archive.
+- Tests: new `Session24Engine` (6) and `Session24Window` (5, real worker threads).
+- Stage 4 (release prep, approved by Mark): 3.10 set in the module header and `VERSION`, a "Release 3.10" paragraph added to the module docstring (after 3.9's, as each release has done), the launcher banner (CRLF kept), the README badge, header lines, a "New in 3.10" paragraph above 3.9's, a history row and a "What 3.10 adds" block, the CHANGELOG header (ready for release) with `## 3.10 (25 November 2026)` and an empty Unreleased, and the public roadmap (3.10 now, 3.9 done). Nothing compares the version as text or a float: the `.spec` reads 3.10 as (3, 10, 0, 0).
+
+### In progress
+
+- Nothing.
+
+### Next steps
+
+- Eve: run the full suite once, tag `v3.10`, build, and ask Mark before pushing.
+- Eve, when publishing: set the README and CHANGELOG status to released, drop "(ready for release; not yet published)" from "New in 3.10", and add the download bullet and SHA-256. The history row already links to the `v3.10` tag page. The README Tests badge still says 376 (out of date since 3.9); set it from the full run.
+
+### Known issues / blockers
+
+- Found, not fixed: undoing a selected restore leaves `restore_pending` set (since Session 18), because the operation records only the lines. The file then counts as a restored, whole-file write until it is saved or opened again. The brief keeps `restore_pending` as it was.
+- Found, not fixed: with real worker threads, the comparison that `show_diff` starts after either restore replaces the "Restored ..." summary a moment later (since Session 23). Whole-file restore is out of scope, so both stay alike.
+
+### Eve — release 3.10
+
+- Reviewed `01f0c38` and `f3a9688` against the brief: all four stages done, Conventional Commits, no private files tracked, the four new `.gitignore` lines ignore their files, Eve named in the guides, licence and copyright headers intact, no playthrough details. Version 3.10 agrees in the module header, `VERSION`, the launcher banner, the README, the CHANGELOG and the public roadmap.
+- Ran the full suite once, offscreen on Linux (Mark's choice, to spare this PC): 395 tests in about 17 s; 388 passed, 5 skipped because the game's own name files are not there, and 2 failed only because they use Windows paths (`Session19Engine.test_favourites_keep_up_to_three_real_folders` and `test_the_view_keeps_the_id_column_and_packs_stay_out_of_the_game`; code unchanged since 3.5).
+- Set both statuses to released, dropped "ready for release" from "New in 3.10", added the download bullet and set the Tests badge to 395. Built the Windows executable from the release source without launching it. Push and publication wait for Mark's confirmation.
+
+### Files touched
+
+- `fix` commit: `fm_name_editor.py`, `tests/test_engine.py`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `docs/SESSION_PROMPTS.md`, `.gitignore`, `docs/SESSION_HANDOFF.md`, `docs/SESSION_HANDOFF_ARCHIVE.md`
+- `chore` commit: `fm_name_editor.py`, `FM Name Editor.bat`, `README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`, `docs/SESSION_HANDOFF.md`
+
+---
+
+---
+
 ## 24 November 2026 (Europe/London) — Claude Code (Session 23)
 
 - **Tool:** claude (Claude Code)

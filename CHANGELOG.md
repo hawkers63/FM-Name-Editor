@@ -8,6 +8,15 @@ The source on disk reports `VERSION = "3.13"`. The launcher banner says v3.13.
 
 ## Unreleased
 
+Session 29 - a tray icon (for the next release):
+
+- **Tray icon.** While the editor runs, its football icon (`icon/football.ico`, the window's own icon) sits in the Windows notification area, with the name and version as its tooltip. A click or double-click brings the window back.
+- **Minimise to tray.** The tray icon's menu has Minimise to tray: when ticked, minimising hides the window to the tray instead of the taskbar, and a one-off notice says the editor is still running. It is off until you tick it and is remembered with the view. Where Windows has no notification area, minimising works as before.
+- **Quit from the tray.** Quit closes the editor as the window's Close does: with unsaved changes it brings the window back and asks first. The icon goes when the window closes.
+- **Nothing else moves.** The tray menu has no keys and is not on a window menu or in the command palette, so the View menu, the palette and every shortcut are unchanged. No new package: the tray is part of PySide6.
+- **User guide.** A new section, The tray icon.
+- **Verification.** New `Session29Tray` (5). Checked on the desktop: the icon shows in the notification area, at sizes 16 to 256 pixels, and goes when the window closes.
+
 ## 3.13 (26 November 2026)
 
 - **Private coding instructions.** Keep `AGENTS.md` and `CLAUDE.md` locally, ignored and untracked, rather than publishing future revisions. Previous commits and tags retain their historical copies.

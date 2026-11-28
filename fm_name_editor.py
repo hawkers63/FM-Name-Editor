@@ -466,6 +466,13 @@ USER_GUIDE = (
      "show only its own; Right and Left open and close a continent. The tree reads the "
      "headings only: it is not the game's own map of nations. With no collections yet, "
      "New collection from selection makes one holding the rows selected in the grid."),
+    ("The tray icon",
+     "While the editor runs, its football icon sits in the Windows notification area. "
+     "Click it to bring the window back; right-click it for Show, Minimise to tray and "
+     "Quit. With Minimise to tray ticked, minimising hides the window to the tray "
+     "instead of the taskbar; it is off until you tick it, and the choice is kept for "
+     "next time. Quit closes the editor as the window's own Close does: with unsaved "
+     "changes it brings the window back and asks first."),
     ("Search scope and club aliases",
      "While a file section or a collection narrows the grid, the search box says so, "
      "for example In: England (42), and Search all sections (Alt+A, also on the Edit "
@@ -6644,7 +6651,8 @@ def clean_view(raw) -> dict:
     Keys: "tab", "family", "status", "entity_sort" and "line_sort" (key and
     descending), "entity_widths" (per family, per column key), "line_widths",
     "inspector", "id_column" and "sidebar" (shown or hidden; the entity grid's ID
-    column since Session 19, the sidebar since Session 28), and "geometry",
+    column since Session 19, the sidebar since Session 28), "tray" (minimise to the
+    tray, on or off, since Session 29), and "geometry",
     "window_state", and "splitter" (base64 text from Qt). A
     value of the wrong type or out of range is dropped, so an older or
     hand-edited settings file cannot stop the window opening. Each type is
@@ -6675,7 +6683,7 @@ def clean_view(raw) -> dict:
     line_widths = _clean_widths(raw.get("line_widths"), LINE_COLUMNS)
     if line_widths:
         view["line_widths"] = line_widths
-    for name in ("inspector", "id_column", "sidebar"):
+    for name in ("inspector", "id_column", "sidebar", "tray"):
         shown = raw.get(name)
         if isinstance(shown, bool):
             view[name] = shown
@@ -7234,7 +7242,7 @@ def run_gui(paths):
         QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
         QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
         QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QToolTip,
-        QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QToolButton)
+        QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QToolButton, QSystemTrayIcon)
 
     FILTER = "FM name files (*.lnc);;All files (*)"
     GAME_WRITE_NOTE = (
@@ -11663,6 +11671,7 @@ def run_gui(paths):
             self.build_actions()
             self.build_menus()
             self.build_toolbar()
+            self.build_tray()
             central = QWidget()
             # Session 27: the views on a stack, chosen from a slim rail down the left edge,
             # so the grids get the height a full-width tab bar took.
@@ -11921,6 +11930,19 @@ def run_gui(paths):
                 "always show the ID.")
             self.id_column_act.setCheckable(True)
             self.id_column_act.setChecked(True)
+            # Session 29: the tray icon's own menu. None of these is on a window menu, in
+            # the command palette or on a key, so every menu and shortcut stays as it was.
+            # Quit closes the window the usual way, so unsaved changes are asked about.
+            self.tray_show_act = a(f"Show {APP_NAME}", self.show_from_tray, (),
+                                   "Bring the editor window back")
+            self.tray_minimise_act = a(
+                "Minimise to tray", self.set_minimise_to_tray, (),
+                "When on, minimising the window hides it to the tray; click the tray icon "
+                "to bring it back. The choice is remembered.")
+            self.tray_minimise_act.setCheckable(True)
+            self.tray_minimise_act.setChecked(False)
+            self.tray_quit_act = a("Quit", self.quit_from_tray, (),
+                                   "Close the editor; unsaved changes are asked about first")
             self.reset_widths_act = a(
                 "Reset column widths", self.reset_column_widths, (),
                 "Size every grid column to its text again, forgetting the widths you set")
@@ -12050,6 +12072,78 @@ def run_gui(paths):
                 self.rename_collection_act, self.delete_collection_act)
             self.help_menu = menu("&Help", self.guide_act, self.shortcuts_act, None,
                                   self.about_act)
+
+        # ----- the tray icon (Session 29) -----
+        def build_tray(self) -> None:
+            """A tray icon with the window's icon (icon/football.ico) and a menu of its own:
+            Show, Minimise to tray and Quit.
+
+            It is shown only where Windows has a notification area and the icon was
+            found; the icon and its actions exist either way, so the tests can use them
+            offscreen.
+            """
+            icon = QApplication.windowIcon()
+            if icon.isNull():
+                path = resource_path(ICON_FILE)
+                icon = QIcon(str(path)) if path is not None else QIcon()
+            self.tray = QSystemTrayIcon(icon, self)
+            self.tray.setToolTip(f"{APP_NAME} {VERSION}")
+            self.tray_menu = QMenu(self)
+            self.tray_menu.setToolTipsVisible(True)
+            self.tray_menu.addAction(self.tray_show_act)
+            self.tray_menu.addAction(self.tray_minimise_act)
+            self.tray_menu.addSeparator()
+            self.tray_menu.addAction(self.tray_quit_act)
+            self.tray.setContextMenu(self.tray_menu)
+            self.tray.activated.connect(self.tray_activated)
+            self.tray_available = (QSystemTrayIcon.isSystemTrayAvailable()
+                                   and not icon.isNull())
+            self._tray_told = False
+            if self.tray_available:
+                self.tray.show()
+
+        def tray_activated(self, reason) -> None:
+            """A click or double-click on the tray icon brings the window back."""
+            if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+                self.show_from_tray()
+
+        def show_from_tray(self) -> None:
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+        def set_minimise_to_tray(self, on: bool) -> None:
+            on = bool(on)
+            if self.tray_minimise_act.isChecked() != on:
+                self.tray_minimise_act.setChecked(on)
+            self.statusBar().showMessage(
+                "Minimising now hides the window to the tray." if on else
+                "Minimising now leaves the window on the taskbar.", 5000)
+
+        def quit_from_tray(self) -> None:
+            """Close the editor the usual way. The window comes back first, so a question
+            about unsaved changes is not asked from an invisible window."""
+            if self.isHidden() or self.isMinimized():
+                self.show_from_tray()
+            self.close()
+
+        def changeEvent(self, event):
+            super().changeEvent(event)
+            if (event.type() == QEvent.WindowStateChange and self.isMinimized()
+                    and getattr(self, "tray_available", False)
+                    and self.tray_minimise_act.isChecked()):
+                QTimer.singleShot(0, self.hide_to_tray)
+
+        def hide_to_tray(self) -> None:
+            if not self.isMinimized():          # put back before the timer ran
+                return
+            self.hide()
+            if not self._tray_told:             # once a run, so it does not nag
+                self._tray_told = True
+                self.tray.showMessage(
+                    APP_NAME, "Still running in the tray. Click the icon to bring the "
+                    "window back.", QSystemTrayIcon.Information, 4000)
 
         def build_toolbar(self) -> None:
             """One row under the menus: the product, the database, the profile, the
@@ -12693,6 +12787,7 @@ def run_gui(paths):
             self.illustrative_card.stop_ticker()
             if self.remember_on_close:
                 self.remember_view()
+            self.tray.hide()                # the icon goes with the window (Session 29)
             event.accept()
 
         def set_busy(self, busy: bool, text: str) -> None:
@@ -12760,6 +12855,7 @@ def run_gui(paths):
             self.set_inspector_shown(shown)
             self.set_sidebar_shown(view.get("sidebar", True), quiet=True)     # Session 28
             self.id_column_act.setChecked(view.get("id_column", True))  # apply_family shows it
+            self.tray_minimise_act.setChecked(view.get("tray", False))  # Session 29, off by default
 
         def remember_view(self) -> None:
             """Keep the view in the settings file for next time. The window calls it on close."""
@@ -12782,6 +12878,7 @@ def run_gui(paths):
                 "inspector": self.inspector_act.isChecked(),
                 "id_column": self.id_column_act.isChecked(),
                 "sidebar": self.sidebar_act.isChecked(),
+                "tray": self.tray_minimise_act.isChecked(),
             })
             # The window is closing: when the file cannot be written, the next run
             # starts with the view before, and a damaged file stays as it is.

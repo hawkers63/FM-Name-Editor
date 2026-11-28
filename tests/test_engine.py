@@ -12340,3 +12340,111 @@ class Session28Display(unittest.TestCase):
                 self.assertGreater(found["collapsed"][1], found["grid"] + 100)
                 self.assertTrue(found["restored"][0])
                 self.assertGreaterEqual(found["restored"][1], 120)
+
+
+class Session29Tray(_Session19Window, unittest.TestCase):
+    """Session 29: a tray icon with the window's icon (icon/football.ico). Its own menu holds
+    Show, Minimise to tray (off by default, kept with the view) and Quit; Quit asks about
+    unsaved changes as closing the window does. No window menu or key changes."""
+
+    def minimise(self, win):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+
+        win.setWindowState(Qt.WindowMinimized)
+        for _ in range(3):
+            QApplication.processEvents()
+
+    def test_the_icon_tip_and_menu(self):
+        win = self.window(open_file=False)
+        self.assertEqual(editor.ICON_FILE, "icon/football.ico")
+        self.assertIsNotNone(editor.resource_path(editor.ICON_FILE))
+        self.assertFalse(win.tray.icon().isNull())
+        self.assertEqual(win.tray.toolTip(), f"{editor.APP_NAME} {editor.VERSION}")
+        self.assertEqual([action.text() for action in win.tray_menu.actions() if action.text()],
+                         [f"Show {editor.APP_NAME}", "Minimise to tray", "Quit"])
+        self.assertTrue(win.tray_minimise_act.isCheckable())
+        self.assertFalse(win.tray_minimise_act.isChecked())            # off by default
+        for action in (win.tray_show_act, win.tray_minimise_act, win.tray_quit_act):
+            self.assertEqual(action.shortcuts(), [])
+            self.assertTrue(action.toolTip())
+        self.assertEqual([action.text() for action in win.view_menu.actions() if action.text()],
+                         ["Entities", "All lines", "Changes", "Inspector", "Show ID column",
+                          "Reset column widths"])                      # the View menu as before
+        labels = [label for label, *_ in win.palette_commands()]
+        self.assertFalse(any("tray" in label.casefold() for label in labels))
+        guide = dict(editor.USER_GUIDE)
+        self.assertIn("Minimise to tray", guide["The tray icon"])
+
+    def test_minimise_hides_to_the_tray_and_a_click_brings_it_back(self):
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        win = self.window()
+        win.tray_available = True
+        win.tray_minimise_act.trigger()
+        self.assertTrue(win.tray_minimise_act.isChecked())
+        self.assertIn("tray", win.statusBar().currentMessage())
+        with mock.patch.object(win.tray, "showMessage") as told:
+            self.minimise(win)
+            self.assertTrue(win.isHidden())
+            self.assertEqual(told.call_count, 1)
+            win.tray_activated(QSystemTrayIcon.Trigger)
+            self.assertFalse(win.isHidden())
+            self.assertFalse(win.isMinimized())
+            self.minimise(win)                                          # told once a run
+            self.assertTrue(win.isHidden())
+            self.assertEqual(told.call_count, 1)
+            win.tray_activated(QSystemTrayIcon.DoubleClick)
+            self.assertFalse(win.isHidden())
+            win.tray_activated(QSystemTrayIcon.Context)                 # the menu, not a show
+        self.assertTrue(win.load([str(self.club)]))                     # still the same window
+
+    def test_minimise_stays_on_the_taskbar_when_off_or_without_a_tray(self):
+        win = self.window(open_file=False)
+        win.tray_available = True
+        self.minimise(win)                                              # off by default
+        self.assertFalse(win.isHidden())
+        win.show_from_tray()
+        win.tray_available = False                                      # no notification area
+        win.tray_minimise_act.setChecked(True)
+        self.minimise(win)
+        self.assertFalse(win.isHidden())
+
+    def test_the_choice_is_remembered(self):
+        self.assertEqual(editor.clean_view({"tray": True}), {"tray": True})
+        self.assertEqual(editor.clean_view({"tray": False}), {"tray": False})
+        self.assertEqual(editor.clean_view({"tray": "yes"}), {})
+        win = self.window(open_file=False)
+        win.tray_minimise_act.trigger()
+        win.remember_view()
+        self.assertIs(self.settings()["view"]["tray"], True)
+        again = self.window(open_file=False)
+        self.assertTrue(again.tray_minimise_act.isChecked())
+
+    def test_quit_asks_about_unsaved_changes_and_shows_the_window_first(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        win = self.window()
+        model = win.entity_model
+        row = next(n for n, entity in enumerate(model.rows) if entity.id == "3")
+        self.assertTrue(model.setData(model.index(row, model.columns().index("long")),
+                                      "Mike Town"))
+        self.assertTrue(any(doc.dirty for doc in win.docs))
+        win.hide()
+        seen = []
+
+        def answer(choice):
+            def ask(parent, *args, **kwargs):
+                seen.append(parent.isVisible())
+                return choice
+            return ask
+
+        with mock.patch.object(QMessageBox, "question", answer(QMessageBox.Cancel)):
+            win.tray_quit_act.trigger()
+        self.assertEqual(seen, [True])                  # asked from a window you can see
+        self.assertTrue(win.isVisible())                # Cancel keeps the editor open
+        self.assertTrue(any(doc.dirty for doc in win.docs))
+        with mock.patch.object(QMessageBox, "question", answer(QMessageBox.Discard)):
+            win.tray_quit_act.trigger()
+        self.assertFalse(win.isVisible())
+        self.assertFalse(win.tray.isVisible())
